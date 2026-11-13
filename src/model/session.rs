@@ -100,6 +100,28 @@ impl Sessions {
             .ok_or_else(|| anyhow!("{machine} is not connected"))
     }
 
+    /// Run `f` on a machine's file connection in a job; other work on it waits its turn.
+    pub fn run<R: Send + 'static>(
+        &self,
+        machine: &str,
+        label: String,
+        notify: Arc<dyn Notify>,
+        f: impl FnOnce(&mut dyn FileSession, &crate::model::job::JobCtx) -> anyhow::Result<R>
+            + Send
+            + 'static,
+    ) -> Job<R> {
+        let me = self.clone();
+        let machine = machine.to_string();
+        Job::spawn(label, notify, move |ctx| {
+            let session = me.session(&machine)?;
+            let mut guard = lock_status(&session);
+            set_busy(&me, &machine, true);
+            let r = f(guard.as_mut(), ctx);
+            set_busy(&me, &machine, false);
+            r
+        })
+    }
+
     /// Open the machine's file service; the job's result is the login folder.
     pub fn connect(
         &self,
@@ -179,6 +201,18 @@ impl Sessions {
             }
             result.map_err(|e| anyhow!("log-off was not clean: {e}"))
         })
+    }
+}
+
+fn set_busy(s: &Sessions, machine: &str, busy: bool) {
+    if let Some(slot) = lock_status(&s.slots).get_mut(machine) {
+        if slot.session.is_some() {
+            slot.state = if busy {
+                ConnState::Busy
+            } else {
+                ConnState::Connected
+            };
+        }
     }
 }
 

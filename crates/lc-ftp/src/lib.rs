@@ -512,6 +512,30 @@ impl FileSession for FtpSession {
         }
     }
 
+    fn quote(&mut self, line: &str) -> Result<String> {
+        self.live()?;
+        // A command that opens a data connection would leave the control channel out of step.
+        let verb = line
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if matches!(
+            verb.as_str(),
+            "LIST" | "NLST" | "RETR" | "STOR" | "APPE" | "STOU" | "PASV" | "EPSV"
+        ) {
+            return Err(Error::Unsupported(format!(
+                "{verb} needs a data connection; use the panes for that"
+            )));
+        }
+        if verb == "QUIT" {
+            return Err(Error::Unsupported("use Disconnect to log off".into()));
+        }
+        let r = FtpSession::quote(self, line)?;
+        self.cwd = None;
+        Ok(r.text())
+    }
+
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()> {
         self.live()?;
         let r = self.ctrl.command("RNFR", Some(&from.to_string()))?;

@@ -16,6 +16,7 @@ use super::{
 };
 use crate::model::job::{Job, Notify};
 use crate::model::term::TermSession;
+use crate::model::transfer::{self, Direction, Pick, Summary};
 
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
@@ -114,6 +115,53 @@ pub enum Action {
     ShellKey(TermKey),
     /// The terminal's size in character cells after the view was resized.
     ShellResize(u16, u16),
+    /// Copy these names from one side's current folder to the other side's.
+    Copy(Side, Vec<String>),
+    /// The answer to "these already exist": Overwrite, Skip existing, Cancel.
+    CopyConflict(usize),
+    CancelTransfers,
+    NewFolder(Side),
+    NewFolderAnswered(Option<String>),
+    Rename(Side, String),
+    RenameAnswered(Option<String>),
+    Delete(Side, Vec<String>),
+    DeleteConfirmed(bool),
+    /// A line typed into the Console tab, sent as the protocol's own command.
+    ConsoleSend(String),
+}
+
+/// A name for a new or renamed file or folder: not empty, no path separators, nothing Windows refuses.
+pub fn valid_name(text: &str) -> Result<(), String> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Err(String::new());
+    }
+    if t == "." || t == ".." {
+        return Err("That name is taken by the folder itself.".into());
+    }
+    if let Some(c) = t.chars().find(|c| {
+        matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control()
+    }) {
+        return Err(format!("A name cannot contain {c:?}."));
+    }
+    Ok(())
+}
+
+/// One copy batch as the Transfers tab lists it.
+struct Batch {
+    label: String,
+    job: Job<Summary>,
+    /// The finished line, once it ended.
+    result: Option<String>,
+    to: Side,
+}
+
+/// What a pending question is about.
+enum Pending {
+    Copy(Direction, Vec<Pick>, Vec<Option<u64>>),
+    NewFolder(Side),
+    Rename(Side, String),
+    Delete(Side, Vec<Pick>),
 }
 
 /// Keys that are not plain characters, as a view reports them to the terminal.
@@ -214,6 +262,11 @@ pub struct ConnectionController {
     shell_close: Option<Job<()>>,
     shell_error: Option<String>,
     shell_size: (u16, u16),
+    batches: Vec<Batch>,
+    pending: Option<Pending>,
+    ops: Vec<(Side, Job<()>)>,
+    console: Vec<String>,
+    console_job: Option<Job<String>>,
 }
 
 impl ConnectionController {
@@ -256,6 +309,11 @@ impl ConnectionController {
             shell_close: None,
             shell_error: None,
             shell_size: (80, 24),
+            batches: Vec::new(),
+            pending: None,
+            ops: Vec::new(),
+            console: Vec::new(),
+            console_job: None,
         };
         c.list_local();
         c
@@ -597,7 +655,17 @@ impl ConnectionController {
                 ),
                 None => format!("{} has no command service set up.", self.machine.name),
             },
-            TermTab::Console => "The protocol console (raw FTP commands) is next in phase 1.".into(),
+            TermTab::Console => {
+                if self.console.is_empty() {
+                    let what = match self.machine.file_service().map(|s| s.kind) {
+                        Some(ServiceKind::Ftp) => "FTP commands (SITE CHMOD 755 file, STAT, SYST, HELP)",
+                        _ => "the file protocol's own commands",
+                    };
+                    format!("Type {what} below; they go to {} on the file connection.", self.machine.name)
+                } else {
+                    self.console.join("\n")
+                }
+            }
             TermTab::Log => {
                 let lines = self.sessions.trace(&self.machine.id);
                 if lines.is_empty() {
@@ -607,8 +675,232 @@ impl ConnectionController {
                     lines[lines.len().saturating_sub(500)..].join("\n")
                 }
             }
-            TermTab::Transfers => "No transfers.".into(),
+            TermTab::Transfers => self.transfers_text(),
         }
+    }
+
+    /// The Transfers tab: every batch of this session, newest first.
+    pub fn transfers_text(&self) -> String {
+        if self.batches.is_empty() {
+            return "No transfers yet. Select files and press F6, or right-click and choose Copy."
+                .into();
+        }
+        self.batches
+            .iter()
+            .rev()
+            .map(|b| match &b.result {
+                Some(r) => format!("{}\n    {r}", b.label),
+                None => {
+                    let s = b.job.snapshot();
+                    format!("{}\n    {}   {}", b.label, s.phase, s.detail())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether a copy is running (its Cancel shows).
+    pub fn copying(&self) -> bool {
+        self.batches.iter().any(|b| b.result.is_none())
+    }
+
+    pub fn can_console(&self) -> bool {
+        self.can_disconnect() && self.console_job.is_none()
+    }
+
+    fn picks(&self, side: Side, names: &[String]) -> (Vec<Pick>, Vec<Option<u64>>) {
+        let mut picks = Vec::new();
+        let mut sizes = Vec::new();
+        for n in names {
+            match side {
+                Side::Local => {
+                    if let Some(e) = self.local_rows.iter().find(|e| &e.name == n) {
+                        picks.push(Pick {
+                            name: e.name.clone(),
+                            is_dir: e.is_dir,
+                        });
+                        sizes.push(Some(e.size));
+                    }
+                }
+                Side::Remote => {
+                    if let Some(e) = self.remote_rows.iter().find(|e| &e.name == n) {
+                        picks.push(Pick {
+                            name: e.name.clone(),
+                            is_dir: e.is_folder(),
+                        });
+                        sizes.push(e.size);
+                    }
+                }
+            }
+        }
+        (picks, sizes)
+    }
+
+    fn start_copy(
+        &mut self,
+        dir: Direction,
+        picks: Vec<Pick>,
+        sizes: Vec<Option<u64>>,
+        overwrite: bool,
+    ) {
+        let (Some(remote_dir), local_dir) = (self.remote_dir.clone(), self.local_dir.clone())
+        else {
+            return;
+        };
+        let what = if picks.len() == 1 {
+            picks[0].name.clone()
+        } else {
+            format!("{} items", picks.len())
+        };
+        let label = match dir {
+            Direction::Download => format!(
+                "Download {what} from {} to {}",
+                self.machine.name,
+                local_dir.display()
+            ),
+            Direction::Upload => format!("Upload {what} to {}:{}", self.machine.name, remote_dir),
+        };
+        let job = self.sessions.run(
+            &self.machine.id,
+            label.clone(),
+            Arc::clone(&self.notify),
+            move |fs, ctx| {
+                transfer::copy(
+                    fs,
+                    &transfer::Batch {
+                        dir,
+                        remote_dir: &remote_dir,
+                        local_dir: &local_dir,
+                        picks: &picks,
+                        sizes: &sizes,
+                        overwrite,
+                    },
+                    ctx,
+                )
+            },
+        );
+        let to = match dir {
+            Direction::Download => Side::Local,
+            Direction::Upload => Side::Remote,
+        };
+        self.batches.push(Batch {
+            label,
+            job,
+            result: None,
+            to,
+        });
+        if self.shell_state() != ConnState::Connected {
+            self.term = TermTab::Transfers;
+        }
+    }
+
+    fn copy(&mut self, from: Side, names: Vec<String>) -> Vec<Effect> {
+        if !self.can_disconnect() || self.remote_dir.is_none() {
+            return vec![Effect::Message(format!(
+                "Connect to {} first.",
+                self.machine.name
+            ))];
+        }
+        let (picks, sizes) = self.picks(from, &names);
+        if picks.is_empty() {
+            return Vec::new();
+        }
+        let dir = match from {
+            Side::Local => Direction::Upload,
+            Side::Remote => Direction::Download,
+        };
+        let clashes: Vec<&str> = picks
+            .iter()
+            .filter(|p| match dir {
+                Direction::Download => self.local_dir.join(&p.name).exists(),
+                Direction::Upload => self.remote_rows.iter().any(|e| e.name == p.name),
+            })
+            .map(|p| p.name.as_str())
+            .collect();
+        if clashes.is_empty() {
+            self.start_copy(dir, picks, sizes, true);
+            return Vec::new();
+        }
+        let message = if clashes.len() == 1 {
+            format!("{} already exists there.", clashes[0])
+        } else {
+            format!(
+                "{} of these already exist there, such as {}.",
+                clashes.len(),
+                clashes[0]
+            )
+        };
+        self.pending = Some(Pending::Copy(dir, picks, sizes));
+        vec![Effect::Choose(super::ChoiceSpec {
+            purpose: "conn.copy.conflict",
+            title: "Copy".into(),
+            message,
+            choices: vec!["Overwrite".into(), "Skip existing".into(), "Cancel".into()],
+            dismiss: 2,
+        })]
+    }
+
+    fn run_op(
+        &mut self,
+        side: Side,
+        label: String,
+        f: impl FnOnce(&mut dyn lc_core::FileSession, &RemotePath) -> lc_core::Result<()>
+            + Send
+            + 'static,
+        local: impl FnOnce(&Path) -> std::io::Result<()> + Send + 'static,
+    ) {
+        match side {
+            Side::Remote => {
+                let Some(dir) = self.remote_dir.clone() else {
+                    return;
+                };
+                let job = self.sessions.run(
+                    &self.machine.id,
+                    label,
+                    Arc::clone(&self.notify),
+                    move |fs, _| Ok(f(fs, &dir)?),
+                );
+                self.ops.push((side, job));
+            }
+            Side::Local => {
+                let dir = self.local_dir.clone();
+                let job = Job::spawn(label, Arc::clone(&self.notify), move |_| Ok(local(&dir)?));
+                self.ops.push((side, job));
+            }
+        }
+    }
+
+    fn answer_pending(&mut self, answer: Option<String>) -> Vec<Effect> {
+        let Some(name) = answer.map(|a| a.trim().to_string()) else {
+            self.pending = None;
+            return Vec::new();
+        };
+        if let Err(e) = valid_name(&name) {
+            self.pending = None;
+            return vec![Effect::Message(e)];
+        }
+        match self.pending.take() {
+            Some(Pending::NewFolder(side)) => {
+                let (n1, n2) = (name.clone(), name.clone());
+                self.run_op(
+                    side,
+                    format!("New folder {name}"),
+                    move |fs, dir| fs.mkdir(&dir.join(&n1)),
+                    move |dir| std::fs::create_dir(dir.join(&n2)),
+                );
+            }
+            Some(Pending::Rename(side, old)) if old != name => {
+                let (o1, n1, o2, n2) = (old.clone(), name.clone(), old.clone(), name.clone());
+                self.run_op(
+                    side,
+                    format!("Rename {old} to {name}"),
+                    move |fs, dir| fs.rename(&dir.join(&o1), &dir.join(&n1)),
+                    move |dir| std::fs::rename(dir.join(&o2), dir.join(&n2)),
+                );
+            }
+            _ => {}
+        }
+        Vec::new()
     }
 
     /// The running job's phase, or the last error, for the status line.
@@ -864,6 +1156,125 @@ impl Controller for ConnectionController {
                     let _ = s.resize(cols, rows);
                 }
             }
+            Action::Copy(from, names) => return self.copy(from, names),
+            Action::CopyConflict(choice) => {
+                if let Some(Pending::Copy(dir, picks, sizes)) = self.pending.take() {
+                    if choice < 2 {
+                        self.start_copy(dir, picks, sizes, choice == 0);
+                    }
+                }
+            }
+            Action::CancelTransfers => {
+                for b in self.batches.iter().filter(|b| b.result.is_none()) {
+                    b.job.cancel();
+                }
+            }
+            Action::NewFolder(side) => {
+                if side == Side::Remote && !self.can_disconnect() {
+                    return Vec::new();
+                }
+                self.pending = Some(Pending::NewFolder(side));
+                return vec![Effect::AskText(super::TextSpec {
+                    purpose: "conn.name",
+                    title: "New folder".into(),
+                    prompt: format!(
+                        "Name of the new folder in {}:",
+                        match side {
+                            Side::Local => self.local_path(),
+                            Side::Remote => self.remote_path(),
+                        }
+                    ),
+                    initial: String::new(),
+                    ok_label: "Create".into(),
+                    validator: valid_name,
+                })];
+            }
+            Action::NewFolderAnswered(a) | Action::RenameAnswered(a) => {
+                return self.answer_pending(a)
+            }
+            Action::Rename(side, old) => {
+                self.pending = Some(Pending::Rename(side, old.clone()));
+                return vec![Effect::AskText(super::TextSpec {
+                    purpose: "conn.name",
+                    title: "Rename".into(),
+                    prompt: format!("New name for {old}:"),
+                    initial: old,
+                    ok_label: "Rename".into(),
+                    validator: valid_name,
+                })];
+            }
+            Action::Delete(side, names) => {
+                let (picks, _) = self.picks(side, &names);
+                if picks.is_empty() {
+                    return Vec::new();
+                }
+                let place = match side {
+                    Side::Local => "this computer".to_string(),
+                    Side::Remote => self.machine.name.clone(),
+                };
+                let folders = picks.iter().any(|p| p.is_dir);
+                let what = if picks.len() == 1 {
+                    picks[0].name.clone()
+                } else {
+                    format!("{} items", picks.len())
+                };
+                let tail = if folders {
+                    " Folders are deleted with everything in them."
+                } else {
+                    ""
+                };
+                self.pending = Some(Pending::Delete(side, picks));
+                return vec![Effect::Confirm(super::ConfirmSpec {
+                    purpose: "conn.delete",
+                    title: "Delete".into(),
+                    message: format!("Delete {what} on {place}? This cannot be undone.{tail}"),
+                    confirm_label: "Delete".into(),
+                    destructive: true,
+                })];
+            }
+            Action::DeleteConfirmed(yes) => {
+                if let Some(Pending::Delete(side, picks)) = self.pending.take() {
+                    if yes {
+                        let p2 = picks.clone();
+                        let label = format!("Delete {} item(s)", picks.len());
+                        self.run_op(
+                            side,
+                            label,
+                            move |fs, dir| {
+                                for p in &picks {
+                                    transfer::remove_tree(fs, &dir.join(&p.name), p.is_dir)?;
+                                }
+                                Ok(())
+                            },
+                            move |dir| {
+                                for p in &p2 {
+                                    let path = dir.join(&p.name);
+                                    if p.is_dir {
+                                        std::fs::remove_dir_all(path)?;
+                                    } else {
+                                        std::fs::remove_file(path)?;
+                                    }
+                                }
+                                Ok(())
+                            },
+                        );
+                    }
+                }
+            }
+            Action::ConsoleSend(line) => {
+                let line = line.trim().to_string();
+                if line.is_empty() || !self.can_console() {
+                    return Vec::new();
+                }
+                self.console.push(format!("> {line}"));
+                let l = line.clone();
+                self.console_job = Some(self.sessions.run(
+                    &self.machine.id,
+                    format!("Console: {line}"),
+                    Arc::clone(&self.notify),
+                    move |fs, _| Ok(fs.quote(&l)?),
+                ));
+            }
         }
         Vec::new()
     }
@@ -905,6 +1316,60 @@ impl Controller for ConnectionController {
                     self.remote_error = Some(format!("Could not list {}: {e}", self.remote_path()))
                 }
             }
+        }
+        let mut refresh = (false, false);
+        for b in self.batches.iter_mut().filter(|b| b.result.is_none()) {
+            if let Some(r) = job_outcome(&b.job) {
+                b.result = Some(match r {
+                    Ok(s) => {
+                        let mut line = format!("Done: {} file(s), {}", s.files, size_text(s.bytes));
+                        if !s.skipped.is_empty() {
+                            line += &format!("; skipped {} that already existed", s.skipped.len());
+                        }
+                        if let Some((name, why)) = s.failed.first() {
+                            line += &format!("; {} failed (first: {name}: {why})", s.failed.len());
+                        }
+                        line
+                    }
+                    Err(e) => format!("Stopped: {e}"),
+                });
+                match b.to {
+                    Side::Local => refresh.0 = true,
+                    Side::Remote => refresh.1 = true,
+                }
+            }
+        }
+        let mut finished = Vec::new();
+        self.ops.retain(|(side, job)| match job_outcome(job) {
+            Some(r) => {
+                finished.push((*side, r));
+                false
+            }
+            None => true,
+        });
+        for (side, r) in finished {
+            match side {
+                Side::Local => refresh.0 = true,
+                Side::Remote => refresh.1 = true,
+            }
+            if let Err(e) = r {
+                out.push(Effect::Message(e));
+            }
+        }
+        if let Some(r) = self.console_job.as_ref().and_then(job_outcome) {
+            self.console_job = None;
+            match r {
+                Ok(text) => self.console.extend(text.lines().map(|l| format!("< {l}"))),
+                Err(e) => self.console.push(format!("  {e}")),
+            }
+            // A command may have changed the folder or its files.
+            refresh.1 = true;
+        }
+        if refresh.0 {
+            self.list_local();
+        }
+        if refresh.1 && self.list_job.is_none() {
+            self.list_remote();
         }
         if let Some(r) = self.shell_open.as_ref().and_then(job_outcome) {
             self.shell_open = None;
@@ -996,6 +1461,9 @@ mod tests {
                 && c.connect_job.is_none()
                 && c.list_job.is_none()
                 && c.disconnect_job.is_none()
+                && c.ops.is_empty()
+                && c.console_job.is_none()
+                && !c.copying()
             {
                 return;
             }
@@ -1062,6 +1530,80 @@ mod tests {
         settle(&mut c);
         assert_eq!(c.state(), ConnState::Disconnected);
         assert!(c.remote_rows().is_empty());
+    }
+
+    #[test]
+    fn copy_both_ways_with_the_conflict_question_and_file_ops() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        // Download a folder and a file.
+        assert!(c
+            .apply(Action::Copy(
+                Side::Remote,
+                vec!["src".into(), ".profile".into()]
+            ))
+            .is_empty());
+        settle(&mut c);
+        assert!(home.path().join("src/Makefile.local").is_file());
+        assert!(
+            c.transfers_text().contains("Done: 3 file(s)"),
+            "{}",
+            c.transfers_text()
+        );
+        // Again: everything exists now, so it asks.
+        let e = c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        assert!(matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.copy.conflict"));
+        c.apply(Action::CopyConflict(1));
+        settle(&mut c);
+        assert!(
+            c.transfers_text().contains("skipped 1"),
+            "{}",
+            c.transfers_text()
+        );
+        // Upload a new local file; it shows in the remote listing.
+        std::fs::write(home.path().join("hello.txt"), b"hi there").unwrap();
+        c.apply(Action::Refresh(Side::Local));
+        settle(&mut c);
+        c.apply(Action::Copy(Side::Local, vec!["hello.txt".into()]));
+        settle(&mut c);
+        assert!(c.remote_rows().iter().any(|r| r.name == "hello.txt"));
+        // New folder, rename and delete on the machine.
+        assert!(matches!(
+            c.apply(Action::NewFolder(Side::Remote))[0],
+            Effect::AskText(_)
+        ));
+        c.apply(Action::NewFolderAnswered(Some("docs".into())));
+        settle(&mut c);
+        assert!(c.remote_rows().iter().any(|r| r.name == "docs" && r.is_dir));
+        c.apply(Action::Rename(Side::Remote, "hello.txt".into()));
+        c.apply(Action::RenameAnswered(Some("hi.txt".into())));
+        settle(&mut c);
+        assert!(c.remote_rows().iter().any(|r| r.name == "hi.txt"));
+        assert!(matches!(
+            c.apply(Action::Delete(
+                Side::Remote,
+                vec!["hi.txt".into(), "docs".into()]
+            ))[0],
+            Effect::Confirm(_)
+        ));
+        c.apply(Action::DeleteConfirmed(true));
+        settle(&mut c);
+        assert!(!c
+            .remote_rows()
+            .iter()
+            .any(|r| r.name == "hi.txt" || r.name == "docs"));
+        // Local delete of a folder with its files.
+        c.apply(Action::Delete(Side::Local, vec!["src".into()]));
+        c.apply(Action::DeleteConfirmed(true));
+        settle(&mut c);
+        assert!(!home.path().join("src").exists());
+        // The demo machine has no console; the answer says so.
+        c.apply(Action::ConsoleSend("STAT".into()));
+        settle(&mut c);
+        assert!(c.console.last().unwrap().contains("no command console"));
+        assert_eq!(valid_name("a/b"), Err("A name cannot contain '/'.".into()));
     }
 
     #[test]

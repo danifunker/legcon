@@ -66,6 +66,13 @@ pub trait FileSession: Connection {
     fn mkdir(&mut self, path: &RemotePath) -> Result<()>;
     fn remove(&mut self, path: &RemotePath) -> Result<()>;
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()>;
+
+    /// Send one of the protocol's own commands as typed (the Console tab); its reply text.
+    fn quote(&mut self, line: &str) -> Result<String> {
+        Err(crate::Error::Unsupported(format!(
+            "this protocol has no command console ({line})"
+        )))
+    }
 }
 
 /// What a command protocol can do.
