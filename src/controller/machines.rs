@@ -123,6 +123,17 @@ impl MachinesController {
         }
     }
 
+    /// Remember the SSH host key a machine showed (learned, or accepted after a change).
+    pub fn set_host_key(&mut self, id: &str, key: String) -> Result<(), String> {
+        match self.store.get_mut(id) {
+            Some(m) if m.host_key.as_deref() != Some(&key) => {
+                m.host_key = Some(key);
+                self.save()
+            }
+            _ => Ok(()),
+        }
+    }
+
     fn save(&self) -> Result<(), String> {
         self.store
             .save(&self.dir)

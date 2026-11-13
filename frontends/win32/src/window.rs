@@ -534,6 +534,7 @@ fn run(effects: Vec<Effect>) {
                 match spec.purpose {
                     "machines.add.service" => dispatch(app::Action::AddServiceChosen(i)),
                     "conn.copy.conflict" => conn_action(conn::Action::CopyConflict(i)),
+                    "conn.hostkey" => conn_action(conn::Action::HostKeyAnswered(i)),
                     _ => {}
                 }
             }
@@ -704,6 +705,11 @@ fn refresh() {
             s.drawn.local_trail.clear();
             s.drawn.remote_trail.clear();
             s.drawn.machine = t.machine_id().to_string();
+            // Empty the controls too: a tab with no rows would otherwise keep the last tab's.
+            controls::fill(s.w.local.list, &[]);
+            controls::fill(s.w.remote.list, &[]);
+            controls::fill_trail(s.w.local.tree, &[]);
+            controls::fill_trail(s.w.remote.tree, &[]);
         }
         let info = t.header_info();
         if s.drawn.header.as_ref() != Some(&info) {

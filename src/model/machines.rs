@@ -212,6 +212,16 @@ pub struct Machine {
     /// Sent before a shell session closes (`exit`, `logout`); empty sends nothing.
     #[serde(default)]
     pub logout_command: String,
+    /// The SSH host key seen last time (`ssh-dss AAAA...`), learned on the first connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_key: Option<String>,
+    /// Check the SSH host key; off for lab machines that are reinstalled all the time.
+    #[serde(default = "yes")]
+    pub check_host_key: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A machine's tab colour, from a fixed palette.
@@ -296,6 +306,8 @@ impl Machine {
             layout: Layout::default(),
             color: TabColor::default(),
             logout_command: String::new(),
+            host_key: None,
+            check_host_key: true,
         }
     }
 

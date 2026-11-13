@@ -16,6 +16,7 @@ lc-core = { path = "crates/lc-core" }
 lc-ftp = { path = "crates/lc-ftp" }
 lc-rcmd = { path = "crates/lc-rcmd" }
 lc-smb = { path = "crates/lc-smb" }
+lc-ssh = { path = "crates/lc-ssh" }
 lc-telnet = { path = "crates/lc-telnet" }
 vt100 = "0.16"
 anyhow = "1"

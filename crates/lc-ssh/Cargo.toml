@@ -1,0 +1,11 @@
+[package]
+name = "lc-ssh"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "SSH-2 for legcon: shells, exec and SFTP v3 against pre-2005 servers"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }
+ssh2 = "0.9"

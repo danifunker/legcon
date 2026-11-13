@@ -2,7 +2,7 @@
 //!
 //! A reader job pulls bytes off the pty, decodes them with the machine's character set and feeds
 //! the screen, waking the view after each chunk. The view draws from [`TermSession::screen`],
-//! a plain snapshot of runs of same-coloured text. Telnet opens a real pty; rexec gets a line-mode one ([`line_term`]).
+//! a plain snapshot of runs of same-coloured text. Telnet and SSH open a real pty; rexec gets a line-mode one ([`line_term`]).
 
 use std::io::{ErrorKind, Read};
 use std::sync::{Arc, Mutex};
@@ -149,6 +149,7 @@ impl TermSession {
         password: Option<String>,
         cols: u16,
         rows: u16,
+        key_note: super::ssh::KeySlot,
         notify: Arc<dyn Notify>,
     ) -> Job<TermSession> {
         let machine = machine.clone();
@@ -171,7 +172,10 @@ impl TermSession {
                     };
                     lc_telnet::connect(&machine.address, service.port, &opts)?
                 }
-                ServiceKind::Ssh => bail!("SSH shells arrive in phase 4"),
+                ServiceKind::Ssh => {
+                    super::ssh::connect(&machine, service.port, password, &key_note)?
+                        .into_pty("vt100", cols, rows)?
+                }
                 ServiceKind::Rexec => {
                     let cs = Charset::from_label(&machine.charset).unwrap_or_default();
                     let enc = |t: &str| cs.encode(t).unwrap_or_else(|| t.as_bytes().to_vec());

@@ -1,0 +1,4 @@
+# libssh2 compiles the pre-2005 SSH algorithms only on request (docs/PLAN.md D19): DSA, SHA-1
+# kex and MACs, ssh-rsa, MD5, 3DES and RC4. legcon offers them per machine, never by default.
+[env]
+CFLAGS = "-DLIBSSH2_KEX_SHA1_ENABLE -DLIBSSH2_HMAC_SHA1_ENABLE -DLIBSSH2_RSA_SHA1_ENABLE -DLIBSSH2_DSA_ENABLE -DLIBSSH2_MD5_ENABLE -DLIBSSH2_3DES_ENABLE -DLIBSSH2_RC4_ENABLE -DLIBSSH2_BLOWFISH_ENABLE -DLIBSSH2_CAST_ENABLE"

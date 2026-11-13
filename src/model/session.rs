@@ -28,6 +28,8 @@ struct Slot {
     session: Option<Shared>,
     /// The protocol trace, for protocols that keep one (FTP).
     trace: Option<Trace>,
+    /// What the last SSH connect found out about the host key.
+    key_note: super::ssh::KeySlot,
 }
 
 /// A protocol's trace lines, as `> sent`, `< received` or `  note`.
@@ -86,6 +88,13 @@ impl Sessions {
             .collect()
     }
 
+    /// What the last connect found out about the machine's SSH host key, once.
+    pub fn take_key_note(&self, machine: &str) -> Option<super::ssh::KeyNote> {
+        let slot = lock_status(&self.slots).get(machine)?.key_note.clone();
+        let note = lock_status(&slot).take();
+        note
+    }
+
     fn set_state(&self, machine: &str, state: ConnState) {
         lock_status(&self.slots)
             .entry(machine.to_string())
@@ -132,6 +141,11 @@ impl Sessions {
         let me = self.clone();
         let machine = machine.clone();
         me.set_state(&machine.id, ConnState::Connecting);
+        let note = lock_status(&me.slots)
+            .entry(machine.id.clone())
+            .or_default()
+            .key_note
+            .clone();
         let label = format!("Connect to {}", machine.name);
         Job::spawn(label, notify, move |ctx| {
             let result = (|| {
@@ -143,7 +157,8 @@ impl Sessions {
                     machine.address,
                     service.kind.label()
                 ));
-                let (mut session, trace) = open_file_session(&machine, service.kind, password)?;
+                let (mut session, trace) =
+                    open_file_session(&machine, service.kind, password, &note)?;
                 let home = session.home()?;
                 Ok::<_, anyhow::Error>((service.kind, session, home, trace))
             })();
@@ -221,6 +236,7 @@ fn open_file_session(
     machine: &Machine,
     kind: ServiceKind,
     password: Option<String>,
+    note: &super::ssh::KeySlot,
 ) -> anyhow::Result<(Box<dyn FileSession>, Option<Trace>)> {
     match kind {
         ServiceKind::Demo => Ok((Box::new(demo_machine()), None)),
@@ -254,7 +270,15 @@ fn open_file_session(
             let session = lc_smb::connect(&machine.address, port, &machine.user, &pw, &opts)?;
             Ok((Box::new(session), None))
         }
-        ServiceKind::Ssh => bail!("SSH and SFTP arrive in phase 4"),
+        ServiceKind::Ssh => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Ssh)
+                .map_or(lc_ssh::PORT, |s| s.port);
+            let session = super::ssh::connect(machine, port, password, note)?;
+            Ok((Box::new(session), None))
+        }
         ServiceKind::Nfs => bail!("NFS arrives in phase 5"),
         ServiceKind::Telnet | ServiceKind::Rexec => {
             bail!("{} is a command service, not a file service", kind.label())

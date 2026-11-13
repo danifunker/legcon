@@ -21,6 +21,7 @@ use crate::model::transfer::{self, Direction, Pick, Summary};
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
 use crate::model::session::Sessions;
+use crate::model::ssh::{take_note, KeyNote, KeySlot};
 pub use crate::model::term::{TermRun, TermScreen, DEFAULT_BG, DEFAULT_FG};
 
 /// The smallest share either area can be dragged down to.
@@ -119,6 +120,8 @@ pub enum Action {
     Copy(Side, Vec<String>),
     /// The answer to "these already exist": Overwrite, Skip existing, Cancel.
     CopyConflict(usize),
+    /// The answer to "host key changed": accept for good, accept once, cancel.
+    HostKeyAnswered(usize),
     CancelTransfers,
     NewFolder(Side),
     NewFolderAnswered(Option<String>),
@@ -270,6 +273,11 @@ pub struct ConnectionController {
     session_password: Option<String>,
     /// The password being asked for is for the shell, not the file connection.
     asking_for_shell: bool,
+    /// What the shell's SSH connect found out about the host key.
+    shell_key_note: KeySlot,
+    /// A changed host key waiting for the user: the new key, and whether the shell met it.
+    key_question: Option<(String, bool)>,
+    host_key_changed: bool,
     shell: Option<TermSession>,
     shell_open: Option<Job<TermSession>>,
     shell_close: Option<Job<()>>,
@@ -318,6 +326,9 @@ impl ConnectionController {
             disconnect_job: None,
             session_password: None,
             asking_for_shell: false,
+            shell_key_note: KeySlot::default(),
+            key_question: None,
+            host_key_changed: false,
             shell: None,
             shell_open: None,
             shell_close: None,
@@ -352,6 +363,74 @@ impl ConnectionController {
     /// The layout once, after the user changed it, for the app to save.
     pub(crate) fn take_layout_change(&mut self) -> Option<Layout> {
         std::mem::take(&mut self.layout_changed).then(|| self.layout.clone())
+    }
+
+    /// A host key learned or accepted, once, for the machine store.
+    pub(crate) fn take_host_key_change(&mut self) -> Option<String> {
+        std::mem::take(&mut self.host_key_changed)
+            .then(|| self.machine.host_key.clone())
+            .flatten()
+    }
+
+    /// Act on what an SSH connect found out about the host key; a question if it changed.
+    fn key_note(&mut self, note: Option<KeyNote>, for_shell: bool) -> Option<Effect> {
+        match note? {
+            KeyNote::Learned(line) => {
+                self.machine.host_key = Some(line);
+                self.host_key_changed = true;
+                None
+            }
+            KeyNote::Changed { line, md5, sha256 } => {
+                let algorithm = line.split(' ').next().unwrap_or("").to_string();
+                self.key_question = Some((line, for_shell));
+                Some(Effect::Choose(super::ChoiceSpec {
+                    purpose: "conn.hostkey",
+                    title: "Host key changed".into(),
+                    message: format!(
+                        "{} ({}) shows a different SSH host key than last time.\n\n\
+                         New key: {algorithm}\nMD5: {md5}\nSHA-256:\n{}\n\n\
+                         This is expected after the machine was reinstalled. If it was not, \
+                         someone may be pretending to be it. Nothing has been sent yet.",
+                        self.machine.name,
+                        self.machine.address,
+                        sha256.trim_start_matches("SHA256:")
+                    ),
+                    choices: vec![
+                        "Accept the new key".into(),
+                        "Accept once".into(),
+                        "Cancel".into(),
+                    ],
+                    dismiss: 2,
+                }))
+            }
+        }
+    }
+
+    /// Reconnect after a changed host key was accepted, for good or for this connection only.
+    fn host_key_answered(&mut self, choice: usize) {
+        let Some((line, for_shell)) = self.key_question.take() else {
+            return;
+        };
+        if choice > 1 {
+            return;
+        }
+        let old = self.machine.host_key.replace(line);
+        if choice == 0 {
+            self.host_key_changed = true;
+        }
+        let password = match &self.machine.password {
+            Password::Saved(p) => Some(p.clone()),
+            Password::Ask => self.session_password.clone(),
+        };
+        if for_shell {
+            self.open_shell(password);
+        } else {
+            self.connect(password);
+        }
+        if choice == 1 {
+            // The job took its own copy of the machine; the stored key stays as it was.
+            self.machine.host_key = old;
+        }
     }
 
     /// A place the user left home to, once, for the app's recent list.
@@ -506,6 +585,7 @@ impl ConnectionController {
             password,
             cols,
             rows,
+            Arc::clone(&self.shell_key_note),
             Arc::clone(&self.notify),
         ));
     }
@@ -1306,6 +1386,7 @@ impl Controller for ConnectionController {
                 }
             }
             Action::Copy(from, names) => return self.copy(from, names),
+            Action::HostKeyAnswered(choice) => self.host_key_answered(choice),
             Action::CopyConflict(choice) => match self.pending.take() {
                 Some(Pending::Copy(dir, groups)) if choice < 2 => {
                     for g in groups {
@@ -1449,11 +1530,16 @@ impl Controller for ConnectionController {
         }
         if let Some(r) = self.connect_job.as_ref().and_then(job_outcome) {
             self.connect_job = None;
+            let note = self.sessions.take_key_note(&self.machine.id);
+            let asked = self.key_note(note, false);
+            let changed = asked.is_some();
+            out.extend(asked);
             match r {
                 Ok(home) => {
                     self.remote_home = Some(home.clone());
                     self.go_remote(home);
                 }
+                Err(e) if changed => self.remote_error = Some(format!("Could not connect: {e}")),
                 Err(e) => {
                     self.remote_error = Some(format!("Could not connect: {e}"));
                     out.push(Effect::Message(format!(
@@ -1528,6 +1614,8 @@ impl Controller for ConnectionController {
         }
         if let Some(r) = self.shell_open.as_ref().and_then(job_outcome) {
             self.shell_open = None;
+            let note = take_note(&self.shell_key_note);
+            out.extend(self.key_note(note, true));
             match r {
                 Ok(s) => self.shell = Some(s),
                 Err(e) => self.shell_error = Some(format!("Could not open a shell: {e}")),
@@ -1607,6 +1695,33 @@ mod tests {
             port: 0,
         });
         ConnectionController::new(m, home, Vec::new(), Sessions::new(), Arc::new(NoNotify))
+    }
+
+    #[test]
+    fn host_keys_are_learned_and_a_change_is_asked_about() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        assert!(c
+            .key_note(Some(KeyNote::Learned("ssh-dss AAAA".into())), false)
+            .is_none());
+        assert_eq!(c.take_host_key_change().as_deref(), Some("ssh-dss AAAA"));
+        let changed = || KeyNote::Changed {
+            line: "ssh-dss BBBB".into(),
+            md5: "ab:cd".into(),
+            sha256: "SHA256:xyz".into(),
+        };
+        let e = c.key_note(Some(changed()), false).unwrap();
+        assert!(
+            matches!(&e, Effect::Choose(s) if s.purpose == "conn.hostkey" && s.message.contains("xyz"))
+        );
+        c.apply(Action::HostKeyAnswered(1));
+        assert_eq!(c.machine.host_key.as_deref(), Some("ssh-dss AAAA"));
+        assert_eq!(c.take_host_key_change(), None);
+        settle(&mut c);
+        c.key_note(Some(changed()), false);
+        c.apply(Action::HostKeyAnswered(0));
+        assert_eq!(c.take_host_key_change().as_deref(), Some("ssh-dss BBBB"));
+        settle(&mut c);
     }
 
     fn settle(c: &mut ConnectionController) {

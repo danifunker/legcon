@@ -8,6 +8,7 @@ pub mod machines;
 pub mod rate_tracker;
 pub mod session;
 pub mod settings;
+pub mod ssh;
 pub mod term;
 pub mod transfer;
 pub mod worker;

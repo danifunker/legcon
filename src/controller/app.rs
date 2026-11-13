@@ -192,6 +192,11 @@ impl AppController {
         let id = tab.machine_id().to_string();
         let layout = tab.take_layout_change();
         let left = tab.take_left_home();
+        if let Some(k) = tab.take_host_key_change() {
+            if let Err(e) = self.machines.set_host_key(&id, k) {
+                out.push(Effect::Message(e));
+            }
+        }
         if let Some(l) = layout {
             if let Err(e) = self.machines.set_layout(&id, l) {
                 out.push(Effect::Message(e));

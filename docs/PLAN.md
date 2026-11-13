@@ -341,7 +341,7 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D29 | **Telnet and FTP are our own code**, not wrappers (decided in phase 1, 2026-11-13). Telnet's option engine is small and needs exactly legcon's policy; suppaftp decodes listings with `from_utf8_lossy` and sends paths as UTF-8, which mangles the Latin-1 / MacRoman names 1990s servers use. Both crates depend only on `lc-core`. |
 | D30 | **Every machine has a tab colour** (a palette of nine, assigned in turn, changed from the tab's right-click menu): its tab is tinted with it and its header carries a strip of it. |
 | D31 | **Mac resource forks: AppleDouble by default, MacBinary as an option** (per transfer or per machine; decided 2026-11-13). NTFS streams are not offered for now. The code is reused from rusty-backup: `fs-mac` (MIT: `build_appledouble`, `parse_appledouble`, `build_macbinary`) and `arc-mac` (reading MacBinary, BinHex and StuffIt), taken from crates.io as rusty-backup publishes them. |
-| D19 | **SSH is libssh2** through the `ssh2` crate, built with a vendored OpenSSL with the legacy algorithms on, because the target is SSH servers from 2005 and earlier (§4.1). |
+| D19 | **SSH is libssh2** through the `ssh2` crate, because the target is SSH servers from 2005 and earlier (§4.1). Revised in phase 4 (2026-11-13): on Windows libssh2 uses its WinCNG backend (no OpenSSL to build); its pre-2005 algorithms (`diffie-hellman-group1-sha1`, `group14-sha1`, `gex-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`, `arcfour`, `hmac-md5`, `hmac-sha1`) are compile-time opt-ins, switched on in `.cargo/config.toml`; Blowfish and CAST are not available with WinCNG. libssh2 prefers modern algorithms, so the old ones are used only when the server offers nothing newer. **SFTP v3 is our own code** over an ssh2 channel: ssh2's SFTP turns names into `Path`s, which must be UTF-8 on Windows. Host keys are kept per machine (`host_key`), learned on first connect; a changed key asks Accept / Accept once / Cancel before any password is sent. |
 | D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
 
 ## 3. The core traits (`lc-core`)
@@ -600,6 +600,8 @@ Windows NT machine** (NT LM 0.12, user-level, NTLM; 2026-11-13): shares, listing
 write, mkdir, rename, delete and log-off all work, as does browsing it over anonymous FTP (IIS). Not yet: SMB2 (for
 Vista-era and newer Samba setups that turned SMB1 off), workgroup browsing, the CP437 / CP850
 tables that Windows 9x share names really use, and a real Windows 95 / NT 4 / Samba machine.
+
+**Phase 4 progress (2026-11-13):** `lc-rcmd` with rexec (stderr port 0, so nothing connects back), and a line-mode terminal in the Shell tab for exec-only services (local line editing, `cd` remembered, `exit`). `lc-ssh`: libssh2 transport with the legacy algorithms, password and keyboard-interactive login, own SFTP v3 (list, read, write, resume, mkdir, rename, delete, links followed), shell with pty and resize, exec with exit status, the Console tab running shell commands in the pane's folder, host-key check with the change dialog. Tested against a pretend OpenSSH 2.9 (paramiko offering only group1-sha1, ssh-dss, 3des-cbc, hmac-md5) from the CLI and the Win32 shell. Not yet: public-key login and the key manager (§5.1), SCP and `ls`-over-exec for servers without SFTP, SSH-1, the weak-algorithm opt-in per machine (old algorithms are always offered after the modern ones; the log says when one was used), and a real pre-2005 SSH server.
 
 ## 10. Risks
 
