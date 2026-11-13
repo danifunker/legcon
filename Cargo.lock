@@ -420,6 +420,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lc-rcmd"
+version = "0.1.0"
+dependencies = [
+ "lc-core",
+]
+
+[[package]]
 name = "lc-smb"
 version = "0.1.0"
 dependencies = [
@@ -448,6 +455,7 @@ dependencies = [
  "dirs",
  "lc-core",
  "lc-ftp",
+ "lc-rcmd",
  "lc-smb",
  "lc-telnet",
  "log",

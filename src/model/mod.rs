@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod job;
+pub mod line_term;
 pub mod local;
 pub mod machines;
 pub mod rate_tracker;

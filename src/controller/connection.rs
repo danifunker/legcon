@@ -268,6 +268,8 @@ pub struct ConnectionController {
     list_job: Option<Job<Vec<Entry>>>,
     disconnect_job: Option<Job<()>>,
     session_password: Option<String>,
+    /// The password being asked for is for the shell, not the file connection.
+    asking_for_shell: bool,
     shell: Option<TermSession>,
     shell_open: Option<Job<TermSession>>,
     shell_close: Option<Job<()>>,
@@ -315,6 +317,7 @@ impl ConnectionController {
             list_job: None,
             disconnect_job: None,
             session_password: None,
+            asking_for_shell: false,
             shell: None,
             shell_open: None,
             shell_close: None,
@@ -476,18 +479,47 @@ impl ConnectionController {
         }
     }
 
-    fn shell_connect(&mut self) {
+    fn shell_connect(&mut self) -> Vec<Effect> {
         if !self.can_shell_connect() {
-            return;
+            return Vec::new();
         }
+        // Telnet logs in on the screen; the others need the password up front.
+        let needs_password =
+            self.machine.command_service().map(|s| s.kind) != Some(ServiceKind::Telnet);
+        let password = match (&self.machine.password, &self.session_password) {
+            (Password::Saved(p), _) | (Password::Ask, Some(p)) => Some(p.clone()),
+            (Password::Ask, None) if needs_password => {
+                self.asking_for_shell = true;
+                return vec![self.ask_password()];
+            }
+            (Password::Ask, None) => None,
+        };
+        self.open_shell(password);
+        Vec::new()
+    }
+
+    fn open_shell(&mut self, password: Option<String>) {
         self.shell_error = None;
         let (cols, rows) = self.shell_size;
         self.shell_open = Some(TermSession::open(
             &self.machine,
+            password,
             cols,
             rows,
             Arc::clone(&self.notify),
         ));
+    }
+
+    fn ask_password(&self) -> Effect {
+        let user = if self.machine.user.is_empty() {
+            "anonymous"
+        } else {
+            &self.machine.user
+        };
+        Effect::AskPassword(PasswordSpec {
+            purpose: "conn.password",
+            prompt: format!("Password for {user}@{}:", self.machine.address),
+        })
     }
 
     /// Close the shell (logout command first); also used when the tab closes.
@@ -1200,18 +1232,8 @@ impl Controller for ConnectionController {
                     (Password::Saved(p), _) => self.connect(Some(p.clone())),
                     (Password::Ask, Some(p)) => self.connect(Some(p.clone())),
                     (Password::Ask, None) if needs_password => {
-                        return vec![Effect::AskPassword(PasswordSpec {
-                            purpose: "conn.password",
-                            prompt: format!(
-                                "Password for {}@{}:",
-                                if self.machine.user.is_empty() {
-                                    "anonymous"
-                                } else {
-                                    &self.machine.user
-                                },
-                                self.machine.address
-                            ),
-                        })];
+                        self.asking_for_shell = false;
+                        return vec![self.ask_password()];
                     }
                     (Password::Ask, None) => self.connect(None),
                 }
@@ -1220,7 +1242,11 @@ impl Controller for ConnectionController {
             Action::PasswordAnswered(Some(p)) => {
                 // Kept for this tab only, so a reconnect does not ask again.
                 self.session_password = Some(p.clone());
-                self.connect(Some(p));
+                if std::mem::take(&mut self.asking_for_shell) {
+                    self.open_shell(Some(p));
+                } else {
+                    self.connect(Some(p));
+                }
             }
             Action::Disconnect => {
                 self.begin_disconnect();
@@ -1248,7 +1274,7 @@ impl Controller for ConnectionController {
             Action::Refresh(Side::Remote) => self.list_remote(),
             Action::ShellConnect => {
                 self.term = TermTab::Shell;
-                self.shell_connect();
+                return self.shell_connect();
             }
             Action::ShellDisconnect => {
                 self.begin_shell_close();

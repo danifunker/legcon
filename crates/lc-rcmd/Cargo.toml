@@ -1,0 +1,10 @@
+[package]
+name = "lc-rcmd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "BSD r-commands for legcon: rexec now; rsh, rlogin and rcp later"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }

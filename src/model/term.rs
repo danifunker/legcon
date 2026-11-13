@@ -2,7 +2,7 @@
 //!
 //! A reader job pulls bytes off the pty, decodes them with the machine's character set and feeds
 //! the screen, waking the view after each chunk. The view draws from [`TermSession::screen`],
-//! a plain snapshot of runs of same-coloured text. Only Telnet opens a pty so far.
+//! a plain snapshot of runs of same-coloured text. Telnet opens a real pty; rexec gets a line-mode one ([`line_term`]).
 
 use std::io::{ErrorKind, Read};
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,7 @@ use anyhow::{anyhow, bail};
 use lc_core::{Charset, ConnState, PtyWriter};
 
 use super::job::{Job, Notify};
+use super::line_term;
 use super::machines::{Machine, ServiceKind};
 use super::worker::lock_status;
 
@@ -145,6 +146,7 @@ impl TermSession {
     /// Open the machine's command service in a job; the result is the running session.
     pub fn open(
         machine: &Machine,
+        password: Option<String>,
         cols: u16,
         rows: u16,
         notify: Arc<dyn Notify>,
@@ -170,7 +172,25 @@ impl TermSession {
                     lc_telnet::connect(&machine.address, service.port, &opts)?
                 }
                 ServiceKind::Ssh => bail!("SSH shells arrive in phase 4"),
-                ServiceKind::Rexec => bail!("rexec runs single commands; it has no terminal"),
+                ServiceKind::Rexec => {
+                    let cs = Charset::from_label(&machine.charset).unwrap_or_default();
+                    let enc = |t: &str| cs.encode(t).unwrap_or_else(|| t.as_bytes().to_vec());
+                    let (user, pw) = (enc(&machine.user), enc(&password.unwrap_or_default()));
+                    let r = lc_rcmd::Rexec::connect(
+                        &machine.address,
+                        service.port,
+                        &user,
+                        &pw,
+                        &lc_rcmd::Options::default(),
+                    )?;
+                    let runner: line_term::Runner =
+                        Arc::new(move |cmd: &[u8]| r.run(cmd).map_err(Into::into));
+                    let banner = format!(
+                        "rexec to {}: each line runs as its own command. cd is remembered; exit ends.",
+                        machine.address
+                    );
+                    line_term::open(&machine.name, &banner, runner, Arc::clone(&notify))
+                }
                 other => bail!("{} is not a command service", other.label()),
             };
             let charset = Charset::from_label(&machine.charset).unwrap_or_default();
