@@ -591,6 +591,14 @@ the Transfers tab with Cancel), New folder / Rename / Delete on either side, and
 MacOS `LIST` parsers, the CP437 / CP850 tables, and trying both protocols against real 1990s
 servers (the lab).
 
+**Phase 3 progress (2026-11-13):** `lc-smb` (own SMB1 client: NetBIOS session with the
+`*SMBSERVER` / real-name retry, LANMAN1.0 to NT LM 0.12, share- and user-level logins with LM /
+NTLM and an NTLMv2 fallback, RAP share list, TRANS2 listings, read / write / folders / rename /
+delete, TREE_DISCONNECT + LOGOFF) is in the remote pane, tested against pretend NT 4 and
+Windows 95 servers and shown in the Win32 shell against the Windows 95 one. Not yet: SMB2 (for
+Vista-era and newer Samba setups that turned SMB1 off), workgroup browsing, the CP437 / CP850
+tables that Windows 9x share names really use, and a real Windows 95 / NT 4 / Samba machine.
+
 ## 10. Risks
 
 | Risk | Mitigation |

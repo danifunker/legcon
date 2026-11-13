@@ -19,8 +19,9 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG, NMHDR,
-    NMTREEVIEWW, NM_DBLCLK, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
+    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG,
+    LVN_ITEMACTIVATE, NMHDR, NMTREEVIEWW, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
+    TVN_SELCHANGEDW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
@@ -1499,7 +1500,7 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
         } else {
             Side::Remote
         });
-    } else if hdr.code == NM_DBLCLK {
+    } else if hdr.code == LVN_ITEMACTIVATE {
         if from == m_list {
             if let Some(id) = selected_machine() {
                 dispatch(app::Action::OpenMachine(id));
