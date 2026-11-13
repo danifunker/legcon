@@ -268,25 +268,6 @@ fn domain_name(b: &[u8], cs: Charset) -> String {
     cs.decode(wire::cstr(b, 0).0)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn domain_names_in_either_form() {
-        let utf16: Vec<u8> = "WORKGROUP\0"
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect();
-        assert_eq!(
-            super::domain_name(&utf16, lc_core::Charset::Latin1),
-            "WORKGROUP"
-        );
-        assert_eq!(
-            super::domain_name(b"LANGROUP\0", lc_core::Charset::Latin1),
-            "LANGROUP"
-        );
-    }
-}
-
 /// The server said there is nothing (more) to list.
 fn no_more_files(m: &Message) -> bool {
     m.status == 0x8000_0006 || m.status == (1 | (18 << 16))
@@ -947,5 +928,24 @@ impl FileSession for SmbSession {
             return Err(r.error(&format!("rename {from}")));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn domain_names_in_either_form() {
+        let utf16: Vec<u8> = "WORKGROUP\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            super::domain_name(&utf16, lc_core::Charset::Latin1),
+            "WORKGROUP"
+        );
+        assert_eq!(
+            super::domain_name(b"LANGROUP\0", lc_core::Charset::Latin1),
+            "LANGROUP"
+        );
     }
 }
