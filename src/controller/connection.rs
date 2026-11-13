@@ -379,6 +379,11 @@ impl ConnectionController {
             .unwrap_or_else(|| "Connect".into())
     }
 
+    /// The terminal size the controller last heard from the view, in cells.
+    pub fn shell_size(&self) -> (u16, u16) {
+        self.shell_size
+    }
+
     /// The live terminal, once a shell is open (and after it ended, until the next one).
     pub fn shell_screen(&self) -> Option<TermScreen> {
         self.shell.as_ref().map(TermSession::screen)

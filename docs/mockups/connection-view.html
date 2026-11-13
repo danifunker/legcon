@@ -160,9 +160,9 @@
 
   <div class="ctabs">
     <span class="ctab home" onclick="showTab('machines')" id="t-machines">Machines</span>
-    <span class="ctab on" onclick="showTab('sparc')" id="t-sparc"><span class="dot ok"></span>sparc <small>FTP</small><span class="x" title="Disconnect sparc and close">&#10005;</span></span>
-    <span class="ctab" onclick="showTab('sparc')"><span class="dot busy"></span>win95 <small>SMB</small><span class="x">&#10005;</span></span>
-    <span class="ctab" onclick="showTab('sparc')"><span class="dot ok"></span>indy <small>SSH</small><span class="x">&#10005;</span></span>
+    <span class="ctab on" style="background:#f6d6d7;border-top:4px solid #d13438" onclick="showTab('sparc')" id="t-sparc"><span class="dot ok"></span>sparc <small>FTP</small><span class="x" title="Disconnect sparc and close">&#10005;</span></span>
+    <span class="ctab" style="background:#fceee3;border-top:4px solid #e8741c" onclick="showTab('sparc')"><span class="dot busy"></span>win95 <small>SMB</small><span class="x">&#10005;</span></span>
+    <span class="ctab" style="background:#e1f0f0;border-top:4px solid #038387" onclick="showTab('sparc')"><span class="dot ok"></span>indy <small>SSH</small><span class="x">&#10005;</span></span>
     <span class="ctab home" title="Connect to a machine">+</span>
     <span class="spacer"></span>
   </div>
@@ -181,7 +181,7 @@
 
   <!-- CONNECTION VIEW -->
   <div class="view" id="view">
-    <div class="mhead">
+    <div class="mhead" style="border-left:5px solid #d13438">
       <span class="name">sparc</span><span style="color:var(--muted)">SunOS 5.8, 192.168.1.40</span>
       <span class="svc"><span class="dot ok"></span>Files: FTP <small>wu-ftpd 2.6.1</small> <button class="btn sm">Disconnect</button></span>
       <span class="svc"><span class="dot off"></span>Commands: Telnet <small>not connected</small> <button class="btn sm primary">Connect</button></span>
@@ -359,7 +359,7 @@
 </div>
 
 <ul class="callouts">
-  <li><b>Tabs are connections.</b> The x logs off cleanly and closes the tab (asks first if something is running). Machines lists everything saved, with Disconnect all.</li>
+  <li><b>Tabs are connections, colour-coded per machine</b> (right-click a tab to change its colour). The x logs off cleanly and closes the tab (asks first if something is running). Machines lists everything saved, with Disconnect all.</li>
   <li><b>Machine header</b>: the file service and the command service connect separately, each with its own button. Here Telnet is not connected yet.</li>
   <li><b>Local pane</b>: tree with +/- rooted at the home folder. <b>Leave home...</b> asks for a path (type it or Browse...); <b>Home</b> comes back; <b>Media</b> lists removable drives attached now.</li>
   <li><b>Two areas, one splitter</b>: drag the bar to change the heights. <b>Swap</b> in the machine header puts the terminal on top. Both are remembered per machine.</li>

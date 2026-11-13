@@ -11,8 +11,11 @@ pub const MACHINES_REMOVE: &str = "machines.remove";
 pub const MACHINES_DISCONNECT_ALL: &str = "machines.disconnect_all";
 
 pub const CONN_HEADER: &str = "conn.header";
-pub const CONN_CONNECT: &str = "conn.connect";
-pub const CONN_DISCONNECT: &str = "conn.disconnect";
+/// The files chip's Connect / Disconnect.
+pub const CONN_FILES: &str = "conn.files";
+/// The commands chip's Connect / Disconnect.
+pub const CONN_COMMANDS: &str = "conn.commands";
+pub const CONN_CLOSE: &str = "conn.close_tab";
 pub const CONN_SWAP: &str = "conn.swap";
 pub const CONN_SPLITTER: &str = "conn.splitter";
 
@@ -31,3 +34,4 @@ pub const REMOTE_LIST: &str = "remote.list";
 
 pub const TERM_TABS: &str = "term.tabs";
 pub const TERM_BODY: &str = "term.body";
+pub const TERM_CONNECT: &str = "term.connect";

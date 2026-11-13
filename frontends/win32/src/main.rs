@@ -10,6 +10,14 @@ mod controls;
 #[cfg(windows)]
 mod effects;
 #[cfg(windows)]
+mod header;
+#[cfg(windows)]
+mod icons;
+#[cfg(windows)]
+mod paint;
+#[cfg(windows)]
+mod term_view;
+#[cfg(windows)]
 mod ui;
 #[cfg(windows)]
 mod wake;
