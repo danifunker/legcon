@@ -607,12 +607,7 @@ fn refresh() {
             .map(|l| &l.title)
             .ne(s.drawn.tabs.iter().map(|l| &l.title))
         {
-            // Padding leaves room for the state light and the close box the strip paints.
-            let labels: Vec<String> = looks
-                .iter()
-                .enumerate()
-                .map(|(_, l)| l.title.clone())
-                .collect();
+            let labels: Vec<String> = looks.iter().map(|l| l.title.clone()).collect();
             controls::set_tabs(s.w.tabs, &labels);
         }
         if looks != s.drawn.tabs {
