@@ -339,7 +339,9 @@ name = "legcon-win32"
 version = "0.1.0"
 dependencies = [
  "legcon",
+ "log",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

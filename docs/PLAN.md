@@ -277,6 +277,38 @@ about it at shutdown, and many old servers hold a session slot until they time o
 - **Connections are never opened behind the user's back.** A disconnected machine's tab shows a
   Connect button, not a silent reconnect.
 
+### 1.5 Drag and drop
+
+- **In (built):** files and folders dragged from Explorer (any OLE source offering `CF_HDROP`) onto
+  either pane: onto the machine's pane they are uploaded, onto the local pane copied into its
+  folder, with the same Overwrite / Skip existing / Cancel question as a copy. Rows dragged from
+  one pane to the other copy the same way.
+- **Out (next):** rows dragged from the machine's pane to Explorer, as **virtual files**
+  (`CFSTR_FILEDESCRIPTORW` + `CFSTR_FILECONTENTS`): Explorer pulls each file's bytes from legcon
+  as it copies, so nothing is downloaded before the drop and no temporary copy is left behind.
+  Local rows drag out as plain files. Folders are listed in the descriptor with their contents.
+
+### 1.6 Mac resource forks off macOS (proposal, O11)
+
+Windows and Linux have no resource forks, so a classic Mac file's fork and Finder info (type,
+creator, flags) must be kept some other way when it lands on this computer:
+
+- **AppleDouble** (the default proposed): the data fork as the file, the resource fork and Finder
+  info in a `._name` sidecar. macOS, netatalk and rusty-backup's `arc-mac` all read it, and
+  copying the pair back to a Mac server restores the file.
+- **MacBinary** (per transfer or per machine): one `.bin` file carrying both forks, safest for
+  moving through tools that would lose a sidecar.
+- **NTFS alternate data streams** (optional, Windows only): the fork in `name:AFP_Resource` and
+  Finder info in `name:AFP_AfpInfo`, the layout Windows NT's Services for Macintosh used. Lost on
+  FAT, ZIP and most copies, so never the default.
+
+Where the forks come from on the remote side: AFP has them natively (phase 8); NFS and SMB
+servers running netatalk or A/UX keep them as AppleDouble files (`._name` or `.AppleDouble/name`);
+NT 4 SMB shares with Services for Macintosh keep them in the `AFP_Resource` stream; Mac FTP
+servers (NetPresenz, AppleShare IP) can send MacBinary on request. legcon recognises each layout,
+converts to the chosen local form, and converts back on upload. The fork code is rusty-backup's
+`arc-mac` crate.
+
 ## 2. Decisions so far
 
 | # | Decision |
@@ -574,6 +606,7 @@ servers (the lab).
 |---|---|---|
 | O9 | Model-suggested commands (a later extra): wanted at all, and if so local-only or a service? | Not before 1.0; decide then |
 | O10 | A master password that encrypts the saved passwords in the machines file | After phase 1; the file format leaves room for it (`password` holds a tagged value: `b64:` now, `enc:` later, `os:` for the credential store) |
+| O11 | How Mac resource forks are kept on this computer (§1.6) | AppleDouble by default, MacBinary and NTFS streams as choices |
 | O6 | Name | `legcon` / `lc` as a working name |
 
 ## 12. Next: GUI mockups and layouts

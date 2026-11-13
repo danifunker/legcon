@@ -128,6 +128,8 @@ pub enum Action {
     DeleteConfirmed(bool),
     /// A line typed into the Console tab, sent as the protocol's own command.
     ConsoleSend(String),
+    /// Files or folders dropped from the OS (or another program) onto a pane.
+    Drop(Side, Vec<PathBuf>),
 }
 
 /// A name for a new or renamed file or folder: not empty, no path separators, nothing Windows refuses.
@@ -156,9 +158,18 @@ struct Batch {
     to: Side,
 }
 
+/// Picks that share one local folder (a pane's, or the folder files were dropped from).
+struct Group {
+    local_dir: PathBuf,
+    picks: Vec<Pick>,
+    sizes: Vec<Option<u64>>,
+}
+
 /// What a pending question is about.
 enum Pending {
-    Copy(Direction, Vec<Pick>, Vec<Option<u64>>),
+    Copy(Direction, Vec<Group>),
+    /// Files dropped from the OS onto the local pane, to copy into its folder.
+    Import(Vec<PathBuf>),
     NewFolder(Side),
     Rename(Side, String),
     Delete(Side, Vec<Pick>),
@@ -736,15 +747,13 @@ impl ConnectionController {
         (picks, sizes)
     }
 
-    fn start_copy(
-        &mut self,
-        dir: Direction,
-        picks: Vec<Pick>,
-        sizes: Vec<Option<u64>>,
-        overwrite: bool,
-    ) {
-        let (Some(remote_dir), local_dir) = (self.remote_dir.clone(), self.local_dir.clone())
-        else {
+    fn start_copy(&mut self, dir: Direction, g: Group, overwrite: bool) {
+        let Group {
+            local_dir,
+            picks,
+            sizes,
+        } = g;
+        let Some(remote_dir) = self.remote_dir.clone() else {
             return;
         };
         let what = if picks.len() == 1 {
@@ -817,29 +826,143 @@ impl ConnectionController {
             })
             .map(|p| p.name.as_str())
             .collect();
+        let group = Group {
+            local_dir: self.local_dir.clone(),
+            picks: picks.clone(),
+            sizes,
+        };
         if clashes.is_empty() {
-            self.start_copy(dir, picks, sizes, true);
+            self.start_copy(dir, group, true);
             return Vec::new();
         }
-        let message = if clashes.len() == 1 {
-            format!("{} already exists there.", clashes[0])
-        } else {
-            format!(
-                "{} of these already exist there, such as {}.",
-                clashes.len(),
-                clashes[0]
-            )
-        };
-        self.pending = Some(Pending::Copy(dir, picks, sizes));
-        vec![Effect::Choose(super::ChoiceSpec {
-            purpose: "conn.copy.conflict",
-            title: "Copy".into(),
-            message,
-            choices: vec!["Overwrite".into(), "Skip existing".into(), "Cancel".into()],
-            dismiss: 2,
-        })]
+        self.pending = Some(Pending::Copy(dir, vec![group]));
+        conflict_question(&clashes)
     }
 
+    /// Files dropped onto a pane: uploaded to the machine, or copied into the local folder.
+    fn drop_files(&mut self, side: Side, paths: Vec<PathBuf>) -> Vec<Effect> {
+        let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+        if paths.is_empty() {
+            return Vec::new();
+        }
+        let name = |p: &PathBuf| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        match side {
+            Side::Local => {
+                // Dropping files onto the folder they are already in does nothing.
+                let paths: Vec<PathBuf> = paths
+                    .into_iter()
+                    .filter(|p| p.parent() != Some(self.local_dir.as_path()))
+                    .collect();
+                let clashes: Vec<String> = paths
+                    .iter()
+                    .map(name)
+                    .filter(|n| self.local_dir.join(n).exists())
+                    .collect();
+                if clashes.is_empty() {
+                    self.start_import(paths, true);
+                    return Vec::new();
+                }
+                self.pending = Some(Pending::Import(paths));
+                conflict_question(&clashes.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+            Side::Remote => {
+                if !self.can_disconnect() || self.remote_dir.is_none() {
+                    return vec![Effect::Message(format!(
+                        "Connect to {} first.",
+                        self.machine.name
+                    ))];
+                }
+                let mut groups: Vec<Group> = Vec::new();
+                for p in &paths {
+                    let parent = p.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let pick = Pick {
+                        name: name(p),
+                        is_dir: p.is_dir(),
+                    };
+                    let size = std::fs::metadata(p)
+                        .ok()
+                        .filter(|m| m.is_file())
+                        .map(|m| m.len());
+                    match groups.iter_mut().find(|g| g.local_dir == parent) {
+                        Some(g) => {
+                            g.picks.push(pick);
+                            g.sizes.push(size);
+                        }
+                        None => groups.push(Group {
+                            local_dir: parent,
+                            picks: vec![pick],
+                            sizes: vec![size],
+                        }),
+                    }
+                }
+                let clashes: Vec<String> = paths
+                    .iter()
+                    .map(name)
+                    .filter(|n| self.remote_rows.iter().any(|e| &e.name == n))
+                    .collect();
+                if clashes.is_empty() {
+                    for g in groups {
+                        self.start_copy(Direction::Upload, g, true);
+                    }
+                    return Vec::new();
+                }
+                self.pending = Some(Pending::Copy(Direction::Upload, groups));
+                conflict_question(&clashes.iter().map(String::as_str).collect::<Vec<_>>())
+            }
+        }
+    }
+
+    fn start_import(&mut self, paths: Vec<PathBuf>, overwrite: bool) {
+        let dest = self.local_dir.clone();
+        let what = if paths.len() == 1 {
+            paths[0]
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        } else {
+            format!("{} items", paths.len())
+        };
+        let label = format!("Copy {what} into {}", dest.display());
+        let job = Job::spawn(label.clone(), Arc::clone(&self.notify), move |ctx| {
+            crate::model::local::copy_into(&paths, &dest, overwrite, ctx)
+        });
+        self.batches.push(Batch {
+            label,
+            job,
+            result: None,
+            to: Side::Local,
+        });
+        if self.shell_state() != ConnState::Connected {
+            self.term = TermTab::Transfers;
+        }
+    }
+}
+
+/// "These already exist": Overwrite, Skip existing, Cancel.
+fn conflict_question(clashes: &[&str]) -> Vec<Effect> {
+    let message = if clashes.len() == 1 {
+        format!("{} already exists there.", clashes[0])
+    } else {
+        format!(
+            "{} of these already exist there, such as {}.",
+            clashes.len(),
+            clashes[0]
+        )
+    };
+    vec![Effect::Choose(super::ChoiceSpec {
+        purpose: "conn.copy.conflict",
+        title: "Copy".into(),
+        message,
+        choices: vec!["Overwrite".into(), "Skip existing".into(), "Cancel".into()],
+        dismiss: 2,
+    })]
+}
+
+impl ConnectionController {
     fn run_op(
         &mut self,
         side: Side,
@@ -1157,13 +1280,16 @@ impl Controller for ConnectionController {
                 }
             }
             Action::Copy(from, names) => return self.copy(from, names),
-            Action::CopyConflict(choice) => {
-                if let Some(Pending::Copy(dir, picks, sizes)) = self.pending.take() {
-                    if choice < 2 {
-                        self.start_copy(dir, picks, sizes, choice == 0);
+            Action::CopyConflict(choice) => match self.pending.take() {
+                Some(Pending::Copy(dir, groups)) if choice < 2 => {
+                    for g in groups {
+                        self.start_copy(dir, g, choice == 0);
                     }
                 }
-            }
+                Some(Pending::Import(paths)) if choice < 2 => self.start_import(paths, choice == 0),
+                _ => {}
+            },
+            Action::Drop(side, paths) => return self.drop_files(side, paths),
             Action::CancelTransfers => {
                 for b in self.batches.iter().filter(|b| b.result.is_none()) {
                     b.job.cancel();
@@ -1607,6 +1733,53 @@ mod tests {
         settle(&mut c);
         assert!(c.console.last().unwrap().contains("no command console"));
         assert_eq!(valid_name("a/b"), Err("A name cannot contain '/'.".into()));
+    }
+
+    #[test]
+    fn files_dropped_from_the_os_upload_or_land_in_the_local_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("readme.1st"), b"read me").unwrap();
+        std::fs::create_dir(outside.path().join("disks")).unwrap();
+        std::fs::write(outside.path().join("disks/boot.img"), vec![0u8; 1440]).unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        // Onto the machine: uploaded, folder and all.
+        let dropped = vec![
+            outside.path().join("readme.1st"),
+            outside.path().join("disks"),
+        ];
+        assert!(c
+            .apply(Action::Drop(Side::Remote, dropped.clone()))
+            .is_empty());
+        settle(&mut c);
+        let names: Vec<String> = c.remote_rows().into_iter().map(|r| r.name).collect();
+        assert!(
+            names.contains(&"readme.1st".to_string()) && names.contains(&"disks".to_string()),
+            "{names:?}"
+        );
+        // Onto the local pane: copied into the home folder.
+        assert!(c
+            .apply(Action::Drop(Side::Local, dropped.clone()))
+            .is_empty());
+        settle(&mut c);
+        assert_eq!(
+            std::fs::read(home.path().join("disks/boot.img"))
+                .unwrap()
+                .len(),
+            1440
+        );
+        // A second drop asks first; Skip existing copies nothing.
+        let e = c.apply(Action::Drop(Side::Local, dropped));
+        assert!(matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.copy.conflict"));
+        c.apply(Action::CopyConflict(1));
+        settle(&mut c);
+        assert!(
+            c.transfers_text().contains("Done: 0 file(s)"),
+            "{}",
+            c.transfers_text()
+        );
     }
 
     #[test]

@@ -364,6 +364,17 @@ impl Controller for AppController {
         }
         self.closing.retain(|j| j.is_running());
         self.log.extend_from_capture(super::log::capture::drain());
+        if self.quitting {
+            // Nothing may stop the app closing: problems while logging off go to the log.
+            let log = &mut self.log;
+            out.retain(|e| match e {
+                Effect::Message(m) => {
+                    log.warn(m.clone());
+                    false
+                }
+                _ => true,
+            });
+        }
         if self.quitting && self.closing.is_empty() {
             self.quitting = false;
             out.push(Effect::Quit);

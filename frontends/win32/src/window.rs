@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, NMHDR, NMTREEVIEWW,
-    NM_DBLCLK, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
+    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG, NMHDR,
+    NMTREEVIEWW, NM_DBLCLK, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
@@ -30,9 +30,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetCursor, ShowWindow, TrackPopupMenu, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_PUSHLIKE,
-    CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, HMENU, IDC_ARROW, IDC_SIZENS,
-    MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+    CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, HMENU, IDC_ARROW, IDC_HAND,
+    IDC_SIZENS, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
     WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
     WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VSCROLL,
@@ -118,6 +118,8 @@ pub struct Shell {
     split_area: (i32, i32),
     panes: [RECT; 2],
     laid: Option<LayoutKey>,
+    /// Rows being dragged from one pane, until the button comes up.
+    file_drag: Option<(Side, Vec<String>)>,
 }
 
 thread_local! {
@@ -199,10 +201,14 @@ pub fn start() {
             split_area: (0, 0),
             panes: [RECT::default(); 2],
             laid: None,
+            file_drag: None,
         })
     });
-    // SAFETY: showing the window we created.
-    let _ = unsafe { ShowWindow(window, SW_SHOWNORMAL) };
+    // SAFETY: showing the window we created, and taking files dropped from Explorer.
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOWNORMAL);
+    }
+    crate::ole_drop::register(window);
     refresh();
     dispatch(app::Action::Start);
 }
@@ -1470,6 +1476,23 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
         if let Some(t) = controls::tab_selected(term_tabs).and_then(|n| TermTab::ALL.get(n)) {
             conn_action(conn::Action::SelectTerm(*t));
         }
+    } else if hdr.code == LVN_BEGINDRAG && (from == l_list || from == r_list) {
+        let side = if from == l_list {
+            Side::Local
+        } else {
+            Side::Remote
+        };
+        let names = selected_names(side);
+        if !names.is_empty() {
+            let main = with(|s| {
+                s.file_drag = Some((side, names));
+                s.window
+            });
+            if let Some(main) = main {
+                // SAFETY: capture the mouse for the drag; the button-up ends it.
+                unsafe { SetCapture(main) };
+            }
+        }
     } else if hdr.code == NM_RCLICK && (from == l_list || from == r_list) {
         file_menu(if from == l_list {
             Side::Local
@@ -1506,6 +1529,24 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
             });
         }
     }
+}
+
+/// Which pane a point in the main window's client area is over.
+pub fn pane_at(x: i32, y: i32) -> Option<Side> {
+    with(|s| {
+        if s.app.active() == Tab::Machines {
+            return None;
+        }
+        let inside = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+        if inside(&s.panes[0]) {
+            Some(Side::Local)
+        } else if inside(&s.panes[1]) {
+            Some(Side::Remote)
+        } else {
+            None
+        }
+    })
+    .flatten()
 }
 
 fn over_splitter(y: i32) -> bool {
@@ -1586,6 +1627,11 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             notify(hdr, lp);
             LRESULT(0)
         }
+        WM_SETCURSOR if with(|s| s.file_drag.is_some()).unwrap_or(false) => {
+            // SAFETY: a system cursor while rows are dragged between panes.
+            unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()) };
+            LRESULT(1)
+        }
         WM_SETCURSOR if over_splitter(cursor_y(hwnd)) => {
             // SAFETY: a system cursor.
             unsafe { SetCursor(LoadCursorW(None, IDC_SIZENS).ok()) };
@@ -1606,6 +1652,11 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             }
             LRESULT(0)
         }
+        WM_MOUSEMOVE if with(|s| s.file_drag.is_some()).unwrap_or(false) => {
+            // SAFETY: a system cursor; captured mouse moves do not send WM_SETCURSOR.
+            unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()) };
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             let y = (lp.0 >> 16) as i16 as i32;
             let moved = with(|s| {
@@ -1623,6 +1674,25 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             .flatten();
             if moved.is_some() {
                 layout();
+            }
+            LRESULT(0)
+        }
+        crate::ole_drop::WM_APP_DROPPED => {
+            if let Some((side, paths)) = crate::ole_drop::take() {
+                conn_action(conn::Action::Drop(side, paths));
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP if with(|s| s.file_drag.is_some()).unwrap_or(false) => {
+            let (x, y) = ((lp.0 & 0xffff) as i16 as i32, (lp.0 >> 16) as i16 as i32);
+            let drag = with(|s| s.file_drag.take()).flatten();
+            // SAFETY: release the capture taken when the drag began.
+            let _ = unsafe { ReleaseCapture() };
+            if let Some((from, names)) = drag {
+                match pane_at(x, y) {
+                    Some(to) if to != from => conn_action(conn::Action::Copy(from, names)),
+                    _ => {}
+                }
             }
             LRESULT(0)
         }

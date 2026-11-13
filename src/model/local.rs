@@ -39,6 +39,89 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Vec<LocalEntry>> {
     Ok(out)
 }
 
+/// Copy files and folders (dropped from the OS) into `dest`, keeping their names.
+pub fn copy_into(
+    sources: &[std::path::PathBuf],
+    dest: &Path,
+    overwrite: bool,
+    ctx: &super::job::JobCtx,
+) -> anyhow::Result<super::transfer::Summary> {
+    fn size_of(p: &Path) -> u64 {
+        match std::fs::metadata(p) {
+            Ok(m) if m.is_dir() => std::fs::read_dir(p)
+                .map(|d| d.flatten().map(|e| size_of(&e.path())).sum())
+                .unwrap_or(0),
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        }
+    }
+    fn copy_one(
+        src: &Path,
+        dst: &Path,
+        overwrite: bool,
+        sum: &mut super::transfer::Summary,
+        done: &mut u64,
+        total: u64,
+        ctx: &super::job::JobCtx,
+    ) -> anyhow::Result<()> {
+        ctx.check_cancel()?;
+        let name = dst
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if src.is_dir() {
+            std::fs::create_dir_all(dst)?;
+            for e in std::fs::read_dir(src)? {
+                let e = e?;
+                copy_one(
+                    &e.path(),
+                    &dst.join(e.file_name()),
+                    overwrite,
+                    sum,
+                    done,
+                    total,
+                    ctx,
+                )?;
+            }
+            return Ok(());
+        }
+        if dst.exists() && !overwrite {
+            sum.skipped.push(name);
+            return Ok(());
+        }
+        ctx.set_phase(format!("Copying {name}"));
+        match std::fs::copy(src, dst) {
+            Ok(n) => {
+                sum.files += 1;
+                sum.bytes += n;
+                *done += n;
+                ctx.set_bytes(*done, total.max(*done));
+            }
+            Err(e) => sum.failed.push((name, e.to_string())),
+        }
+        Ok(())
+    }
+    let total: u64 = sources.iter().map(|p| size_of(p)).sum();
+    let mut sum = super::transfer::Summary::default();
+    let mut done = 0;
+    for src in sources {
+        let Some(name) = src.file_name() else {
+            continue;
+        };
+        let dst = dest.join(name);
+        // A folder dropped into itself would copy forever.
+        if dst.starts_with(src) {
+            sum.failed.push((
+                name.to_string_lossy().into_owned(),
+                "a folder cannot go inside itself".into(),
+            ));
+            continue;
+        }
+        copy_one(src, &dst, overwrite, &mut sum, &mut done, total, ctx)?;
+    }
+    Ok(sum)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

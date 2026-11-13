@@ -14,6 +14,8 @@ mod header;
 #[cfg(windows)]
 mod icons;
 #[cfg(windows)]
+mod ole_drop;
+#[cfg(windows)]
 mod paint;
 #[cfg(windows)]
 mod term_view;
@@ -26,7 +28,7 @@ mod window;
 
 #[cfg(windows)]
 fn main() {
-    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
     use windows::Win32::UI::Controls::{
         InitCommonControlsEx, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES,
         ICC_TAB_CLASSES, ICC_TREEVIEW_CLASSES, INITCOMMONCONTROLSEX,
@@ -38,7 +40,8 @@ fn main() {
 
     // SAFETY: COM and the common controls are set up once on the UI thread before any window.
     unsafe {
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        // OLE, not just COM: Explorer's drag and drop needs it.
+        let _ = OleInitialize(None);
         let icc = INITCOMMONCONTROLSEX {
             dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_STANDARD_CLASSES
@@ -61,7 +64,7 @@ fn main() {
             DispatchMessageW(&msg);
         }
         ui::free_fonts();
-        CoUninitialize();
+        OleUninitialize();
     }
 }
 
