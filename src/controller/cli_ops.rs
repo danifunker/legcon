@@ -40,12 +40,19 @@ pub fn list_remote(
     let sessions = Sessions::new();
     let quiet: Arc<dyn Notify> = Arc::new(NoNotify);
     let home = finish(sessions.connect(&m, password, Arc::clone(&quiet)))?;
-    let dir = if path.is_empty() {
-        home
-    } else if path.starts_with('/') {
-        RemotePath::parse(PathStyle::Unix, path)
+    // Paths follow the machine's own style; `/` works as a separator everywhere for typing ease.
+    let sep = home.style.separator();
+    let typed = if home.style == PathStyle::Unix {
+        path.to_string()
     } else {
-        RemotePath::parse(home.style, &format!("{home}/{path}"))
+        path.replace('/', &sep.to_string())
+    };
+    let dir = if typed.is_empty() {
+        home
+    } else if typed.starts_with(sep) {
+        RemotePath::parse(home.style, &typed)
+    } else {
+        RemotePath::parse(home.style, &format!("{home}{sep}{typed}"))
     };
     let listed = finish(sessions.list(machine, dir.clone(), Arc::clone(&quiet)));
     let logoff = finish(sessions.disconnect(machine, quiet));

@@ -595,7 +595,9 @@ servers (the lab).
 `*SMBSERVER` / real-name retry, LANMAN1.0 to NT LM 0.12, share- and user-level logins with LM /
 NTLM and an NTLMv2 fallback, RAP share list, TRANS2 listings, read / write / folders / rename /
 delete, TREE_DISCONNECT + LOGOFF) is in the remote pane, tested against pretend NT 4 and
-Windows 95 servers and shown in the Win32 shell against the Windows 95 one. Not yet: SMB2 (for
+Windows 95 servers and shown in the Win32 shell against the Windows 95 one. **Tried on a real
+Windows NT machine** (NT LM 0.12, user-level, NTLM; 2026-11-13): shares, listings, reads, a 100 KB
+write, mkdir, rename, delete and log-off all work, as does browsing it over anonymous FTP (IIS). Not yet: SMB2 (for
 Vista-era and newer Samba setups that turned SMB1 off), workgroup browsing, the CP437 / CP850
 tables that Windows 9x share names really use, and a real Windows 95 / NT 4 / Samba machine.
 

@@ -136,7 +136,12 @@ pub fn connect(
         server = name;
     }
     if server == netbios::ANY_SERVER {
-        server = host.split('.').next().unwrap_or(host).to_ascii_uppercase();
+        // Shares are named \\server\share; an address works there as well as a name does.
+        server = if host.parse::<std::net::IpAddr>().is_ok() {
+            host.to_string()
+        } else {
+            host.split('.').next().unwrap_or(host).to_ascii_uppercase()
+        };
     }
     let mut s = SmbSession {
         stream,
@@ -247,6 +252,38 @@ fn to_io(e: Error) -> std::io::Error {
     match e {
         Error::Io(e) => e,
         other => std::io::Error::other(other.to_string()),
+    }
+}
+
+/// The domain in a negotiate reply: NT sends it in UTF-16 even to a client that asked for none.
+fn domain_name(b: &[u8], cs: Charset) -> String {
+    if b.len() >= 2 && b[1] == 0 && b[0] != 0 {
+        let units: Vec<u16> = b
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&u| u != 0)
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    cs.decode(wire::cstr(b, 0).0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn domain_names_in_either_form() {
+        let utf16: Vec<u8> = "WORKGROUP\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        assert_eq!(
+            super::domain_name(&utf16, lc_core::Charset::Latin1),
+            "WORKGROUP"
+        );
+        assert_eq!(
+            super::domain_name(b"LANGROUP\0", lc_core::Charset::Latin1),
+            "LANGROUP"
+        );
     }
 }
 
@@ -364,7 +401,7 @@ impl SmbSession {
                 if clen >= 8 {
                     neg.challenge.copy_from_slice(&r.bytes[..8]);
                 }
-                neg.domain = self.opts.charset.decode(wire::cstr(&r.bytes, clen).0);
+                neg.domain = domain_name(&r.bytes[clen.min(r.bytes.len())..], self.opts.charset);
             }
             13 => {
                 neg.user_level = r.word(1) & 1 != 0;
