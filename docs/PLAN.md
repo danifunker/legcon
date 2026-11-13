@@ -524,6 +524,15 @@ Each phase is small slices; each slice has its tests and every view handles its 
 | Phase | Content | Exit |
 |---|---|---|
 | **0. Groundwork** | Workspace, the MVC code (D12), `lc-core`, machine store, session manager, the `lc` CLI and the Win32 shell skeleton (window, connection tabs, connection view with its splitter and Swap, home folder), boundary and matrix scripts, the container lab; spikes for suppaftp, libtelnet-rs, vt100, ssh2, `smb`, `nfs` | Spike verdicts written down; CI green; lab containers start |
+
+**Phase 0 progress (2026-11-13):** done: `lc-core`, the job and controller base, the machine store
+(passwords Base64, D28), settings with the home folder, the session manager with a built-in demo
+machine, the app and connection-view controllers, the `lc` CLI, and the Win32 shell (tabs, Machines
+page, connection view with both panes, folder trails, splitter, Swap, tree toggles, Home / Leave
+home, connect / browse / disconnect, clean quit), driven by native UIA by AutomationId. Not yet:
+the container lab (needs Docker), the protocol spikes, the CP437 / CP850 tables, the Media list,
+full folder trees (the trees show the trail to the current folder), and the Add machine dialog
+(prompts until mockup 4).
 | **1. FTP + Telnet** | `lc-ftp` with the `LIST` parsers, `lc-telnet`, the terminal screen model; Machines, connection view, terminal and transfers controllers; `lc ls/get/put/shell` | Browse and transfer against every FTP server in the lab and a Telnet session to each Unix in it, from the CLI and the Win32 GUI |
 | **2. Probe** | the probe (`src/model/probe`), the quirk database, error messages, protocol trace | Adding any lab machine by address suggests the right services and settings |
 | **3. SMB1 / SMB2** | `lc-smb`: NetBIOS, SMB1 dialects, share-level security, LM / NTLMv1 / NTLMv2, SMB2 through `smb` | Win95, NT4 and Samba (LANMAN1, NT1, SMB2) shares browse, read and write |
