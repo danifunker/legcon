@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>legcon tabs or windows</title>
+<style>
+  :root { --line: #d9d9d9; --line2: #c4c4c4; --accent: #0067c0; --muted: #6b6b6b; --ok: #2e8b3a; --busy: #0067c0; --off: #9aa0a6; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #7a8794; font: 12px "Segoe UI", system-ui, sans-serif; color: #1b1b1b; padding: 24px; }
+  h1 { color: #fff; font-size: 16px; margin: 0 0 4px; }
+  .intro { color: #fff; font-size: 13px; max-width: 1150px; line-height: 1.5; margin-bottom: 18px; }
+  .opt { background: #fff; max-width: 1150px; margin-bottom: 22px; border: 1px solid #5a6570; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+  .opt h2 { margin: 0; font-size: 14px; padding: 10px 12px; background: #f3f3f3; border-bottom: 1px solid var(--line); }
+  .opt h2 small { font-weight: 400; color: var(--muted); margin-left: 8px; }
+  .rec { display: inline-block; background: var(--accent); color: #fff; border-radius: 8px; padding: 0 7px; font-size: 11px; margin-left: 8px; vertical-align: 1px; }
+  .row { display: grid; grid-template-columns: 1.5fr 1fr; }
+  .stage { padding: 14px; background: #9aa8b5; border-right: 1px solid var(--line); position: relative; min-height: 260px; }
+  .text { padding: 12px 14px; line-height: 1.55; font-size: 13px; }
+  .text ul { margin: 6px 0; padding-left: 18px; }
+  .good { color: #1d6b28; } .bad { color: #a4262c; }
+  .w { background: #f0f0f0; border: 1px solid #5a6570; box-shadow: 0 4px 14px rgba(0,0,0,.3); position: absolute; }
+  .w .tb { background: #fff; padding: 4px 8px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; align-items: center; }
+  .w .tb .ic { width: 10px; height: 10px; background: var(--accent); border-radius: 2px; }
+  .tabs { display: flex; gap: 2px; padding: 4px 4px 0; background: #e3e7eb; border-bottom: 1px solid var(--line2); }
+  .tab { padding: 3px 8px; background: #d3d9df; border: 1px solid var(--line2); border-bottom: 0; border-radius: 4px 4px 0 0; display: flex; gap: 5px; align-items: center; }
+  .tab.on { background: #f0f0f0; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 4px; display: inline-block; }
+  .ok { background: var(--ok); } .busy { background: var(--busy); } .off { background: var(--off); }
+  .content { display: grid; grid-template-rows: 3fr 1fr; gap: 3px; padding: 4px; height: calc(100% - 50px); }
+  .content.notabs { height: calc(100% - 26px); }
+  .files { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+  .files div, .termb { background: #fff; border: 1px solid var(--line2); }
+  .termb { background: #111; }
+  .lbl { position: absolute; left: 0; right: 0; bottom: -18px; text-align: center; color: #fff; font-size: 11px; }
+  .taskbar { position: absolute; left: 0; right: 0; bottom: 0; height: 22px; background: #202a33; display: flex; gap: 4px; padding: 3px 8px; }
+  .taskbar span { background: #3b4752; color: #fff; padding: 1px 8px; font-size: 11px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<h1>Mockup 2: a connection as a tab or as its own window (O8)</h1>
+<div class="intro">
+  Three machines connected: <b>sparc</b>, <b>win95</b> and <b>indy</b>. Each connection is the same connection view
+  (files on top, terminal below) either way. The question is only where it lives.
+</div>
+
+<div class="opt">
+  <h2>A. One window, a tab per connection; drag a tab out for its own window <span class="rec">recommended</span></h2>
+  <div class="row">
+    <div class="stage">
+      <div class="w" style="left:14px;top:14px;width:62%;height:200px">
+        <div class="tb"><span class="ic"></span>legcon - sparc</div>
+        <div class="tabs"><span class="tab">Machines</span><span class="tab on"><span class="dot ok"></span>sparc</span><span class="tab"><span class="dot busy"></span>win95</span><span class="tab">+</span></div>
+        <div class="content"><div class="files"><div></div><div></div></div><div class="termb"></div></div>
+      </div>
+      <div class="w" style="left:58%;top:70px;width:38%;height:170px">
+        <div class="tb"><span class="ic"></span>legcon - indy</div>
+        <div class="tabs"><span class="tab on"><span class="dot ok"></span>indy</span></div>
+        <div class="content"><div class="files"><div></div><div></div></div><div class="termb"></div></div>
+      </div>
+      <div class="taskbar"><span>legcon - sparc</span><span>legcon - indy</span></div>
+    </div>
+    <div class="text">
+      New connections open as tabs in the main window. Dragging a tab out (or "Open in new window") gives that
+      machine its own window, here <b>indy</b>; dragging it back docks it.
+      <ul>
+        <li class="good">One place to see every connection (the tab row and the Machines tab).</li>
+        <li class="good">A second monitor can hold a shell-heavy machine on its own.</li>
+        <li class="bad">Tab dragging between windows is extra Win32 work (custom tab control).</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="opt">
+  <h2>B. A window per connection, no tabs<small>like several copies of the app</small></h2>
+  <div class="row">
+    <div class="stage">
+      <div class="w" style="left:14px;top:14px;width:30%;height:120px">
+        <div class="tb"><span class="ic"></span>legcon - Machines</div>
+        <div style="padding:6px;line-height:1.7"><span class="dot ok"></span> sparc<br><span class="dot busy"></span> win95<br><span class="dot ok"></span> indy</div>
+      </div>
+      <div class="w" style="left:34%;top:14px;width:40%;height:150px">
+        <div class="tb"><span class="ic"></span>legcon - sparc</div>
+        <div class="content notabs"><div class="files"><div></div><div></div></div><div class="termb"></div></div>
+      </div>
+      <div class="w" style="left:44%;top:60px;width:40%;height:150px">
+        <div class="tb"><span class="ic"></span>legcon - win95</div>
+        <div class="content notabs"><div class="files"><div></div><div></div></div><div class="termb"></div></div>
+      </div>
+      <div class="w" style="left:54%;top:106px;width:40%;height:120px">
+        <div class="tb"><span class="ic"></span>legcon - indy</div>
+        <div class="content notabs"><div class="files"><div></div><div></div></div><div class="termb"></div></div>
+      </div>
+      <div class="taskbar"><span>Machines</span><span>sparc</span><span>win95</span><span>indy</span></div>
+    </div>
+    <div class="text">
+      The Machines window is the launcher; each connection opens its own window, found through the taskbar and
+      Alt+Tab.
+      <ul>
+        <li class="good">Simplest to build on Win32; each window is independent.</li>
+        <li class="good">The OS window manager does the arranging (Snap, monitors).</li>
+        <li class="bad">Many windows with identical chrome; easy to lose one, and Disconnect all is in another window.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+</body>
+</html>

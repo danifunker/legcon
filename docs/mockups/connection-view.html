@@ -1,0 +1,611 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>legcon connection view</title>
+<style>
+  :root {
+    --bg: #f0f0f0; --win: #fff; --line: #d9d9d9; --line2: #c4c4c4; --text: #1b1b1b; --muted: #6b6b6b;
+    --accent: #0067c0; --sel: #cce8ff; --ok: #2e8b3a; --warn: #c98a00; --bad: #c42b1c;
+    --term-bg: #0c0c0c; --term-fg: #cccccc;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #7a8794; font: 12px "Segoe UI", system-ui, sans-serif; color: var(--text); padding: 24px; }
+  .note { max-width: 1240px; margin: 0 auto 12px; color: #fff; font-size: 13px; line-height: 1.5; }
+  .window { max-width: 1240px; margin: 0 auto; background: var(--bg); border: 1px solid #5a6570; box-shadow: 0 8px 30px rgba(0,0,0,.35); display: flex; flex-direction: column; height: 800px; position: relative; }
+  .titlebar { height: 32px; background: #fff; display: flex; align-items: center; padding-left: 10px; gap: 8px; }
+  .titlebar .icon { width: 16px; height: 16px; background: var(--accent); border-radius: 3px; }
+  .titlebar .t { flex: 1; }
+  .titlebar .caps span { display: inline-block; width: 46px; text-align: center; line-height: 32px; }
+  .menubar { background: #fff; display: flex; gap: 2px; padding: 2px 6px; border-bottom: 1px solid var(--line); }
+  .menubar span { padding: 3px 8px; }
+  /* connection tabs */
+  .ctabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px 8px 0; background: #e3e7eb; border-bottom: 1px solid var(--line2); }
+  .ctab { display: flex; align-items: center; gap: 7px; padding: 6px 8px 6px 12px; background: #d3d9df; border: 1px solid var(--line2); border-bottom: 0; border-radius: 6px 6px 0 0; cursor: pointer; min-width: 120px; }
+  .ctab.on { background: var(--bg); position: relative; top: 1px; font-weight: 600; }
+  .ctab .x { margin-left: auto; width: 18px; height: 18px; border-radius: 9px; text-align: center; line-height: 17px; color: #555; font-weight: 400; }
+  .ctab .x:hover { background: #f3d6d3; color: var(--bad); }
+  .ctab small { font-weight: 400; color: var(--muted); }
+  .ctab.home { min-width: 0; padding-right: 12px; }
+  .dot { width: 9px; height: 9px; border-radius: 5px; display: inline-block; flex: none; }
+  .dot.ok { background: var(--ok); } .dot.busy { background: var(--accent); } .dot.off { background: #9aa0a6; } .dot.conn { background: var(--warn); }
+  .ctabs .spacer { flex: 1; }
+  .btn { border: 1px solid var(--line2); background: #fff; border-radius: 3px; padding: 3px 10px; font: inherit; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.danger { color: var(--bad); }
+  .btn.sm { padding: 1px 7px; }
+  .view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .mhead { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .mhead .name { font-weight: 600; font-size: 14px; }
+  .svc { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line2); background: #fff; border-radius: 12px; padding: 2px 4px 2px 8px; }
+  .svc small { color: var(--muted); }
+  .badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; background: #fff4ce; color: #7a5a00; border: 1px solid #f0d78a; }
+  .grow { flex: 1; }
+  /* split */
+  .split { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .split.swap { flex-direction: column-reverse; }
+  .area { min-height: 0; display: flex; flex-direction: column; }
+  .files { flex: 3; }
+  .term { flex: 1; }
+  /* files */
+  .fbody { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 6px; min-height: 0; }
+  .pane { background: var(--win); border: 1px solid var(--line2); display: flex; flex-direction: column; min-height: 0; }
+  .pane.active { border-color: var(--accent); }
+  .phead { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-bottom: 1px solid var(--line); background: #fafafa; }
+  .phead b { margin-right: 4px; }
+  .crumb { padding: 3px 8px; border-bottom: 1px solid var(--line); font-family: Consolas, monospace; font-size: 11px; color: #333; display: flex; gap: 6px; align-items: center; }
+  .crumb .away { color: #7a5a00; background: #fff4ce; border: 1px solid #f0d78a; border-radius: 8px; padding: 0 6px; font-family: "Segoe UI"; font-size: 10px; }
+  .pbody { flex: 1; display: grid; grid-template-columns: 38% 62%; min-height: 0; }
+  .tree { border-right: 1px solid var(--line); overflow: auto; padding: 4px 0; }
+  .node { padding: 1px 4px; white-space: nowrap; cursor: default; }
+  .node.sel { background: var(--sel); }
+  .pm { display: inline-block; width: 11px; height: 11px; border: 1px solid #919191; font: 10px/9px Consolas, monospace; text-align: center; margin-right: 4px; color: #333; vertical-align: -1px; cursor: pointer; background: #fff; }
+  .pm.none { border-color: transparent; background: transparent; }
+  .fi { display: inline-block; width: 14px; height: 11px; margin-right: 5px; vertical-align: -1px; border-radius: 2px; background: #e8c45a; }
+  .fi.file { background: #fff; border: 1px solid #9aa4ae; height: 13px; width: 11px; margin-right: 8px; }
+  .fi.media { background: #8fa3b8; }
+  .list { overflow: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  th { position: sticky; top: 0; background: #fff; text-align: left; font-weight: 400; color: #444; border-bottom: 1px solid var(--line); padding: 3px 6px; }
+  td { padding: 2px 6px; white-space: nowrap; }
+  td.r, th.r { text-align: right; }
+  tr.sel td { background: var(--sel); }
+  .pfoot { border-top: 1px solid var(--line); padding: 3px 6px; color: var(--muted); }
+  .menu { position: relative; display: inline-block; }
+  .pop { display: none; position: absolute; top: 24px; left: 0; background: #fff; border: 1px solid var(--line2); box-shadow: 0 4px 12px rgba(0,0,0,.22); z-index: 5; min-width: 230px; padding: 3px 0; }
+  .pop.open { display: block; }
+  .pop div { padding: 4px 10px; display: flex; gap: 6px; align-items: center; cursor: default; }
+  .pop div:hover { background: var(--sel); }
+  .pop small { color: var(--muted); margin-left: auto; }
+  .pop .hd { color: var(--muted); font-size: 11px; }
+  .pop .hd:hover { background: none; }
+  /* layout bar + terminal */
+  .grip { color: #888; font-size: 14px; padding: 0 6px; }
+  .lbar { display: flex; align-items: center; gap: 4px; padding: 3px 6px; background: #e8ebee; border-top: 1px solid var(--line2); border-bottom: 1px solid var(--line2); cursor: row-resize; }
+  .lb { border: 1px solid transparent; background: transparent; padding: 2px 8px; border-radius: 3px; font: inherit; cursor: pointer; }
+  .lb:hover { background: #fff; border-color: var(--line2); }
+  .lb.on { background: #fff; border-color: var(--accent); color: var(--accent); }
+  .tt { padding: 4px 12px; cursor: pointer; border-bottom: 2px solid transparent; text-transform: uppercase; font-size: 11px; letter-spacing: .3px; color: #555; }
+  .tt.on { border-bottom-color: var(--accent); color: var(--text); font-weight: 600; }
+  .tt .n { display: inline-block; background: var(--accent); color: #fff; border-radius: 8px; padding: 0 5px; margin-left: 4px; font-size: 10px; }
+  .tbody { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+  .screen { flex: 1; background: var(--term-bg); color: var(--term-fg); font: 13px/1.35 Consolas, monospace; padding: 6px 10px; white-space: pre; overflow: auto; }
+  .screen .cur { background: var(--term-fg); color: var(--term-bg); }
+  .subtabs { display: flex; gap: 2px; background: #1f1f1f; padding: 3px 6px 0; }
+  .subtabs span { color: #bbb; padding: 3px 10px; background: #2b2b2b; border-radius: 3px 3px 0 0; }
+  .subtabs span.on { background: var(--term-bg); color: #fff; }
+  .mono { font: 12px/1.45 Consolas, monospace; padding: 6px 10px; white-space: pre; overflow: auto; flex: 1; }
+  .mono .c { color: #0451a5; } .mono .s { color: #098658; } .mono .m { color: var(--muted); }
+  .cin { display: flex; gap: 6px; padding: 4px 10px; border-top: 1px solid var(--line); align-items: center; }
+  .cin input { flex: 1; font: 12px Consolas, monospace; border: 1px solid var(--line2); padding: 3px 6px; }
+  .bar { height: 10px; background: #e6e6e6; border-radius: 2px; overflow: hidden; width: 160px; display: inline-block; vertical-align: middle; }
+  .bar b { display: block; height: 100%; background: var(--accent); }
+  .statusbar { display: flex; gap: 16px; padding: 3px 8px; border-top: 1px solid var(--line); background: #f7f7f7; color: #444; }
+  /* machines tab */
+  .machines { flex: 1; padding: 16px; display: none; overflow: auto; }
+  .machines.on { display: block; }
+  .cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .card { background: #fff; border: 1px solid var(--line2); border-radius: 6px; padding: 12px; }
+  .card h4 { margin: 0 0 4px; display: flex; gap: 6px; align-items: center; }
+  .card p { margin: 0 0 8px; color: var(--muted); }
+  /* dialog */
+  .scrim { display: none; position: absolute; inset: 0; background: rgba(0,0,0,.25); align-items: center; justify-content: center; z-index: 10; }
+  .scrim.open { display: flex; }
+  .dlg { background: #fff; width: 520px; border: 1px solid #888; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .dlg h3 { margin: 0; padding: 10px 14px; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .dlg .db { padding: 12px 14px; }
+  .dlg .row { display: flex; gap: 6px; }
+  .dlg input { flex: 1; border: 1px solid var(--line2); padding: 4px 6px; font: 12px Consolas, monospace; }
+  .dlg .recent { margin-top: 10px; border: 1px solid var(--line); }
+  .dlg .recent div { padding: 3px 8px; font-family: Consolas, monospace; font-size: 11px; }
+  .dlg .recent div:hover { background: var(--sel); }
+  .dlg .hint { color: var(--muted); margin: 8px 0 0; }
+  .dlg .df { display: flex; justify-content: flex-end; gap: 6px; padding: 10px 14px; background: #f3f3f3; border-top: 1px solid var(--line); }
+  .ttog { width: 24px; height: 20px; border: 1px solid var(--line2); background: #fff; border-radius: 3px; cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+  .ttog i { display: block; width: 12px; height: 10px; border: 1px solid #555; border-left-width: 4px; }
+  .ttog.off i { border-left-width: 1px; }
+  .ttog:hover { border-color: var(--accent); }
+  .pbody.notree { grid-template-columns: 0 100%; }
+  .pbody.notree .tree { display: none; }
+  .ctxm { display: none; position: fixed; background: #fff; border: 1px solid #a0a0a0; box-shadow: 2px 3px 8px rgba(0,0,0,.25); z-index: 20; min-width: 210px; padding: 2px 0; }
+  .ctxm.open { display: block; }
+  .ctxm div { padding: 4px 24px 4px 26px; display: flex; justify-content: space-between; cursor: default; }
+  .ctxm div:hover { background: var(--sel); }
+  .ctxm div.b { font-weight: 600; }
+  .ctxm small { color: var(--muted); margin-left: 18px; }
+  .ctxm hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; }
+  .pv { display: none; position: absolute; right: 18px; top: 120px; width: 470px; height: 430px; background: #fff; border: 1px solid #777; box-shadow: 0 10px 30px rgba(0,0,0,.35); z-index: 15; flex-direction: column; }
+  .pv.open { display: flex; }
+  .pv .pt { display: flex; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); background: #fafafa; gap: 6px; }
+  .pv .pt b { flex: 1; }
+  .pv .po { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .pv select { font: inherit; padding: 1px; }
+  .pv .pc { flex: 1; overflow: auto; font: 12px/1.4 Consolas, monospace; padding: 6px 10px; white-space: pre; }
+  .pv .pf { display: flex; gap: 8px; align-items: center; padding: 5px 8px; border-top: 1px solid var(--line); color: var(--muted); }
+  .pv .pf .grow { flex: 1; }
+  .pv .img { margin: 10px auto; width: 256px; height: 192px; background: repeating-conic-gradient(#000 0% 25%, #fff 0% 50%) 0 0/16px 16px; border: 1px solid #333; }
+  .rules td, .rules th { border-bottom: 1px solid #eee; padding: 4px 8px; }
+  .rules select { font: inherit; }
+  .callouts { max-width: 1240px; margin: 14px auto 0; color: #fff; font-size: 13px; line-height: 1.5; columns: 2; column-gap: 32px; }
+  .callouts li { break-inside: avoid; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div class="note"><b>Mockup 1: the connection view (draft 10).</b> Try: dragging the bar between files and terminal, <b>Swap</b> in the machine header, the terminal-area tabs, <b>Leave home...</b>, <b>Media</b>, the +/- in the trees, the tree buttons at the left of each pane header, <b>right-click a file</b> (try Makefile.local, core, gcc-2.95.3.tar.gz), and the <b>Machines</b> tab. Only <b>sparc</b> is drawn in full.</div>
+
+<div class="window">
+  <div class="titlebar"><span class="icon"></span><span class="t">legcon - sparc</span><span class="caps"><span>&#8211;</span><span>&#9633;</span><span>&#10005;</span></span></div>
+  <div class="menubar"><span>File</span><span>Edit</span><span>View</span><span>Machine</span><span>Transfer</span><span>Tools</span><span>Help</span></div>
+
+  <div class="ctabs">
+    <span class="ctab home" onclick="showTab('machines')" id="t-machines">Machines</span>
+    <span class="ctab on" onclick="showTab('sparc')" id="t-sparc"><span class="dot ok"></span>sparc <small>FTP</small><span class="x" title="Disconnect sparc and close">&#10005;</span></span>
+    <span class="ctab" onclick="showTab('sparc')"><span class="dot busy"></span>win95 <small>SMB</small><span class="x">&#10005;</span></span>
+    <span class="ctab" onclick="showTab('sparc')"><span class="dot ok"></span>indy <small>SSH</small><span class="x">&#10005;</span></span>
+    <span class="ctab home" title="Connect to a machine">+</span>
+    <span class="spacer"></span>
+  </div>
+
+  <!-- MACHINES TAB -->
+  <div class="machines" id="machines">
+    <div style="display:flex;gap:8px;margin-bottom:12px"><button class="btn primary">Add machine...</button><button class="btn">Import</button><span class="grow"></span><button class="btn danger">Disconnect all</button></div>
+    <div class="cards">
+      <div class="card"><h4><span class="dot ok"></span>sparc</h4><p>SunOS 5.8 &middot; FTP, Telnet, rsh</p><button class="btn sm">Show</button> <button class="btn sm danger">Disconnect</button></div>
+      <div class="card"><h4><span class="dot busy"></span>win95</h4><p>Windows 95 &middot; SMB (LANMAN 2.1)</p><button class="btn sm">Show</button> <button class="btn sm danger">Disconnect</button></div>
+      <div class="card"><h4><span class="dot ok"></span>indy</h4><p>IRIX 6.5 &middot; SSH (OpenSSH 3.1)</p><button class="btn sm">Show</button> <button class="btn sm danger">Disconnect</button></div>
+      <div class="card"><h4><span class="dot off"></span>nt4srv</h4><p>Windows NT 4.0 &middot; SMB, FTP</p><button class="btn sm primary">Connect</button> <button class="btn sm">In new window</button></div>
+      <div class="card"><h4><span class="dot off"></span>quadra</h4><p>Mac OS 8.1 &middot; FTP (NetPresenz)</p><button class="btn sm primary">Connect</button> <button class="btn sm">In new window</button></div>
+    </div>
+  </div>
+
+  <!-- CONNECTION VIEW -->
+  <div class="view" id="view">
+    <div class="mhead">
+      <span class="name">sparc</span><span style="color:var(--muted)">SunOS 5.8, 192.168.1.40</span>
+      <span class="svc"><span class="dot ok"></span>Files: FTP <small>wu-ftpd 2.6.1</small> <button class="btn sm">Disconnect</button></span>
+      <span class="svc"><span class="dot off"></span>Commands: Telnet <small>not connected</small> <button class="btn sm primary">Connect</button></span>
+      <span class="badge" title="Passwords and data are not encrypted">plaintext</span>
+      <span class="grow"></span>
+      <button class="btn" id="b-swap" onclick="swap()" title="Put the terminal on top / files on top (Ctrl+Shift+S)">&#8645; Swap</button>
+      <button class="btn" title="This machine's settings: services, home folder, layout, charset, crypto, host keys, credentials">Settings</button>
+    </div>
+
+    <div class="split" id="split">
+      <div class="area files">
+        <div class="fbody">
+          <!-- LOCAL -->
+          <div class="pane">
+            <div class="phead">
+              <button class="ttog" id="tg-l" onclick="toggleTree('l')" title="Hide folders (Ctrl+Shift+1)"><i></i></button>
+              <b>This computer</b>
+              <button class="btn sm" onclick="goHome()" title="Back to the home folder">Home</button>
+              <button class="btn sm" onclick="openDlg()">Leave home...</button>
+              <span class="menu"><button class="btn sm" onclick="toggleMedia(event)">Media &#9662;</button>
+                <span class="pop" id="media">
+                  <div class="hd">Removable media attached now</div>
+                  <div onclick="goMedia('E:\\  (CF card, USB)')"><span class="fi media"></span>E:\ &nbsp;CF_DOS622 <small>USB card reader</small></div>
+                  <div onclick="goMedia('F:\\  (CD-ROM)')"><span class="fi media"></span>F:\ &nbsp;SOLARIS_8_SPARC <small>CD-ROM</small></div>
+                  <div onclick="goMedia('G:\\  (USB disk)')"><span class="fi media"></span>G:\ &nbsp;RETRO_ARCHIVE <small>USB disk</small></div>
+                </span></span>
+              <span class="grow"></span>
+            </div>
+            <div class="crumb" id="lcrumb">D:\Retro\sparc</div>
+            <div class="pbody" id="pb-l">
+              <div class="tree" id="ltree">
+                <div class="node"><span class="pm" onclick="pm(this)">-</span><span class="fi"></span>Retro</div>
+                <div class="node" style="padding-left:18px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>indy</div>
+                <div class="node" style="padding-left:18px"><span class="pm" onclick="pm(this)">-</span><span class="fi"></span>sparc</div>
+                <div class="node sel" style="padding-left:34px"><span class="pm none"></span><span class="fi"></span>src</div>
+                <div class="node" style="padding-left:34px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>patches</div>
+                <div class="node" style="padding-left:18px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>win95</div>
+              </div>
+              <div class="list">
+                <table>
+                  <tr><th>Name</th><th class="r">Size</th><th>Modified</th></tr>
+                  <tr><td><span class="fi"></span>patches</td><td></td><td>2026-10-02</td></tr>
+                  <tr><td><span class="fi"></span>src</td><td></td><td>2026-11-12</td></tr>
+                  <tr class="sel"><td><span class="fi file"></span>gcc-2.95.3.tar.gz</td><td class="r">12.0 MB</td><td>2026-11-13</td></tr>
+                  <tr><td><span class="fi file"></span>bash-2.05b.tar.gz</td><td class="r">1.9 MB</td><td>2026-11-13</td></tr>
+                  <tr><td><span class="fi file"></span>notes.txt</td><td class="r">3 KB</td><td>2026-11-11</td></tr>
+                </table>
+              </div>
+            </div>
+            <div class="pfoot" id="lfoot">Home: D:\Retro\sparc (this machine's home)</div>
+          </div>
+          <!-- REMOTE -->
+          <div class="pane active">
+            <div class="phead">
+              <button class="ttog" id="tg-r" onclick="toggleTree('r')" title="Hide folders (Ctrl+Shift+2)"><i></i></button>
+              <b>sparc</b>
+              <button class="btn sm" title="Back to the login folder">Home</button>
+              <button class="btn sm">Go to folder...</button>
+              <span class="grow"></span>
+            </div>
+            <div class="crumb">/export/home/dani/src</div>
+            <div class="pbody" id="pb-r">
+              <div class="tree">
+                <div class="node"><span class="pm" onclick="pm(this)">-</span><span class="fi"></span>dani</div>
+                <div class="node" style="padding-left:18px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>bin</div>
+                <div class="node sel" style="padding-left:18px"><span class="pm" onclick="pm(this)">-</span><span class="fi"></span>src</div>
+                <div class="node" style="padding-left:34px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>gcc-2.95.3</div>
+                <div class="node" style="padding-left:34px"><span class="pm" onclick="pm(this)">+</span><span class="fi"></span>perl5.005_03</div>
+              </div>
+              <div class="list">
+                <table>
+                  <tr><th>Name</th><th class="r">Size</th><th>Modified</th><th>Perms</th></tr>
+                  <tr><td><span class="fi"></span>gcc-2.95.3</td><td></td><td>1999-03-16</td><td>drwxr-xr-x</td></tr>
+                  <tr><td><span class="fi"></span>perl5.005_03</td><td></td><td>1999-03-28</td><td>drwxr-xr-x</td></tr>
+                  <tr><td><span class="fi file"></span>Makefile.local</td><td class="r">1 KB</td><td>Nov 12</td><td>-rw-r--r--</td></tr>
+                  <tr><td><span class="fi file"></span>bash-2.05b.tar.gz</td><td class="r">812 KB</td><td>Nov 13</td><td>-rw-r--r--</td></tr>
+                  <tr><td><span class="fi file"></span>core</td><td class="r">4.1 MB</td><td>2001-07-04</td><td>-rw-------</td></tr>
+                </table>
+              </div>
+            </div>
+            <div class="pfoot">Login folder: /export/home/dani</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="area term">
+        <div class="lbar">
+          <span class="grip" title="Drag to change the heights">&#8801;</span>
+          <span id="ttabs" style="display:flex"></span>
+          <span class="grow"></span>
+          <span style="color:var(--muted)" id="splitinfo">drag the bar to resize; default 3:1 (Settings)</span>
+        </div>
+        <div class="tbody" id="tbody"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar"><span>Uploading to sparc: 1.4 MB of 13.9 MB, 38 KB/s</span><span class="grow"></span><span>3 machines connected</span></div>
+
+  <div class="ctxm" id="ctxm"></div>
+
+  <div class="scrim" id="act">
+    <div class="dlg" style="width:640px">
+      <h3 id="act-title">Archive as .tar.gz</h3>
+      <div class="db">
+        <div id="act-where" style="margin-bottom:6px"></div>
+        <div style="margin-bottom:4px">Command (edit it if you like):</div>
+        <textarea id="act-cmd" style="width:100%;height:64px;font:12px Consolas,monospace;border:1px solid var(--line2);padding:6px"></textarea>
+        <p class="hint" id="act-tools"></p>
+        <p class="hint">From the template "Archive as .tar.gz" (Tools -> Settings -> Remote actions). No AI: the paths are filled in and quoted for this machine's shell.</p>
+      </div>
+      <div class="df"><button class="btn" onclick="closeAct()">Cancel</button><button class="btn">Copy</button><button class="btn" onclick="toShell()">Paste into Shell tab</button><button class="btn primary" onclick="runAct()">Run once</button></div>
+    </div>
+  </div>
+
+  <div class="scrim" id="nf">
+    <div class="dlg" style="width:420px">
+      <h3>New file on <span id="nf-side">sparc</span></h3>
+      <div class="db">
+        <div class="row"><input id="nf-name" value="README.sparc"></div>
+        <p class="hint">Checked against this machine's name rules. The empty file is created now and opens in the editor.</p>
+      </div>
+      <div class="df"><button class="btn" onclick="document.getElementById('nf').classList.remove('open')">Cancel</button><button class="btn primary" onclick="createFile()">Create</button></div>
+    </div>
+  </div>
+
+  <div class="pv" id="pv">
+    <div class="pt"><b id="pv-title">Preview</b><button class="btn sm" id="pv-edit" onclick="startEdit()">Edit</button><button class="btn sm primary" id="pv-save" style="display:none" onclick="saveEdit()">Save (Ctrl+S)</button><button class="btn sm" onclick="openRules()">Configure...</button><button class="btn sm" onclick="closePv()">&#10005;</button></div>
+    <div class="po">
+      Viewer <select id="pv-viewer" onchange="pvRender(this.value)"><option>Text</option><option>Hex</option><option>Image</option><option>Archive listing</option></select>
+      <span id="pv-opts">Charset <select><option>ISO-8859-1</option><option>CP437</option><option>MacRoman</option></select> Line ends <select><option>Unix (LF)</option><option>DOS (CRLF)</option><option>Mac (CR)</option></select></span>
+    </div>
+    <div class="pc" id="pv-body"></div>
+    <div class="pf"><span id="pv-read"></span><span class="grow"></span><label><input type="checkbox"> Always use this viewer for <b id="pv-ext"></b></label><button class="btn sm">Load all</button></div>
+  </div>
+
+  <div class="scrim" id="rules">
+    <div class="dlg" style="width:640px">
+      <h3>Settings - Preview</h3>
+      <div class="db">
+        <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">Read at most <input style="flex:0 0 70px" value="256"> KB of a remote file <span class="grow"></span> Rules for <select style="font:inherit"><option>All machines</option><option>sparc (overrides)</option></select></div>
+        <table class="rules">
+          <tr><th>Extension</th><th>Viewer</th><th>Options</th><th></th></tr>
+          <tr><td>.txt .doc .1st .nfo .me</td><td><select><option>Text</option></select></td><td>machine's charset</td><td>&#10005;</td></tr>
+          <tr><td>.c .h .sh .pl Makefile*</td><td><select><option>Text</option></select></td><td>ISO-8859-1, tabs 8</td><td>&#10005;</td></tr>
+          <tr><td>.ans .asc</td><td><select><option>Text</option></select></td><td>CP437, ANSI colours</td><td>&#10005;</td></tr>
+          <tr><td>.gif .bmp .pcx .tga .xbm .mac .pct</td><td><select><option>Image</option></select></td><td></td><td>&#10005;</td></tr>
+          <tr><td>.tar .zip .Z .gz .sit .hqx .bin</td><td><select><option>Archive listing</option></select></td><td></td><td>&#10005;</td></tr>
+          <tr><td>.exe .com .o .so core</td><td><select><option>Hex</option></select></td><td>16 bytes per row</td><td>&#10005;</td></tr>
+          <tr><td>.ps .eps .pdf</td><td><select><option>Open with: SumatraPDF</option></select></td><td>detected in Settings -> Programs</td><td>&#10005;</td></tr>
+          <tr><td><i>no extension / unknown</i></td><td><select><option>Sniff: Text or Hex</option></select></td><td></td><td></td></tr>
+        </table>
+        <button class="btn sm" style="margin-top:8px">+ Add rule</button>
+      </div>
+      <div class="df"><button class="btn" onclick="closeRules()">Cancel</button><button class="btn primary" onclick="closeRules()">OK</button></div>
+    </div>
+  </div>
+
+  <div class="scrim" id="scrim">
+    <div class="dlg">
+      <h3>Leave home</h3>
+      <div class="db">
+        <div>Go to a folder on this computer:</div>
+        <div class="row" style="margin-top:6px"><input id="lh" value="C:\Users\dani\Downloads"><button class="btn">Browse...</button></div>
+        <div class="recent">
+          <div onclick="pick(this)">C:\Users\dani\Downloads</div>
+          <div onclick="pick(this)">E:\  (CF_DOS622)</div>
+          <div onclick="pick(this)">\\nas\retro\isos</div>
+        </div>
+        <p class="hint">Home (D:\Retro\sparc) stays one click away with the Home button.</p>
+      </div>
+      <div class="df"><button class="btn" onclick="closeDlg()">Cancel</button><button class="btn primary" onclick="leave()">Go</button></div>
+    </div>
+  </div>
+</div>
+
+<ul class="callouts">
+  <li><b>Tabs are connections.</b> The x logs off cleanly and closes the tab (asks first if something is running). Machines lists everything saved, with Disconnect all.</li>
+  <li><b>Machine header</b>: the file service and the command service connect separately, each with its own button. Here Telnet is not connected yet.</li>
+  <li><b>Local pane</b>: tree with +/- rooted at the home folder. <b>Leave home...</b> asks for a path (type it or Browse...); <b>Home</b> comes back; <b>Media</b> lists removable drives attached now.</li>
+  <li><b>Two areas, one splitter</b>: drag the bar to change the heights. <b>Swap</b> in the machine header puts the terminal on top. Both are remembered per machine.</li>
+  <li><b>Folder trees collapse</b> with the button at the left of each pane header (Ctrl+Shift+1 / 2), giving the list the full width.</li>
+  <li><b>Right-click a file -> Preview</b>: reads only the start of a remote file; the viewer comes from the extension rules (<b>Configure...</b> in the preview window).</li>
+  <li><b>Right-click a folder</b>: Archive as .tar.gz / .tar.Z runs on sparc through rsh when it has the tools, or inside legcon when it has no command service. The exact command is always shown first, editable, with Copy / Paste into Shell tab / Run once.</li>
+  <li><b>Edit</b> and <b>New file</b> (right-click empty space): an editor inside legcon; Save writes back to the machine. No external programs, no mounts.</li>
+  <li><b>Settings</b> in the machine header: that machine's services, home folder, layout, charset, crypto, host keys and credentials.</li>
+  <li><b>Terminal area</b> (1/4 by default): Shell (Connect button until used), Console (protocol commands and one-shot commands), Log, Transfers.</li>
+</ul>
+
+<script>
+  const tabs = [['shell', 'Shell'], ['console', 'Console'], ['log', 'Log'], ['transfers', 'Transfers', 2]];
+  const bodies = {
+    shell: `<div style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:8px;background:#fafafa">
+      <b>sparc offers Telnet, rlogin and rsh</b>
+      <span style="color:var(--muted)">Nothing is opened until you connect. The FTP connection above is not affected.</span>
+      <span><button class="btn primary" onclick="connectShell()">Connect with Telnet</button> <button class="btn">Choose service...</button></span></div>`,
+    shellOn: `<div class="subtabs"><span class="on">Telnet 1</span><span>+</span></div><div class="screen">SunOS 5.8
+
+login: dani
+Password:
+Last login: Wed Nov 12 21:38:02 from 192.168.1.20
+$ cd /export/home/dani/src
+$ <span class="cur"> </span></div>`,
+    console: `<div class="mono"><span class="m">FTP commands go to sparc on the files connection. HELP lists them.</span>
+<span class="c">ftp&gt; SITE CHMOD 755 Makefile.local</span>
+<span class="s">200 CHMOD command successful.</span>
+<span class="m">sparc (rsh): df -k /export/home        exit status 0</span>
+/dev/dsk/c0t0d0s7    2052764 1405120  586061    71%    /export/home</div>
+      <div class="cin"><select><option>FTP command</option><option>Run once (rsh)</option></select><input placeholder="Type a command, Enter sends it"><button class="btn">Send</button></div>`,
+    log: `<div class="mono"><span class="m">08:02:11  connected to 192.168.1.40:21</span>
+<span class="s">220 sparc FTP server (Version wu-2.6.1(1) Wed Mar 15 2000) ready.</span>
+<span class="c">USER dani</span>
+<span class="s">331 Password required for dani.</span>
+<span class="c">PASS ********</span>
+<span class="s">230 User dani logged in.</span>
+<span class="c">TYPE I</span>
+<span class="s">200 Type set to I.</span></div>`,
+    transfers: `<div style="overflow:auto"><table>
+      <tr><th>File</th><th>Direction</th><th>Progress</th><th class="r">Speed</th><th>State</th><th></th></tr>
+      <tr><td>gcc-2.95.3.tar.gz</td><td>Upload</td><td><span class="bar"><b style="width:9%"></b></span> 1.1 of 12.0 MB</td><td class="r">38 KB/s</td><td>Sending (binary)</td><td><button class="btn sm">Pause</button></td></tr>
+      <tr><td>bash-2.05b.tar.gz</td><td>Upload</td><td>waiting</td><td class="r"></td><td>File exists</td><td><button class="btn sm">Overwrite</button> <button class="btn sm">Skip</button></td></tr></table></div>`
+  };
+  let cur = 'shell', shellOn = false;
+  function render() {
+    document.getElementById('ttabs').innerHTML = tabs.map(([id, l, n]) =>
+      `<span class="tt ${cur === id ? 'on' : ''}" onclick="setT('${id}')">${l}${n ? `<span class="n">${n}</span>` : ''}</span>`).join('');
+    document.getElementById('tbody').innerHTML = bodies[cur === 'shell' && shellOn ? 'shellOn' : cur];
+  }
+  function setT(id) { cur = id; render(); }
+  function connectShell() { shellOn = true; render(); }
+  function swap() { document.getElementById('split').classList.toggle('swap'); }
+  // drag the bar between the areas to change their heights
+  (function () {
+    const bar = document.querySelector('.lbar'), split = document.getElementById('split');
+    const files = document.querySelector('.area.files'), term = document.querySelector('.area.term');
+    let drag = null;
+    bar.addEventListener('mousedown', e => { if (e.target.closest('.tt')) return; drag = { y: e.clientY, h: split.getBoundingClientRect().height, f: files.getBoundingClientRect().height }; e.preventDefault(); });
+    document.addEventListener('mousemove', e => {
+      if (!drag) return;
+      const dy = (e.clientY - drag.y) * (split.classList.contains('swap') ? -1 : 1);
+      const f = Math.min(Math.max(drag.f + dy, 60), drag.h - 80);
+      files.style.flex = `0 0 ${f}px`; term.style.flex = '1 1 0';
+      document.getElementById('splitinfo').textContent = 'files ' + Math.round(100 * f / drag.h) + '% / terminal ' + (100 - Math.round(100 * f / drag.h)) + '%  (remembered for sparc)';
+    });
+    document.addEventListener('mouseup', () => { drag = null; });
+  })();
+  function pm(el) { el.textContent = el.textContent === '+' ? '-' : '+'; }
+  function toggleMedia(e) { e.stopPropagation(); document.getElementById('media').classList.toggle('open'); }
+  document.addEventListener('click', () => document.getElementById('media').classList.remove('open'));
+  function away(p) {
+    document.getElementById('lcrumb').innerHTML = p + ' <span class="away">outside home</span>';
+    document.getElementById('lfoot').textContent = 'Outside home. Home button returns to D:\\Retro\\sparc';
+    document.getElementById('ltree').innerHTML = `<div class="node sel"><span class="pm" onclick="pm(this)">-</span><span class="fi"></span>${p}</div>`;
+  }
+  function goMedia(p) { away(p); }
+  function goHome() { location.reload(); }
+  function openDlg() { document.getElementById('scrim').classList.add('open'); }
+  function closeDlg() { document.getElementById('scrim').classList.remove('open'); }
+  function pick(el) { document.getElementById('lh').value = el.textContent; }
+  function leave() { away(document.getElementById('lh').value); closeDlg(); }
+  function showTab(t) {
+    document.getElementById('machines').classList.toggle('on', t === 'machines');
+    document.getElementById('view').style.display = t === 'machines' ? 'none' : 'flex';
+    document.getElementById('t-machines').classList.toggle('on', t === 'machines');
+    document.getElementById('t-sparc').classList.toggle('on', t !== 'machines');
+  }
+  function toggleTree(side) {
+    const pb = document.getElementById('pb-' + side), b = document.getElementById('tg-' + side);
+    const off = pb.classList.toggle('notree');
+    b.classList.toggle('off', off);
+    b.title = (off ? 'Show' : 'Hide') + ' folders (Ctrl+Shift+' + (side === 'l' ? '1' : '2') + ')';
+  }
+  // preview samples, keyed by file name
+  const samples = {
+    'Makefile.local': { v: 'Text', size: '1 KB', read: 'Read 1 KB of 1 KB', txt:
+`# local overrides for SunOS 5.8
+CC      = gcc
+CFLAGS  = -O2 -g
+PREFIX  = /usr/local
+LDFLAGS = -L/usr/local/lib -R/usr/local/lib
+
+all: tools
+
+tools:
+\tcd src && $(MAKE) CC=$(CC)` },
+    'notes.txt': { v: 'Text', size: '3 KB', read: 'Local file, 3 KB', txt:
+`sparc build notes
+-----------------
+- gcc 2.95.3 bootstraps with the Sun cc; use --with-gnu-as
+- bash 2.05b needs the patch in patches/
+- don't fill /export/home, the core file is 4 MB` },
+    'gcc-2.95.3.tar.gz': { v: 'Archive listing', size: '12.0 MB', read: 'Read 256 KB of 12.0 MB (listing so far)', txt:
+`gcc-2.95.3/                         dir   2001-03-16
+gcc-2.95.3/ChangeLog              154 KB   2001-03-16
+gcc-2.95.3/Makefile.in             28 KB   2001-03-16
+gcc-2.95.3/README                   3 KB   2001-03-16
+gcc-2.95.3/gcc/                      dir   2001-03-16
+...  (more entries after Load all)` },
+    'bash-2.05b.tar.gz': { v: 'Archive listing', size: '1.9 MB', read: 'Read 256 KB of 1.9 MB', txt:
+`bash-2.05b/                         dir   2002-07-17
+bash-2.05b/CHANGES                262 KB   2002-07-15
+bash-2.05b/configure              567 KB   2002-07-15
+...` },
+    'core': { v: 'Hex', size: '4.1 MB', read: 'Read 256 KB of 4.1 MB', txt:
+`00000000  7f 45 4c 46 01 02 01 00  00 00 00 00 00 00 00 00  .ELF............
+00000010  00 04 00 02 00 00 00 01  00 00 00 00 00 00 00 34  ...............4
+00000020  00 00 00 00 00 00 00 00  00 34 00 20 00 3c 00 00  .........4. .<..
+00000030  00 00 00 00 00 00 00 04  00 00 06 b4 00 00 00 00  ................` }
+  };
+  let ctxName = null, ctxSide = 'r';
+  const item = (label, key, fn, cls) => `<div class="${cls || ''}" ${fn ? `onclick="${fn}"` : ''}>${label}${key ? `<small>${key}</small>` : ''}</div>`;
+  function menuFor(kind) {
+    const copy = ctxSide === 'r' ? 'Download to This computer' : 'Upload to sparc';
+    if (kind === 'blank') return item('New file...', 'Ctrl+Shift+N', 'newFile()', 'b') + item('New folder', 'Ctrl+N') + '<hr>' + item('Refresh', 'F5');
+    if (kind === 'folder') {
+      const where = ctxSide === 'r' ? 'on sparc' : 'here';
+      return item('Open', 'Enter', '', 'b') + item(copy, 'F6') + '<hr>'
+        + item(`Archive as .tar.gz (${where})`, '', "action('tgz')")
+        + item(`Archive as .tar.Z (${where})`, '', "action('tgzZ')")
+        + item('Show command...', '', "action('tgz', true)")
+        + item('Folder size', '', "action('du')") + '<hr>'
+        + item('New file in here...', '', 'newFile()') + item('Rename', 'F2') + item('Delete', 'Del') + item('Get Info', 'Alt+Enter');
+    }
+    const arch = /\.(tar\.gz|tar\.Z|tar|zip)$/.test(ctxName);
+    return item('Preview', 'Space', 'preview()', 'b') + item('Edit', 'F4', 'preview(true)') + item('Open with: Notepad++, HxD (configured)', '') + item(copy, 'F6') + '<hr>'
+      + (arch ? item(`Extract here (${ctxSide === 'r' ? 'on sparc' : 'here'})`, '', "action('x')") + item('Show command...', '', "action('x', true)") + '<hr>' : '')
+      + item('Rename', 'F2') + item('Delete', 'Del') + item('Get Info', 'Alt+Enter') + item('Copy path');
+  }
+  function openMenu(e, kind) {
+    e.preventDefault(); e.stopPropagation();
+    const m = document.getElementById('ctxm');
+    m.innerHTML = menuFor(kind);
+    m.style.left = e.clientX + 'px'; m.style.top = e.clientY + 'px';
+    m.classList.add('open');
+  }
+  document.querySelectorAll('.list').forEach(list => list.addEventListener('contextmenu', e => {
+    const tr = e.target.closest('tr'), td = tr && tr.querySelector('td');
+    ctxSide = list.closest('.pane').classList.contains('active') ? 'r' : 'l';
+    if (!td || td.textContent.trim() === '..') { openMenu(e, 'blank'); return; }
+    ctxName = td.textContent.trim();
+    openMenu(e, td.querySelector('.fi.file') ? 'file' : 'folder');
+  }));
+  const dir = () => ctxSide === 'r' ? '/export/home/dani/src' : 'D:\\Retro\\sparc';
+  function action(kind, show) {
+    const remote = ctxSide === 'r';
+    const cmds = {
+      tgz: [`Archive as .tar.gz`, `cd '${dir()}' && tar cf - '${ctxName}' | gzip -9 > '${ctxName}.tar.gz'`, 'tar: /usr/bin/tar OK. gzip: /usr/local/bin/gzip OK. (SunOS tar has no z flag, so the pipe form is used.)'],
+      tgzZ: [`Archive as .tar.Z`, `cd '${dir()}' && tar cf - '${ctxName}' | compress > '${ctxName}.tar.Z'`, 'tar OK. compress: /usr/bin/compress OK.'],
+      du: [`Folder size`, `du -sk '${dir()}/${ctxName}'`, 'du OK.'],
+      x: [`Extract here`, `cd '${dir()}' && gzip -dc '${ctxName}' | tar xf -`, 'tar OK. gzip OK.']
+    }[kind];
+    document.getElementById('act-title').textContent = cmds[0] + ': ' + ctxName;
+    if (remote) {
+      document.getElementById('act-where').innerHTML = 'Runs <b>on sparc</b> through <b>rsh</b> (its command service), in <code>' + dir() + '</code>.';
+      document.getElementById('act-cmd').value = cmds[1];
+      document.getElementById('act-tools').textContent = 'Tools checked on connect: ' + cmds[2];
+    } else {
+      document.getElementById('act-where').innerHTML = 'Runs <b>here</b>, inside legcon (built-in tar + gzip writer); no program is started. Shown as the equivalent command:';
+      document.getElementById('act-cmd').value = cmds[1].replace(/'/g, '"');
+      document.getElementById('act-tools').textContent = 'Nothing to check: legcon writes the archive itself.';
+    }
+    document.getElementById('act').classList.add('open');
+  }
+  function closeAct() { document.getElementById('act').classList.remove('open'); }
+  function runAct() { closeAct(); cur = 'console'; bodies.console = bodies.console.replace('<div class="cin">', `<span class="m">sparc (rsh): ${document.getElementById('act-cmd').value.replace(/</g, '&lt;')}    exit status 0, 41 s</span>\n<div class="cin">`); render(); }
+  function toShell() { closeAct(); cur = 'shell'; render(); }
+  function newFile() { document.getElementById('nf-side').textContent = ctxSide === 'r' ? 'sparc' : 'This computer'; document.getElementById('nf').classList.add('open'); }
+  function createFile() {
+    document.getElementById('nf').classList.remove('open');
+    ctxName = document.getElementById('nf-name').value;
+    samples[ctxName] = { v: 'Text', read: 'New empty file', txt: '' };
+    preview(true);
+  }
+  function startEdit() {
+    const b = document.getElementById('pv-body');
+    b.contentEditable = 'true'; b.style.outline = '2px solid var(--accent)'; b.focus();
+    document.getElementById('pv-edit').style.display = 'none';
+    document.getElementById('pv-save').style.display = '';
+    document.getElementById('pv-viewer').disabled = true;
+    document.getElementById('pv-title').textContent = 'Edit - ' + ctxName + (ctxSide === 'r' ? '  (sparc)' : '  (This computer)');
+    document.getElementById('pv-read').textContent = 'ISO-8859-1, LF, unchanged since opened';
+  }
+  function saveEdit() {
+    document.getElementById('pv-read').textContent = ctxSide === 'r' ? 'Saved to sparc (STOR), remote file was unchanged' : 'Saved';
+  }
+  document.addEventListener('click', () => document.getElementById('ctxm').classList.remove('open'));
+  function pvRender(v) {
+    const s = samples[ctxName] || { txt: '(this mockup has no sample for this file)', read: '' };
+    const body = document.getElementById('pv-body');
+    document.getElementById('pv-opts').style.display = v === 'Text' ? 'inline' : 'none';
+    if (v === 'Image') { body.innerHTML = '<div class="img"></div>'; return; }
+    if (v === 'Hex' && s.v !== 'Hex') {
+      body.textContent = Array.from((s.txt || '').slice(0, 64)).reduce((a, c, i) => a + (i % 16 === 0 ? (i ? '\n' : '') + i.toString(16).padStart(8, '0') + '  ' : '') + c.charCodeAt(0).toString(16).padStart(2, '0') + ' ', '');
+      return;
+    }
+    body.textContent = s.txt;
+  }
+  function preview(edit) {
+    const b = document.getElementById('pv-body');
+    b.contentEditable = 'false'; b.style.outline = '';
+    document.getElementById('pv-edit').style.display = '';
+    document.getElementById('pv-save').style.display = 'none';
+    document.getElementById('pv-viewer').disabled = false;
+    const s = samples[ctxName];
+    const ext = ctxName && ctxName.includes('.') ? ctxName.slice(ctxName.lastIndexOf('.')) : (ctxName || '');
+    document.getElementById('pv-title').textContent = 'Preview - ' + ctxName + (ctxSide === 'r' ? '  (sparc)' : '  (This computer)');
+    document.getElementById('pv-ext').textContent = ext || 'this name';
+    document.getElementById('pv-read').textContent = s ? s.read : '';
+    const v = s ? s.v : 'Text';
+    document.getElementById('pv-viewer').value = v;
+    pvRender(v);
+    document.getElementById('pv').classList.add('open');
+    if (edit === true) startEdit();
+  }
+  function closePv() { document.getElementById('pv').classList.remove('open'); }
+  function openRules() { document.getElementById('rules').classList.add('open'); }
+  function closeRules() { document.getElementById('rules').classList.remove('open'); }
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey && e.shiftKey)) return;
+    if (e.key === '!' || e.code === 'Digit1') { e.preventDefault(); toggleTree('l'); return; }
+    if (e.key === '@' || e.code === 'Digit2') { e.preventDefault(); toggleTree('r'); return; }
+    if (e.key === 'S') { e.preventDefault(); swap(); }
+  });
+  render();
+</script>
+</body>
+</html>

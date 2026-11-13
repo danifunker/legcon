@@ -1,0 +1,584 @@
+# legcon: legacy connections, plan
+
+Status: **draft 10, 2026-11-13.** Nothing is built yet. Decisions marked *open* need an answer
+before the phase that depends on them starts.
+
+legcon is a **client**. It connects from a modern computer to an existing machine from the 1990s
+that already runs its own servers (FTP, Telnet, SMB, NFS, rsh, SSH), so the user can move files
+to and from it and run commands on it. It does not serve anything to the old machine.
+
+The main focus is **usability**: a user with a Windows 95 PC, a SPARCstation or an old Mac on the
+LAN types its address, sees what it offers, and drags files across, without knowing which SMB
+dialect or SSH cipher it needs.
+
+It follows the programming model of `../rusty-backup` (CONTRIBUTING.md § Architecture policy,
+docs/native_frontends_plan.md): model, controllers, views that only render, slow work as jobs.
+
+---
+
+## 1. How it fits together
+
+### 1.1 What the user sees
+
+The user thinks in **machines**, not protocols. A machine is one old computer; it offers one or
+more **services** (the SPARCstation has Telnet, FTP and NFS; the Win95 PC has SMB and maybe FTP).
+legcon picks the best service for each job and says which it picked.
+
+**There are no modes.** Each connection has one **connection view** with files on top and a
+terminal area below, and single clicks rearrange it. Mockup: [connection-view.html](mockups/connection-view.html).
+
+#### Connections: tabs in one window (D11)
+
+- **One tab per connected machine** in one main window. The tab shows the machine's name and its
+  state light (§1.4). Closing a tab is disconnecting that machine (a clean log-off, and it asks
+  first if a transfer, an unsaved edit or a shell is still running).
+- **The first tab is Machines**: the saved machines, Add machine (address, then the probe), and
+  Disconnect all. Opening a machine opens its tab.
+- **A tab can become its own window**: drag it out, or "Open in new window" on a machine. The
+  window is the same connection view; dragging it back docks it. So "one window with tabs" and
+  "a window per machine" are both available, and the user picks per machine. New connections open as
+  tabs (D11; mockup: [windows-or-tabs.html](mockups/windows-or-tabs.html)).
+- **Remote to remote:** drag files onto another machine's tab; the tab opens and the drop lands
+  in that machine's current folder.
+
+#### The connection view
+
+```
++------------------------------------------------------------------+
+| [Machines] [* sparc  x] [* win95  x] [o indy  x]  [+]            |  tabs = connections
++------------------------------------------------------------------+
+| sparc  FTP wu-ftpd 2.6.1  [plaintext]  [Swap]  [Connect/Disc.]  |  machine header
++--------------------------------+---------------------------------+
+| This computer  [Home] [Leave home...] [Media v]                  |
+| +- Retro        | name   size  | +- /export/home  | name  size   |  files area:
+| |  +- sparc     | ...          | |  +- dani        | ...          |  two panes, each a
+| |  - src        |              | |  - src          |              |  folder tree (+/-)
++--------------------------------+---------------------------------+  and a list
+| ==== splitter (drag) ====   Shell | Console | Log | Transfers     |  terminal tabs
+| $ ls -l                                                          |  terminal area,
+| ...                                                              |  1/4 of the height
++------------------------------------------------------------------+
+```
+
+- **Files area (top)**: two panes, this computer on the left and the machine on the right. Each
+  pane is a **folder tree with +/- expanders** next to a file list, like Explorer. Drag between
+  them, or copy with the keys (rusty-backup's browser pane and Commander key map underneath).
+  - **Each pane's tree collapses with one click** (a button at the left of the pane header, and
+    Ctrl+Shift+1 / Ctrl+Shift+2), leaving the file list the full width of the pane; the same
+    button brings it back. A View menu item collapses or shows both. The state is remembered per
+    pane and per machine.
+- **Terminal area (bottom)**, a quarter of the height by default (configurable in Settings; a
+  dragged splitter is remembered per machine), with tabs:
+  - **Shell**: a terminal session on the machine (Telnet, rlogin, SSH). It shows a **Connect**
+    button until the user presses it: the file service and the command service connect
+    separately, and nothing opens on its own. Several shell sessions per machine are allowed
+    (sub-tabs).
+  - **Console**: the protocol's own commands on the file connection, like a classic `ftp>` prompt
+    (`SITE CHMOD`, `QUOTE STAT`); a command line for one-shot commands (rsh, rexec, SSH exec)
+    with their output and exit status.
+  - **Log**: the protocol trace (commands and replies, passwords masked).
+  - **Transfers**: progress per file, pause, resume, retry, verify, conflicts. A copy starting
+    flashes the tab; it does not steal focus from the shell.
+- **Just two areas with a splitter** between them: drag it to change their heights. There is no
+  maximize, restore or tiling.
+- **Swap** (one button in the top area, in the machine header, and Ctrl+Shift+S) puts the
+  terminal area on top and the files below, and back. The split height and the order are
+  remembered per machine, so a machine used mostly as a shell opens that way.
+- **Machine header**: name, the services in use and their servers, the security badge, and
+  Connect / Disconnect for the file service and the command service.
+
+#### The local pane: home, leaving home, media
+
+- **Home folder.** On first run legcon asks for one folder to work from (for example
+  `D:\Retro`). Every connection's local pane opens there, with the tree rooted at it. A machine can
+  have its own home instead (for example `D:\Retro\sparc`), so its files land in the same place
+  every time.
+- **Leave home...** is the only way out of the home tree, on purpose: it asks for a path, with a
+  text box to type or paste one, a **Browse...** button (the Windows folder picker), and the recent
+  places. The pane then shows that place, with **Home** one click back.
+- **Media**: a drop-down of removable media attached right now, kept current as media arrive and
+  leave. One click goes there (a leave-home).
+  - Windows: drives that report removable or CD-ROM, plus fixed drives whose bus is USB, SD or MMC
+    (USB hard disks report as fixed), from the volume list and device-change notifications.
+  - macOS: the entries in `/Volumes` other than the startup volume.
+  - Linux: `/media/$USER`, `/run/media/$USER` and `/mnt`.
+- **The remote pane** works the same way: its tree is rooted at the login folder, **Go to
+  folder...** asks for a remote path, and Home goes back to the login folder.
+
+#### Preview
+
+- **Right-click a file -> Preview** (also Space, and a double-click setting) opens a preview
+  window beside the main one, local or remote. It stays open and follows the selection, so arrow
+  keys step through files.
+- **What it reads:** only the start of a remote file (a size limit in Settings, 256 KB by
+  default), read at an offset on protocols that allow it (SMB, NFS, SFTP) and with `REST` / `ABOR`
+  or a capped download on FTP. "Load all" fetches the rest. A preview never writes anything.
+- **Viewers:** Text (with the machine's character set and line endings, switchable in the
+  window), Hex, Image (GIF, BMP, PCX, TGA, XBM / XPM, MacPaint, PICT where we can decode it),
+  Archive listing (tar, ZIP, `.Z`, `.gz`, StuffIt / BinHex / MacBinary through rusty-backup's
+  `arc-mac`), and **Open with** a configured external program (§1.3).
+- **Edit** in the preview window turns a text preview into the editor (below).
+- **Configured by extension:** Settings -> Preview holds a table of extension -> viewer (and its
+  options, such as the character set), with defaults for the common 90s types. A machine can
+  override rows (CP437 text on a DOS machine, MacRoman on a Mac). Files without an extension, or
+  with one not in the table, are sniffed (text or binary) and fall back to Text or Hex. The
+  preview window has "Always use this viewer for .ext", which adds the row.
+- **Mac files:** a file with a resource fork shows a fork switch (data / resource), as
+  rusty-backup's File Info preview does.
+
+#### Editing and new files
+
+- **A text editor inside legcon** (a window like the preview window, from Preview -> Edit, a
+  double-click setting, or F4). It keeps the file's character set and line endings, shows them in
+  its status line, and saves back where the file came from: on a remote file, Save uploads it
+  (FTP `STOR`, SMB / NFS write, SFTP write), with a check that the remote file did not change
+  since it was opened (size and time where the protocol gives them). Undo, find / replace, go to
+  line. Built on rusty-backup's `model::text_edit`. "Edit with" can instead use a configured
+  external editor (§1.3).
+- **New file** (right-click in a list, or Ctrl+Shift+N): asks for a name, creates an empty file
+  on that side (an empty upload on FTP, a create on SMB / NFS / SFTP), and opens it in the editor.
+  The name is checked against the machine's rules first (8.3 on DOS, allowed characters, case).
+- **New folder** as before (Ctrl+N).
+
+#### Remote actions (right-click commands)
+
+Some jobs are easiest done on the old machine itself, such as packing a folder before copying it
+over a slow link. legcon offers them as **remote actions**: right-click menu items that run a
+command on the machine through its command service (rsh, rexec, SSH exec, or the Shell tab).
+
+- **Defined as data, not code**: each action is a template with a name, what it applies to (a
+  folder, a file, extensions), the tools it needs, and the command per system family. Examples
+  shipped with legcon:
+  - **Archive as .tar.gz**: `tar cf - 'src' | gzip -9 > 'src.tar.gz'` (the pipe form, because
+    SunOS / IRIX / HP-UX `tar` have no `z` flag);
+  - **Archive as .tar.Z** where `gzip` is missing: `tar cf - 'src' | compress > 'src.tar.Z'`;
+  - **Extract here** for `.tar`, `.tar.gz`, `.tar.Z`, `.zip` (with `unzip`);
+  - **Folder size** (`du -sk`), **Make executable** (`chmod +x`).
+- **Only offered when it can work**: the machine must have a command service, and the tools are
+  checked once per connection (`which tar gzip compress unzip`, or the probe's results); a missing
+  tool greys the item out and says which tool is missing.
+- **Show command...**: every action shows the exact command it will run, with the paths filled
+  in and quoted for that shell, before it runs. The user can edit it, copy it, run it once
+  (output and exit status in Console), or paste it into the Shell tab. The pane refreshes when it
+  finishes.
+- **The user can add their own** actions in Settings -> Remote actions, with the same fields.
+- **When the machine has no command service** (Win95 over SMB, many FTP-only boxes), the
+  archive actions run **on this computer instead**: legcon reads the remote folder over the file
+  connection and writes the `.tar.gz` locally itself (Rust `tar` + `flate2`), streaming, without
+  any tool installed anywhere. The menu says where it runs ("on sparc" or "here").
+- **No AI at run time.** Commands come only from these templates. Suggesting commands with a
+  model is a possible later extra, off by default and never needed (§11 O9).
+
+#### Remote management
+
+From the remote pane: rename, delete, new file, new folder, permissions / attributes, Get Info
+(with the remote's own metadata: DOS attributes, Unix mode, Mac type / creator), edit (the
+editor above), remote actions, and "Open shell here" (the Shell tab, `cd` to this folder after
+login where the protocol allows).
+
+#### Settings
+
+The **Settings** button in the machine header opens that machine's settings: name and address,
+which services to use for files and for commands, the home folder, the layout (split, which area
+is on top, trees shown), character set and name translation, legacy crypto, host-key checking,
+credentials and keys, the logout command, idle disconnect, and preview / remote-action
+overrides. App-wide settings (default home folder, split, preview rules, remote actions, key
+manager) are under Tools -> Settings.
+
+The CLI (`lc`) drives the same controllers as the GUI: `lc ls sparc:/usr/local`, `lc get`,
+`lc put`, `lc shell sparc`, `lc run sparc "uname -a"`, `lc action sparc tgz src`,
+`lc disconnect sparc`.
+
+### 1.2 What happens underneath
+
+```
+                       legcon window, lc CLI
+                                 |
+          controllers (machines, connection view, editor, terminal, transfers, actions)
+                                 |
+                    session manager (model)            one connection per machine and service,
+                          |                            shared by the panes, transfers and shell
+             FileSession / ShellSession traits (lc-core)
+                          |
+   lc-ftp  lc-telnet  lc-rcmd  lc-ssh  lc-smb  lc-nfs   (one crate per protocol)
+                          |
+                   TCP (later: serial)  ->  the old machine's own servers
+```
+
+- **One session manager** owns every connection. The connection view, a transfer and an edit on the
+  same machine share one connection where the protocol allows it. Old servers often allow very
+  few sessions (Win95 shares, single-user FTP daemons), so this matters.
+- **Every protocol crate implements the same two traits** (§3), so the controllers
+  never know which protocol they are talking to. Adding a protocol adds a crate and one line in
+  the service registry; no screen changes.
+
+### 1.3 No mounts; external programs only when configured
+
+legcon does not plug into the operating system's file system or shell (D22): it does not mount
+machines as drives or register itself as a handler. The "shim" of the first drafts is legcon
+itself: the window and the `lc` CLI are how a modern computer reaches the old machines.
+
+**External programs are allowed, but only ones legcon knows about**, on every platform:
+
+- **Settings -> Programs** lists them: a name, what it is for (text editor, hex editor, image
+  viewer, archiver, terminal, other), the path, and its arguments (`{file}`, `{line}`).
+- **Detection**: on first run and on "Detect again", legcon looks for a catalog of known programs
+  (shipped as data: Notepad++, VS Code, Sublime Text, BBEdit, gedit, Kate, HxD, Hex Fiend,
+  IrfanView, 7-Zip, and so on) and for anything the user names:
+  - Windows: the `App Paths` registry keys, `Program Files` folders and `PATH`;
+  - macOS: `/Applications` and `~/Applications` bundles, and `PATH`;
+  - Linux: `PATH` and the `.desktop` files in the XDG data folders.
+
+  Each found program is shown for the user to accept; nothing is added silently.
+- **Where they are used**: a preview rule can be **Open with** a program (§1.1 Preview), the editor
+  can be **Edit with** one, and a right-click **Open with** lists the programs that match the
+  file's kind.
+- **Remote files**: legcon downloads the file to a per-session temporary folder, starts the
+  program on it, and watches the file; when the program saves it, legcon offers to upload it (with
+  the same "changed on the server since?" check as the built-in editor). The temporary copy is
+  deleted when the tab closes.
+- **Never required**: every feature has a built-in path (viewers, editor, the tar.gz writer). A
+  program that is configured but missing is shown as missing, not run.
+
+What else legcon uses from the OS: the local file system (the home folder and wherever the user
+leaves home to), the standard folder picker behind Browse..., the list of removable drives for
+Media, and the OS credential store only for machines where the user opts in (§5).
+
+### 1.4 Connecting and disconnecting
+
+The user connects to and disconnects from machines **on demand**, and every protocol supports it
+the same way. Disconnecting is a clean log-off on the server side, not just a closed socket: a
+Windows 9x / NT machine that still thinks a client is attached to its share asks its own user
+about it at shutdown, and many old servers hold a session slot until they time out.
+
+- **One state machine per machine connection**, in the session manager, shown everywhere by the
+  same state light: `Disconnected -> Connecting -> Connected <-> Busy -> Disconnecting ->
+  Disconnected`, plus `Lost` (the link dropped) with a Reconnect action.
+- **Every protocol crate implements `disconnect()` as its proper log-off**, with a timeout, then
+  closes the socket:
+
+  | Protocol | Clean disconnect |
+  |---|---|
+  | SMB1 | close open files, `TREE_DISCONNECT` each share, `LOGOFF_ANDX`, then close the NetBIOS session |
+  | SMB2 | `CLOSE` open handles, `TREE_DISCONNECT`, `LOGOFF` |
+  | NFS | `UMNT` (MOUNT protocol) for each export, so the server's mount table is cleared |
+  | FTP | `ABOR` any transfer, `QUIT` |
+  | Telnet / rlogin | send the machine's logout command if one is set (`exit`, `logout`), then close |
+  | rsh / rexec / rcp | close (each command is its own connection) |
+  | SSH / SCP / SFTP | close channels, send `SSH_MSG_DISCONNECT` |
+  | TFTP, Kermit, ZMODEM | finish or cancel the current transfer cleanly |
+
+- **What a disconnect does to work in progress:** transfers in the queue for that machine ask
+  Finish first / Pause / Cancel; an unsaved edit asks to save; an open terminal asks to close
+  it. The CLI takes these as flags.
+- **Disconnect all** from the menu, and automatically when the app quits, when the computer goes to
+  sleep or shuts down (the app asks the OS for time to log off), and optionally after an idle time
+  per machine.
+- **Connections are never opened behind the user's back.** A disconnected machine's tab shows a
+  Connect button, not a silent reconnect.
+
+## 2. Decisions so far
+
+| # | Decision |
+|---|---|
+| D1 | **legcon is a client only.** It connects to existing legacy servers. No reverse bridge (serving legacy protocols to old machines) is planned. |
+| D2 | **Same MVC as rusty-backup, binding from day one.** Model (`src/model/`, the protocol crates), controllers (`src/controller/`, `Action`s in, `Effect`s out, exhaustive enums, widget ids, key map as data), views that only render. |
+| D3 | **Every slow operation is a `Job`** (probe, connect, list, transfer, save, remote action). No raw `thread::spawn` outside the job module. |
+| D4 | **Crates are for protocols only**: one crate per protocol, plus `lc-core` (the traits, `Entry`, character sets) they all share. Each depends only on `lc-core`, usable on its own like rusty-backup's `fs-*` crates on `disk-core`. Where a good crate exists, the protocol crate wraps it; where not, it implements the protocol. |
+| D5 | **Machines, not protocols, in the UI.** The user picks a machine; legcon picks the service and says which. |
+| D6 | **Legacy crypto and plaintext auth are allowed per machine, with a visible warning.** Never globally, never silently. |
+| D7 | **CLI and GUI only, no TUI.** The Win32 GUI is built from the first protocol phase on, next to the CLI; later GUI shells (AppKit, GTK4) follow rusty-backup's shell rules (every shell shows the same UI). |
+| D8 | **Modern stable Rust** (decided 2026-11-13). No Rust 1.73 floor, so legcon can reuse suppaftp, ssh2, `smb` and vt100. |
+| D9 | **One connection view per machine, no modes** (§1.1, replaces the Files / Shell modes of draft 4): files on top in two panes (Transmit-like, each a folder tree with +/- and a list), the terminal area below at 1/4 height by default, a draggable splitter, and one **Swap** button in the top area that exchanges the two areas (no maximize, restore or tiling). |
+| D10 | **Connect and disconnect on demand, for every protocol, with a clean server-side log-off** (§1.4). |
+| D11 | **A tab per connection** in one window; closing a tab disconnects; a tab can be dragged out into its own window and back (decided 2026-11-13, option A of the mockup). |
+| D12 | **The MVC code is app code, not a crate**, as in rusty-backup: jobs in `src/model/job.rs`, the controller trait, effects, log and key map in `src/controller/`, copied from rusty-backup and adapted. New crates go under `crates/` in this repo and are protocol crates only (2026-11-13). |
+| D13 | **Win32 is the first and main GUI shell** (2026-11-13). |
+| D16 | **A local home folder**, picked on first run and overridable per machine; **Leave home...** (type a path or Browse...) is the way out, Home the way back, and a **Media** list goes to removable media (§1.1). |
+| D17 | **The terminal area has tabs**: Shell (with a Connect button), Console (the protocol's own commands and one-shot commands), Log and Transfers (§1.1). |
+| D18 | **Credentials are part of the product**: SSH key generation and import, throw-away keys, a guided set-up that installs a key on an old machine, an easy host-key bypass for machines that are reinstalled often, and passwords saved in legcon's own machines file by default (§5, D28). |
+| D20 | **Each pane's folder tree collapses with one click**, remembered per pane and machine (§1.1). |
+| D21 | **Right-click Preview**, reading only the start of a remote file, with viewers chosen by extension in Settings and overridable per machine (§1.1). |
+| D22 | **No mounts or shell integration**; legcon itself is the way in (replaces the shim layer of earlier drafts). **External programs only when configured or detected**, the same way on every platform, and never required (§1.3). |
+| D23 | **In-app text editor and New file**, saving back to wherever the file lives (§1.1). |
+| D24 | **Remote actions as data**: right-click commands from templates (Archive as .tar.gz and others), offered only when the machine has the tools, always showing the exact command first, run locally in Rust when the machine has no command service (§1.1). |
+| D25 | **No AI at run time.** Everything works from code and templates; model-suggested commands are at most a later, optional extra. |
+| D26 | **No inbound connections to the client, ever.** legcon only makes outgoing connections, so nothing has to be open or forwarded on the user's computer: FTP uses passive mode only (`PASV`, `EPSV` where offered; no `PORT`), rsh is asked for no stderr channel, NFS works without the lock manager's callbacks (no NLM), and no protocol is used in a mode where the server connects back. |
+| D27 | **rsh, rlogin and rcp come later** (phase 8). rexec, Telnet, FTP and SSH cover commands and files until then (§4.2). |
+| D28 | **Passwords are saved in legcon's own machines file by default** (encoded, not encrypted, as FileZilla does), with "Ask every time" and the OS credential store as per-machine choices (§5). |
+| D19 | **SSH is libssh2** through the `ssh2` crate, built with a vendored OpenSSL with the legacy algorithms on, because the target is SSH servers from 2005 and earlier (§4.1). |
+| D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
+
+## 3. The core traits (`lc-core`)
+
+```rust
+pub trait Connection: Send {                     // every protocol, file or shell
+    fn state(&self) -> ConnState;                // drives the state light (§1.4)
+    fn disconnect(&mut self, timeout: Duration) -> Result<()>;   // clean server-side log-off
+}
+pub trait FileSession: Connection {
+    fn caps(&self) -> &FileCaps;                 // random read / write, rename, set times, ...
+    fn list(&mut self, dir: &RemotePath) -> Result<Vec<Entry>>;
+    fn stat(&mut self, p: &RemotePath) -> Result<Entry>;
+    fn open_read(&mut self, p: &RemotePath, at: u64) -> Result<Box<dyn Read + Send + '_>>;
+    fn open_write(&mut self, p: &RemotePath, mode: WriteMode) -> Result<Box<dyn Write + Send + '_>>;
+    // mkdir, remove, rename, set_times, set_mode: gated by caps
+}
+pub trait ShellSession: Connection {
+    fn caps(&self) -> &ShellCaps;                // pty, one-shot exec, exit status, window size
+    fn exec(&mut self, cmd: &str) -> Result<ExecResult>;
+    fn open_pty(&mut self, term: &str, size: (u16, u16)) -> Result<PtyStream>;
+}
+```
+
+- `Entry` keeps what old systems have: the raw name bytes and the decoded name, DOS attributes,
+  Unix mode and owner, Mac type / creator and a fork flag, VMS versions, and how far each
+  timestamp can be trusted (an FTP `LIST` line may have no year and no zone).
+- `RemotePath` keeps the remote's separator and case rules, so nothing above it guesses.
+- **Translation** (in `lc-core`, shared by all): character sets (CP437 / 850 /
+  1252, MacRoman, Shift-JIS, ISO-8859-x, per machine), names illegal on one side, 8.3 limits, line
+  endings (opt-in, per extension), Mac forks as AppleDouble / MacBinary (rusty-backup's `arc-mac`
+  crate), DOS 2-second times and zone-less times.
+- **Blocking interface.** rusty-backup runs each connection on a job thread with blocking I/O and
+  no async runtime. The traits are blocking too; a crate that wraps an async library runs its own
+  small runtime inside (see SSH below), so callers never see async.
+
+## 4. Protocol crates
+
+One crate per protocol. "Reuse" is what exists on crates.io today (checked 2026-11-13) and what
+we would do with it; every reuse is confirmed by a spike against the lab before it is adopted.
+
+### 4.1 The initial set
+
+| Crate | Protocol | Existing crates | Plan | What we add on top |
+|---|---|---|---|---|
+| `lc-ftp` | FTP | **suppaftp** (mature; sync and async; active and passive mode; built-in `LIST` parser for Unix and DOS only). **ftp-cmd-list-parse** (Unix and DOS only). | **Wrap suppaftp** in sync mode for the control and data connections, **passive mode only** (D26). | The `LIST` parsers the 90s need: VMS, NetWare, OS/2, MVS, AS/400, MacOS (NetPresenz, AppleShare IP), Windows NT/IIS variants, each with fixtures; quirks (no `SIZE` / `MDTM` / `MLSD`, `TYPE L 8`, `REST` support, `SITE` commands). Fixes found go upstream. |
+| `lc-telnet` | Telnet | **libtelnet-rs** and its fork **libmudtelnet** (sans-I/O option parser: WILL/WONT/DO/DONT, subnegotiation, NAWS, TTYPE). The **telnet** crate refuses every option, so it is not usable. | **Wrap libtelnet-rs** (or libmudtelnet) as the option parser, with our own socket loop. | Option policy (ECHO, SGA, BINARY, TTYPE, NAWS), 7-bit hosts, login scripting (wait for `login:`, send the user). |
+| `src/model/term` (app code, not a crate) | terminal screen model (used by Telnet, rlogin, SSH) | **vt100** (a terminal parser plus in-memory screen, on top of **vte**). | **Reuse vt100** for VT100 / xterm. | VT52, VT220 extras, ANSI-BBS with CP437, and scrollback, if vt100 lacks them (extend or contribute). |
+| `lc-rcmd` | rsh, rlogin, rexec, rcp | None found. | **Write it**: each protocol is a few hundred lines. | The reserved source port rsh / rlogin / rcp use (§4.2); rexec needs none. Shares the rcp code with SCP. |
+| `lc-ssh` | SSH-2, SCP, SFTP | **ssh2** (libssh2; blocking API, which fits our job threads; SCP, SFTP v3, exec, pty, public-key and agent auth). libssh2 has long carried the pre-2005 set: `diffie-hellman-group1-sha1`, `group14-sha1`, `group-exchange-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`, `blowfish-cbc`, `cast128-cbc`, `arcfour`, `aes*-cbc`, `hmac-md5`, `hmac-sha1` (and `-96` variants), depending on how it is built. **russh** lacks `ssh-dss`, `hmac-md5` and `blowfish-cbc`, so it is not chosen (D19). | **Wrap ssh2**, built with `vendored-openssl`, the OpenSSL legacy provider loaded and DSA enabled, so the algorithm set does not depend on the user's system. The phase 0 spike lists `libssh2_session_supported_algs()` and connects to every SSH server in the lab. | Target servers up to 2005: OpenSSH 2.x to 4.2, SSH.com / F-Secure 2.x-3.x, Sun SSH 1.0 (Solaris 9), Dropbear 0.4x. **SSH-1** (servers from before about 2000 that speak nothing else) is our own code, later. |
+| `lc-smb` | SMB1, SMB2 (+ NetBIOS) | **smb** (pure Rust SMB2/3 client; NTLM and Kerberos through `sspi`) and **smb2** (pure Rust SMB2/3; SMB1 is an explicit non-goal). **No SMB1 client** exists in Rust. | **Write SMB1 and NetBIOS**; **wrap `smb`** for SMB 2.0.2 / 2.1 behind the same crate. | SMB1 dialects from CORE / LANMAN1.0 / LANMAN2.1 (WfW, Win95, OS/2) to NT LM 0.12 (NT4, Samba); share-level passwords (Win9x); LM and NTLMv1 auth; NetBIOS over TCP (port 139), name lookup and workgroup browsing. The biggest crate in the plan. |
+| `lc-nfs` | NFS v2, v3 (+ ONC RPC, portmapper, MOUNT) | **nfs** (a client claiming v3 and v4, blocking by default, early development, not for production yet). NFS **server** crates (nfsserve, fernfs) are not useful here. **No NFSv2** found. | **Spike the `nfs` crate** for its RPC / XDR and v3 client; write v2 and fill gaps ourselves, upstream where possible. | UDP and TCP (SunOS 4, IRIX, HP-UX, Ultrix are often UDP-only), 8 KB UDP transfers and retransmits, AUTH_UNIX with a chosen uid / gid, a reserved source port when the server checks for one (§4.2). |
+
+### 4.2 Reserved source ports (rsh, rlogin, rcp, some NFS servers)
+
+**Why it exists.** rsh, rlogin and rcp have no password: the server trusts the client because of
+`.rhosts` / `hosts.equiv` *and* because the connection comes from a source port below 1024. On a
+1990s Unix only root could bind such a port, so a low port meant "this is the real, setuid-root
+`rsh` program, not some user's script". It is how those protocols authenticate, so the servers
+refuse anything else ("permission denied" or a silent close). Some NFS servers check the same
+thing (`nfs_portmon` on SunOS / Solaris, the `secure` export option on Linux), but on most 1990s
+servers it is off unless the admin turned it on.
+
+**It is a problem only on Linux.** The restriction is in the client's OS, not the protocol:
+
+| Client OS | Binding a source port below 1024 | What legcon does |
+|---|---|---|
+| **Windows** (the main target) | Allowed for any user; Windows has no privileged ports | Just binds one (1023 downwards, as `rresvport()` does) |
+| **macOS 10.14+** | Allowed without root when binding the wildcard address, which is what a client does | Same; the phase 0 spike confirms it on current macOS |
+| **Linux** | Needs root, `CAP_NET_BIND_SERVICE`, or a lowered `net.ipv4.ip_unprivileged_port_start` | The package grants the capability to the binary once at install (`setcap cap_net_bind_service=+ep`); if it is missing, the error explains it and offers the alternatives below |
+
+**Ways around it that need no low port at all**, which legcon offers first when a machine has
+them:
+- **rexec** (port 512): runs a command with a user name and password, from any source port. Most
+  1990s Unixes ship `rexecd`. legcon uses it for one-shot commands and remote actions.
+- **Telnet** instead of rlogin for an interactive shell.
+- **FTP** instead of rcp for files.
+- rsh's **second connection** (the server connects back to the client for stderr, also from a
+  low port, and it fails behind NAT) is skipped: legcon sends port `0`, which merges stderr into
+  the output.
+
+No elevated helper process is needed on any platform.
+
+### 4.3 Other connection types worth adding
+
+Ranked by how often they unlock a 90s machine against the effort. All are clients.
+
+| Tier | Crate | Type | Why | Existing crates |
+|---|---|---|---|---|
+| **A** | `lc-serial` + `lc-kermit`, `lc-xmodem` | Serial (RS-232) link, Kermit, X/Y/ZMODEM | Many 90s machines have no working network but every one has a serial port and a terminal program. Gives a shell and file transfer over a null-modem cable, and also over Telnet. | **serialport** for the port. **rmodem** (XMODEM), **ymodem**, **txmodems** (ZMODEM still in progress). No Kermit. So: reuse the port crate, write ZMODEM and Kermit. |
+| **A** | `lc-tftp` | TFTP | The only transfer some PROMs, routers and netbooting workstations speak. | **tftp_client** (sync, RFC 1350, retries). Wrap it; add block-size options (RFC 2347 / 2348) if missing. |
+| **A** | `lc-afp` | AFP 2.x over TCP (DSI) | Mac OS 7.6 to 9 and AppleShare IP, with forks native. AFP over AppleTalk (older Mac OS) needs raw link-layer frames and is much harder; later. | None found; write it. |
+| **B** | `lc-http` | HTTP/1.0, WebDAV, Gopher | 90s web servers on old Unix and Macs; Gopher is tiny. | Any small HTTP client (`ureq`) for HTTP; write Gopher. |
+| **B** | `lc-rsync` | rsync (old protocol versions) | Late-90s Unix often has rsync 2.x; resume and deltas. | To check. |
+| **C** | - | NetWare NCP over IPX, LapLink, UUCP, DECnet / LAT | Niche, and IPX / LAT need raw frames and drivers. | - |
+
+Recommendation: serial with Kermit / ZMODEM and TFTP right after the initial set, then AFP.
+
+## 5. Usability features
+
+Each lives in a controller, so every view and the CLI get it.
+
+- **Probe on add.** Typing an address starts a probe job: the usual ports (21, 22, 23, 69/udp,
+  111, 139, 445, 512-514, 548, 2049), banners, the NetBIOS name, the SMB dialect, the SSH version
+  and algorithm lists. Result: "Looks like Windows 95 (LANMAN 2.1, share-level). Files: SMB.
+  Commands: none." The user accepts or changes it.
+- **Quirk database**, as data the user can extend: a banner or dialect maps to settings (passive or
+  active FTP, the `LIST` parser, charset, SSH algorithms).
+- **Errors that say what to do**: "This server only offers `ssh-dss` and
+  `diffie-hellman-group1-sha1`, which are weak. Allow them for this machine only?"
+- **Passwords are saved inside legcon by default** (D28), the way FileZilla does it: in legcon's
+  own machines file (`machines.json` in the app's config folder), next to the machine they belong
+  to. FileZilla keeps them in `sitemanager.xml`, Base64-encoded since 3.13, which hides them from
+  a glance but is not encryption. legcon does the same and says so plainly in Settings. Per
+  machine, the user can instead choose:
+  - **Ask every time** (kept in memory until the tab closes, never written);
+  - **OS credential store** (Windows Credential Manager, macOS Keychain, Secret Service), opt-in
+    per machine, the machines file then holds only a reference.
+
+  A **master password** that encrypts every saved password in the machines file (as FileZilla
+  added later) is a later option (O10). SSH keys (§5.1) remain the way to avoid passwords at all.
+  Key handling and the guided set-up are in §5.1.
+- **Transfer queue** with pause, resume (`REST`, offsets), retry, verify (size, and a checksum where
+  the remote can compute one: `SITE CRC`, `XCRC`, `md5sum` over a shell), and a conflict question
+  per file or for all.
+- **Protocol trace** per session (commands and replies, passwords masked), one click to copy for a
+  bug report.
+- **A security badge** on every plaintext or weak-crypto session that stays visible without
+  nagging.
+
+### 5.1 Credentials and keys
+
+Old machines are insecure, so legcon helps the user make them less so where the machine allows
+it, and walks them through it rather than leaving it to manuals.
+
+- **Key manager** (a window off the machine settings and the app menu): generate keys in a form
+  the target accepts (RSA 2048 with `ssh-rsa`, DSA 1024 for servers that only take `ssh-dss`),
+  import existing keys (OpenSSH, PuTTY `.ppk`, SSH.com / SECSH format), export the public half in
+  each of those formats, passphrase-protect them, and use the Windows OpenSSH agent or Pageant.
+- **"Set up key login" walkthrough** for a machine that has SSH: legcon logs in once with the
+  password, finds the server type from its banner, and installs the public key the way that server
+  wants it: `~/.ssh/authorized_keys` or `authorized_keys2` (OpenSSH 2.x-3.x), `~/.ssh2/authorization`
+  plus a key file (SSH.com / F-Secure), with the folder and file permissions those servers insist
+  on. It then tests a key login, and offers to stop saving the password.
+- **Weak-crypto opt-in per machine**, shown in the walkthrough and the settings: the algorithms the
+  server offered, which ones legcon will accept, and why.
+- **Throw-away keys.** Vintage machines are wiped and reinstalled often, so keys are cheap: one
+  click makes a key for one machine (named after it), the walkthrough installs it, and after a
+  reinstall "Set up key login" again replaces it. Keys can also be shared across a group of
+  machines.
+- **Host keys, with an easy bypass.** A reinstalled machine has a new host key, which on a modern
+  client is a scary stop. legcon shows the fingerprint (MD5 hex as well as SHA-256, as an old
+  server's admin would see it) and offers, in one dialog:
+  - **Accept the new key** (replace the stored one; one click, the default for a machine marked
+    "reinstalled often"),
+  - **Accept once** (this connection only),
+  - **Cancel**.
+
+  A machine setting, **Don't check host keys**, skips the check entirely for lab machines; the
+  machine header shows it as part of the security badge. Nothing here is global.
+- **Plaintext protocols** (FTP, Telnet, rsh, SMB with LM auth): when the machine also offers SSH,
+  legcon says so and offers to switch; for rsh, an optional walkthrough sets up `.rhosts` for this
+  computer only, with what that trusts spelled out.
+
+## 6. Reuse from rusty-backup
+
+| What | From | How |
+|---|---|---|
+| `Job`, `JobCtx`, `Notify`, `Resource`, `JobRegistry`, `spawn_guarded` | `src/model/job.rs`, `worker.rs` | Copy into `src/model/job.rs` (D12). |
+| `Controller` trait, the generic `Effect`s (pickers, `Confirm`, `AskText` with validator, `AskPassword`, `Message`, clipboard), log store, key-map types, scripted picks, labels | `src/controller/{mod,keys,labels,log,picks,task}.rs` | Same shared crate; each app wraps it in its own exhaustive `Effect`. |
+| Browser pane controller with profiles, Commander two-pane layout and keys, staged operations with review | `src/controller/browser`, `commander` | Port the design: a pane's source becomes "this computer or a machine". |
+| Win32 shell skeleton (Common Controls v6, UIA ids, effect host), later GTK4 and AppKit | `frontends/*` | Copy the skeletons. |
+| `check-boundaries.sh`, `check-platform-matrix.py`, `platform_matrix.md`, `capabilities.md`, `tests/ui_scenarios/`, tier 8 flows and drivers | `scripts/`, `docs/`, `regression-tests/` | Copy and adapt. |
+| AppleDouble, MacBinary, BinHex | `crates/arc-mac` | Depend on it for Mac files over FTP, SMB and NFS. |
+| Filesystem crates | `crates/disk-core`, `fs-*`, `dsk-*` | Optional: browse inside a disk image on the old machine through a random-read `FileSession`. |
+
+## 7. Repository layout
+
+```
+Cargo.toml          workspace; bin `lc` (CLI)
+crates/
+  lc-core           traits, Entry, RemotePath, caps, errors, character sets
+  lc-ftp  lc-telnet  lc-rcmd  lc-ssh  lc-smb  lc-nfs                initial protocols
+  lc-serial  lc-kermit  lc-xmodem  lc-tftp  lc-afp                  later protocols
+src/
+  model/            job.rs (from rusty-backup), session manager, service registry, transfer
+                    engine, machine and credential store, probe (service discovery), text
+                    editor, remote-action templates, local tar.gz writer, terminal screen model
+  controller/       the controller trait, effects, log, key map (from rusty-backup); machines,
+                    connection view, browser panes, editor, terminal, transfers, actions, settings, app
+  cli/              `lc` verbs
+frontends/          win32, gtk4, appkit
+lab/                the legacy-server test lab (§8)
+docs/               this plan, platform_matrix.md, capabilities.md, protocol notes
+tests/ui_scenarios/ controller scenarios
+```
+
+## 8. Testing: the legacy lab
+
+- **Containers** for servers that still build: Samba with `server min protocol = LANMAN1` / `NT1`,
+  vsftpd, ProFTPD and an old wu-ftpd, inetutils `telnetd` / `rshd` / `rlogind` / `rexecd`,
+  Dropbear and old OpenSSH (2.x, 3.x) with legacy algorithms, unfs3 and a kernel NFS v2 / v3
+  server, tftpd.
+- **Emulated real machines**, reusing rusty-backup's `regression-tests/emulator/`: Windows 95 and
+  NT 4 (86Box or QEMU), SunOS / Solaris (QEMU SPARC), Mac OS 8 / 9 (QEMU PPC), an early Linux;
+  IRIX and NeXTSTEP where emulation allows.
+- **Recorded fixtures**: `LIST` outputs, SMB negotiate replies and SSH KEXINIT lists per server
+  family as unit-test inputs, so most tests need no network.
+- **Controller scenarios** and **tier 8 flows** per shell, as in rusty-backup.
+
+## 9. Phases
+
+Each phase is small slices; each slice has its tests and every view handles its new Actions.
+
+| Phase | Content | Exit |
+|---|---|---|
+| **0. Groundwork** | Workspace, the MVC code (D12), `lc-core`, machine store, session manager, the `lc` CLI and the Win32 shell skeleton (window, connection tabs, connection view with its splitter and Swap, home folder), boundary and matrix scripts, the container lab; spikes for suppaftp, libtelnet-rs, vt100, ssh2, `smb`, `nfs` | Spike verdicts written down; CI green; lab containers start |
+| **1. FTP + Telnet** | `lc-ftp` with the `LIST` parsers, `lc-telnet`, the terminal screen model; Machines, connection view, terminal and transfers controllers; `lc ls/get/put/shell` | Browse and transfer against every FTP server in the lab and a Telnet session to each Unix in it, from the CLI and the Win32 GUI |
+| **2. Probe** | the probe (`src/model/probe`), the quirk database, error messages, protocol trace | Adding any lab machine by address suggests the right services and settings |
+| **3. SMB1 / SMB2** | `lc-smb`: NetBIOS, SMB1 dialects, share-level security, LM / NTLMv1 / NTLMv2, SMB2 through `smb` | Win95, NT4 and Samba (LANMAN1, NT1, SMB2) shares browse, read and write |
+| **4. SSH + rexec** | `lc-ssh` (shell, exec, SCP, SFTP), the per-machine legacy-algorithm policy; rexec from `lc-rcmd` (no low port needed) | Shells, commands and transfers to old OpenSSH / Dropbear and rexecd in the lab |
+| **5. NFS v2 / v3** | `lc-nfs` over UDP and TCP | Mount, list, read and write on the lab servers and an emulated SunOS |
+| **6. Win32 polish** | Whatever phases 1-5 left unfinished in the GUI; the UIA flows cover every screen | Tier 8 flows pass on Win32 |
+| **7. Editor, preview, remote actions** | The editor and New file, the preview viewers and rules, remote-action templates with Show command, the local tar.gz writer | Edit and save a file on every protocol in the lab; Archive as .tar.gz on a Unix with and without gzip, and on Win95 (local) |
+| **8. Tier A extras** | rsh, rlogin and rcp (§4.2, deferred from phase 4), serial, Kermit, ZMODEM, TFTP, then AFP over DSI | A file to and from an emulated DOS machine over a virtual null-modem |
+| **9. Other GUI shells** | AppKit, GTK4 | Tier 8 flows on every shell |
+
+## 10. Risks
+
+| Risk | Mitigation |
+|---|---|
+| A wrapped crate does not handle a 90s quirk, or is abandoned | Wrap it behind our crate's API, contribute fixes upstream, and be ready to fork; the lab tells us early |
+| SMB1 and FTP listings are a long tail of quirks | Fixtures per server family, the quirk database as data, the protocol trace for user reports |
+| Legacy SSH algorithms are being dropped from libssh2 and OpenSSL | Build libssh2 and OpenSSL ourselves (vendored, pinned), with the legacy options on; the lab catches a removal on upgrade |
+| rsh (and NFS servers that check) need a source port below 1024 | Free on Windows and macOS; on Linux the package grants `CAP_NET_BIND_SERVICE` once; rexec, Telnet and FTP need no low port (§4.2) |
+| Plaintext protocols expose passwords, and the machines file holds them encoded, not encrypted | Per-machine opt-in for weak protocols, a visible badge, "Ask every time" and the OS store as per-machine choices, a master password later (O10) |
+
+## 11. Open decisions
+
+| # | Question | Recommendation |
+|---|---|---|
+| O9 | Model-suggested commands (a later extra): wanted at all, and if so local-only or a service? | Not before 1.0; decide then |
+| O10 | A master password that encrypts the saved passwords in the machines file | After phase 1; the file format leaves room for it (`password` holds a tagged value: `b64:` now, `enc:` later, `os:` for the credential store) |
+| O6 | Name | `legcon` / `lc` as a working name |
+
+## 12. Next: GUI mockups and layouts
+
+The plan is detailed enough to design the UI from: the screens, the connection states, the
+actions on a machine and a file, and what each protocol can and cannot do (`FileCaps`,
+`ShellCaps`) are all named above. The mockups come **before** the controllers are written,
+because in this architecture the controllers' state, `Action`s, widget ids and labels are what the
+mockups show; the mockups become the controller spec.
+
+Mockups to make, in this order (done ones link to their file):
+1. [connection-view.html](mockups/connection-view.html): the connection view with its tabs, the
+   files area (trees with +/-), the terminal area at 1/4 with a splitter, and Swap; Leave
+   home... and the Media list.
+2. [windows-or-tabs.html](mockups/windows-or-tabs.html): a connection as a tab or as its own
+   window (decided: tabs, drag out, D11).
+3. The Machines tab (cards and rows), with every connection state.
+4. Add machine: address, probe progress, the result and its suggested settings.
+5. Machine settings: services, home folder, layout, charset and translation, legacy-crypto opt-in,
+   host-key checking, logout command, idle disconnect, credentials.
+6. Key manager and the "Set up key login" walkthrough; the changed-host-key dialog.
+7. Disconnect with work in progress (transfers, an unsaved edit, a shell), and Disconnect all.
+8. Get Info for a remote file with legacy metadata, and the permissions / attributes editor.
+9. Preview window and Settings -> Preview (in connection-view.html).
+10. Transfers tab details: conflicts, verify, a failed transfer with its protocol trace.
+11. Editor, New file, a remote action with Show command (in connection-view.html).
+12. Errors that need a decision (weak SSH algorithms, plaintext password, low source port on Linux).
+13. Settings -> Programs: detected programs, adding one, Open with on a remote file.
+
+What stays for later, per phase, not needed for the mockups: each protocol crate's design notes
+(written when its phase starts, after its spike), the machine store's file format, and the error
+type hierarchy.
