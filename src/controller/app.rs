@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::connection::{self, ConnectionController};
 use super::log::LogStore;
 use super::machines::{suggest_id, validate_id, MachineRow, MachinesController, NewMachine};
-use super::{not_empty, ChoiceSpec, Controller, Effect, PickSpec, ServiceKind, TextSpec};
+use super::{not_empty, ChoiceSpec, Controller, Effect, PickSpec, ServiceKind, TabColor, TextSpec};
 use crate::model::config;
 use crate::model::job::{Job, Notify};
 use crate::model::session::Sessions;
@@ -41,6 +41,8 @@ pub enum Action {
     RemoveMachine(String),
     RemoveConfirmed(bool),
     DisconnectAll,
+    /// Give a machine's tab another colour (from its tab's context menu).
+    SetColor(String, TabColor),
     Quit,
     /// An action for a connection tab.
     Conn(usize, connection::Action),
@@ -158,9 +160,8 @@ impl AppController {
             return;
         }
         let mut tab = self.tabs.remove(i);
-        if let Some(job) = tab.begin_disconnect() {
-            self.closing.push(job);
-        }
+        self.closing.extend(tab.begin_shell_close());
+        self.closing.extend(tab.begin_disconnect());
         self.active = match self.active {
             Tab::Connection(a) if a == i => {
                 if self.tabs.is_empty() {
@@ -176,9 +177,8 @@ impl AppController {
 
     fn disconnect_all(&mut self) {
         for tab in &mut self.tabs {
-            if let Some(job) = tab.begin_disconnect() {
-                self.closing.push(job);
-            }
+            self.closing.extend(tab.begin_shell_close());
+            self.closing.extend(tab.begin_disconnect());
         }
     }
 
@@ -328,6 +328,14 @@ impl Controller for AppController {
                 }
             }
             Action::DisconnectAll => self.disconnect_all(),
+            Action::SetColor(id, color) => {
+                if let Err(e) = self.machines.set_color(&id, color) {
+                    return vec![Effect::Message(e)];
+                }
+                for t in self.tabs.iter_mut().filter(|t| t.machine_id() == id) {
+                    t.set_color(color);
+                }
+            }
             Action::Quit => {
                 self.quitting = true;
                 self.disconnect_all();

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 
 /// What views may name from below the controller layer: plain data and the wake trait.
 pub use crate::model::job::{NoNotify, Notify, Snapshot, Status};
-pub use crate::model::machines::{Layout, ServiceKind};
+pub use crate::model::machines::{Layout, ServiceKind, TabColor};
 pub use lc_core::ConnState;
 
 /// A job's outcome once it ended: its result, or why it failed or was cancelled.

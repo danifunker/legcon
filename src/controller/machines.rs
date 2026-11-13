@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::model::machines::{check_id, Machine, MachineStore, Password, Service};
 use crate::model::session::Sessions;
 
-pub use crate::model::machines::{Layout, ServiceKind};
+pub use crate::model::machines::{Layout, ServiceKind, TabColor};
 pub use lc_core::ConnState;
 
 /// One row of the machine list.
@@ -18,6 +18,7 @@ pub struct MachineRow {
     pub services: String,
     pub state: ConnState,
     pub password_saved: bool,
+    pub color: TabColor,
 }
 
 /// A machine to add, as the CLI's flags or the Add machine prompts give it.
@@ -62,6 +63,7 @@ impl MachinesController {
                     .join(", "),
                 state: sessions.state(&m.id),
                 password_saved: matches!(m.password, Password::Saved(_)),
+                color: m.color,
             })
             .collect()
     }
@@ -96,6 +98,18 @@ impl MachinesController {
             return Err(format!("No machine called {id}."));
         }
         self.save()
+    }
+
+    /// Give a machine's tab another colour.
+    pub fn set_color(&mut self, id: &str, color: TabColor) -> Result<(), String> {
+        match self.store.get_mut(id) {
+            Some(m) if m.color != color => {
+                m.color = color;
+                self.save()
+            }
+            Some(_) => Ok(()),
+            None => Err(format!("No machine called {id}.")),
+        }
     }
 
     /// Remember a machine's layout after the user changed it.

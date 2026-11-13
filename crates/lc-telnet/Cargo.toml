@@ -1,0 +1,10 @@
+[package]
+name = "lc-telnet"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Telnet client for legcon: RFC 854 option negotiation (BINARY, ECHO, SGA, TTYPE, NAWS) and a split pty"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }

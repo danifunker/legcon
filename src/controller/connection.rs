@@ -12,11 +12,15 @@ use lc_core::{Entry, RemotePath};
 
 use super::{
     ids, job_outcome, ConnState, Controller, Effect, Layout, PasswordSpec, PathSpec, ServiceKind,
+    TabColor,
 };
 use crate::model::job::{Job, Notify};
+use crate::model::term::TermSession;
+
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
 use crate::model::session::Sessions;
+pub use crate::model::term::{TermRun, TermScreen, DEFAULT_BG, DEFAULT_FG};
 
 /// The smallest share either area can be dragged down to.
 pub const MIN_SHARE: f32 = 0.1;
@@ -54,6 +58,22 @@ impl TermTab {
     }
 }
 
+/// The machine header, in parts so a view can lay it out as chips (mockup: connection-view.html).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeaderInfo {
+    pub name: String,
+    pub address: String,
+    /// `Files: FTP`, or `No file service`.
+    pub files: String,
+    pub files_state: ConnState,
+    /// `Commands: Telnet`, or `No command service`.
+    pub commands: String,
+    pub commands_state: ConnState,
+    /// Passwords or data go unencrypted on some service in use.
+    pub plaintext: bool,
+    pub color: TabColor,
+}
+
 /// A row of either pane's list, as a view draws it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -86,6 +106,85 @@ pub enum Action {
     RemoteUp,
     RemoteOpen(String),
     Refresh(Side),
+    /// Open a shell on the machine's command service (the Shell tab's Connect).
+    ShellConnect,
+    ShellDisconnect,
+    /// Characters typed or pasted into the terminal.
+    ShellText(String),
+    ShellKey(TermKey),
+    /// The terminal's size in character cells after the view was resized.
+    ShellResize(u16, u16),
+}
+
+/// Keys that are not plain characters, as a view reports them to the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermKey {
+    Enter,
+    Backspace,
+    Tab,
+    Escape,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
+    Delete,
+    /// F1 to F12.
+    F(u8),
+    /// Ctrl plus a letter or one of `@[\]^_`: the control character.
+    Ctrl(char),
+}
+
+/// The bytes a key sends, as a VT220 does (`app_cursor`: the screen asked for `ESC O` arrows).
+pub fn key_bytes(key: TermKey, app_cursor: bool) -> Vec<u8> {
+    let csi = |s: &str| format!("\x1b[{s}").into_bytes();
+    let arrow = |c: char| {
+        if app_cursor {
+            format!("\x1bO{c}").into_bytes()
+        } else {
+            format!("\x1b[{c}").into_bytes()
+        }
+    };
+    match key {
+        TermKey::Enter => b"\r".to_vec(),
+        // DEL, as most 1990s Unix `stty erase` settings and xterm expect.
+        TermKey::Backspace => vec![0x7f],
+        TermKey::Tab => b"\t".to_vec(),
+        TermKey::Escape => vec![0x1b],
+        TermKey::Up => arrow('A'),
+        TermKey::Down => arrow('B'),
+        TermKey::Right => arrow('C'),
+        TermKey::Left => arrow('D'),
+        TermKey::Home => csi("1~"),
+        TermKey::Insert => csi("2~"),
+        TermKey::Delete => csi("3~"),
+        TermKey::End => csi("4~"),
+        TermKey::PageUp => csi("5~"),
+        TermKey::PageDown => csi("6~"),
+        TermKey::F(n @ 1..=4) => format!("\x1bO{}", (b'P' + n - 1) as char).into_bytes(),
+        TermKey::F(n) => {
+            let code = match n {
+                5 => 15,
+                6 => 17,
+                7 => 18,
+                8 => 19,
+                9 => 20,
+                10 => 21,
+                11 => 23,
+                12 => 24,
+                _ => return Vec::new(),
+            };
+            csi(&format!("{code}~"))
+        }
+        TermKey::Ctrl(c) => match c.to_ascii_uppercase() {
+            c @ '@'..='_' => vec![c as u8 & 0x1f],
+            _ => Vec::new(),
+        },
+    }
 }
 
 pub struct ConnectionController {
@@ -110,6 +209,11 @@ pub struct ConnectionController {
     list_job: Option<Job<Vec<Entry>>>,
     disconnect_job: Option<Job<()>>,
     session_password: Option<String>,
+    shell: Option<TermSession>,
+    shell_open: Option<Job<TermSession>>,
+    shell_close: Option<Job<()>>,
+    shell_error: Option<String>,
+    shell_size: (u16, u16),
 }
 
 impl ConnectionController {
@@ -147,6 +251,11 @@ impl ConnectionController {
             list_job: None,
             disconnect_job: None,
             session_password: None,
+            shell: None,
+            shell_open: None,
+            shell_close: None,
+            shell_error: None,
+            shell_size: (80, 24),
         };
         c.list_local();
         c
@@ -180,6 +289,154 @@ impl ConnectionController {
 
     pub fn term_tab(&self) -> TermTab {
         self.term
+    }
+
+    pub fn color(&self) -> TabColor {
+        self.machine.color
+    }
+
+    pub(crate) fn set_color(&mut self, color: TabColor) {
+        self.machine.color = color;
+    }
+
+    /// The tab's state light: connected if either service is.
+    pub fn tab_state(&self) -> ConnState {
+        let (f, c) = (self.state(), self.shell_state());
+        for s in [
+            ConnState::Connected,
+            ConnState::Busy,
+            ConnState::Connecting,
+            ConnState::Disconnecting,
+            ConnState::Lost,
+        ] {
+            if f == s || c == s {
+                return s;
+            }
+        }
+        ConnState::Disconnected
+    }
+
+    /// The machine header in parts.
+    pub fn header_info(&self) -> HeaderInfo {
+        let label = |s: Option<&crate::model::machines::Service>, what: &str, none: &str| {
+            s.map(|s| format!("{what}: {}", s.kind.label()))
+                .unwrap_or_else(|| none.to_string())
+        };
+        let plain = |k: Option<ServiceKind>| {
+            matches!(
+                k,
+                Some(
+                    ServiceKind::Ftp | ServiceKind::Telnet | ServiceKind::Rexec | ServiceKind::Smb
+                )
+            )
+        };
+        HeaderInfo {
+            name: self.machine.name.clone(),
+            address: self.machine.address.clone(),
+            files: label(self.machine.file_service(), "Files", "No file service"),
+            files_state: self.state(),
+            commands: label(
+                self.machine.command_service(),
+                "Commands",
+                "No command service",
+            ),
+            commands_state: self.shell_state(),
+            plaintext: plain(self.machine.file_service().map(|s| s.kind))
+                || plain(self.machine.command_service().map(|s| s.kind)),
+            color: self.machine.color,
+        }
+    }
+
+    pub fn shell_state(&self) -> ConnState {
+        if self.shell_open.is_some() {
+            return ConnState::Connecting;
+        }
+        if self.shell_close.is_some() {
+            return ConnState::Disconnecting;
+        }
+        self.shell
+            .as_ref()
+            .map_or(ConnState::Disconnected, TermSession::state)
+    }
+
+    pub fn has_command_service(&self) -> bool {
+        self.machine.command_service().is_some()
+    }
+
+    pub fn can_shell_connect(&self) -> bool {
+        self.has_command_service() && self.shell_state() == ConnState::Disconnected
+    }
+
+    pub fn can_shell_disconnect(&self) -> bool {
+        self.shell_state() == ConnState::Connected
+    }
+
+    /// The Shell tab's Connect button label, such as `Connect with Telnet`.
+    pub fn shell_connect_label(&self) -> String {
+        self.machine
+            .command_service()
+            .map(|s| format!("Connect with {}", s.kind.label()))
+            .unwrap_or_else(|| "Connect".into())
+    }
+
+    /// The live terminal, once a shell is open (and after it ended, until the next one).
+    pub fn shell_screen(&self) -> Option<TermScreen> {
+        self.shell.as_ref().map(TermSession::screen)
+    }
+
+    /// The Shell tab's message while no terminal shows: what it offers, or why it ended.
+    pub fn shell_message(&self) -> String {
+        if let Some(e) = &self.shell_error {
+            return e.clone();
+        }
+        if let Some(why) = self.shell.as_ref().and_then(TermSession::ended) {
+            return why;
+        }
+        match self.machine.command_service() {
+            Some(s) => format!(
+                "{} offers {}. Nothing is opened until you connect; the file connection is not affected.",
+                self.machine.name,
+                s.kind.label()
+            ),
+            None => format!("{} has no command service set up.", self.machine.name),
+        }
+    }
+
+    fn shell_connect(&mut self) {
+        if !self.can_shell_connect() {
+            return;
+        }
+        self.shell_error = None;
+        let (cols, rows) = self.shell_size;
+        self.shell_open = Some(TermSession::open(
+            &self.machine,
+            cols,
+            rows,
+            Arc::clone(&self.notify),
+        ));
+    }
+
+    /// Close the shell (logout command first); also used when the tab closes.
+    pub(crate) fn begin_shell_close(&mut self) -> Option<Job<()>> {
+        let shell = self.shell.as_ref()?;
+        if shell.state() != ConnState::Connected || self.shell_close.is_some() {
+            return None;
+        }
+        let job = shell.close(&self.machine.logout_command, Arc::clone(&self.notify));
+        self.shell_close = Some(job.clone());
+        Some(job)
+    }
+
+    fn shell_send(&mut self, bytes: &[u8]) {
+        if let Some(s) = self
+            .shell
+            .as_ref()
+            .filter(|s| s.state() == ConnState::Connected)
+        {
+            if let Err(e) = s.send(bytes) {
+                self.shell_error = Some(format!("Could not send: {e}"));
+            }
+        }
     }
 
     pub fn state(&self) -> ConnState {
@@ -561,6 +818,39 @@ impl Controller for ConnectionController {
             }
             Action::Refresh(Side::Local) => self.list_local(),
             Action::Refresh(Side::Remote) => self.list_remote(),
+            Action::ShellConnect => {
+                self.term = TermTab::Shell;
+                self.shell_connect();
+            }
+            Action::ShellDisconnect => {
+                self.begin_shell_close();
+            }
+            Action::ShellText(text) => {
+                if let Some(s) = self
+                    .shell
+                    .as_ref()
+                    .filter(|s| s.state() == ConnState::Connected)
+                {
+                    if let Err(e) = s.send_text(&text) {
+                        self.shell_error = Some(format!("Could not send: {e}"));
+                    }
+                }
+            }
+            Action::ShellKey(key) => {
+                let app = self.shell.as_ref().is_some_and(|s| s.screen().app_cursor);
+                self.shell_send(&key_bytes(key, app));
+            }
+            Action::ShellResize(cols, rows) => {
+                let (cols, rows) = (cols.clamp(10, 500), rows.clamp(2, 300));
+                self.shell_size = (cols, rows);
+                if let Some(s) = self
+                    .shell
+                    .as_ref()
+                    .filter(|s| s.state() == ConnState::Connected)
+                {
+                    let _ = s.resize(cols, rows);
+                }
+            }
         }
         Vec::new()
     }
@@ -601,6 +891,19 @@ impl Controller for ConnectionController {
                 Err(e) => {
                     self.remote_error = Some(format!("Could not list {}: {e}", self.remote_path()))
                 }
+            }
+        }
+        if let Some(r) = self.shell_open.as_ref().and_then(job_outcome) {
+            self.shell_open = None;
+            match r {
+                Ok(s) => self.shell = Some(s),
+                Err(e) => self.shell_error = Some(format!("Could not open a shell: {e}")),
+            }
+        }
+        if let Some(r) = self.shell_close.as_ref().and_then(job_outcome) {
+            self.shell_close = None;
+            if let Err(e) = r {
+                out.push(Effect::Message(format!("{}: {e}", self.machine.name)));
             }
         }
         if let Some(r) = self.disconnect_job.as_ref().and_then(job_outcome) {
@@ -746,6 +1049,94 @@ mod tests {
         settle(&mut c);
         assert_eq!(c.state(), ConnState::Disconnected);
         assert!(c.remote_rows().is_empty());
+    }
+
+    #[test]
+    fn keys_send_vt220_sequences() {
+        assert_eq!(key_bytes(TermKey::Up, false), b"\x1b[A");
+        assert_eq!(key_bytes(TermKey::Up, true), b"\x1bOA");
+        assert_eq!(key_bytes(TermKey::F(1), false), b"\x1bOP");
+        assert_eq!(key_bytes(TermKey::F(5), false), b"\x1b[15~");
+        assert_eq!(key_bytes(TermKey::Ctrl('c'), false), [3]);
+        assert_eq!(key_bytes(TermKey::Enter, false), b"\r");
+    }
+
+    #[test]
+    fn a_telnet_shell_logs_in_and_logs_out() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            s.write_all(b"SunOS 5.8\r\n\r\nlogin: ").unwrap();
+            let mut heard = Vec::new();
+            let wait_for = |s: &mut std::net::TcpStream, want: &[u8], heard: &mut Vec<u8>| {
+                let mut buf = [0u8; 256];
+                while !heard.windows(want.len()).any(|w| w == want) {
+                    let n = s.read(&mut buf).unwrap();
+                    assert!(n > 0, "client hung up early");
+                    heard.extend_from_slice(&buf[..n]);
+                }
+            };
+            wait_for(&mut s, b"dani\r\n", &mut heard);
+            s.write_all(b"dani\r\n$ ").unwrap();
+            wait_for(&mut s, b"exit\r\n", &mut heard);
+        });
+        let home = tempfile::tempdir().unwrap();
+        let mut m = Machine::new("sparc", "127.0.0.1");
+        m.services.push(Service {
+            kind: ServiceKind::Telnet,
+            port,
+        });
+        m.logout_command = "exit".into();
+        let mut c = ConnectionController::new(
+            m,
+            home.path(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        );
+        assert!(c.can_shell_connect());
+        c.apply(Action::ShellConnect);
+        let text = |c: &ConnectionController| {
+            c.shell_screen()
+                .map(|s| {
+                    s.lines
+                        .iter()
+                        .flatten()
+                        .map(|r| r.text.clone())
+                        .collect::<String>()
+                })
+                .unwrap_or_default()
+        };
+        let wait = |c: &mut ConnectionController, want: &str| {
+            for _ in 0..400 {
+                c.tick();
+                if text(c).contains(want) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("never saw {want:?} in {:?}", text(c));
+        };
+        wait(&mut c, "login:");
+        assert_eq!(c.shell_state(), ConnState::Connected);
+        assert_eq!(c.tab_state(), ConnState::Connected);
+        c.apply(Action::ShellText("dani".into()));
+        c.apply(Action::ShellKey(TermKey::Enter));
+        wait(&mut c, "$");
+        c.apply(Action::ShellDisconnect);
+        server.join().unwrap();
+        for _ in 0..400 {
+            c.tick();
+            if c.shell_state() == ConnState::Disconnected {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(c.shell_state(), ConnState::Disconnected);
     }
 
     #[test]

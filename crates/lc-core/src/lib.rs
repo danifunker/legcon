@@ -20,6 +20,6 @@ pub use entry::{Entry, EntryKind, TimePrecision, Timestamp};
 pub use error::{Error, Result};
 pub use path::{PathStyle, RemotePath};
 pub use session::{
-    ConnState, Connection, ExecResult, FileCaps, FileSession, PtyStream, ShellCaps, ShellSession,
-    WriteMode,
+    ConnState, Connection, ExecResult, FileCaps, FileSession, Pty, PtyWriter, ShellCaps,
+    ShellSession, WriteMode,
 };

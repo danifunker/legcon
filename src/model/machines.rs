@@ -206,6 +206,76 @@ pub struct Machine {
     pub home_folder: Option<PathBuf>,
     #[serde(default)]
     pub layout: Layout,
+    /// The colour of its tab and header, so machines are told apart at a glance.
+    #[serde(default)]
+    pub color: TabColor,
+    /// Sent before a shell session closes (`exit`, `logout`); empty sends nothing.
+    #[serde(default)]
+    pub logout_command: String,
+}
+
+/// A machine's tab colour, from a fixed palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabColor {
+    #[default]
+    Gray,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+}
+
+impl TabColor {
+    pub const ALL: [TabColor; 9] = [
+        TabColor::Gray,
+        TabColor::Red,
+        TabColor::Orange,
+        TabColor::Yellow,
+        TabColor::Green,
+        TabColor::Teal,
+        TabColor::Blue,
+        TabColor::Purple,
+        TabColor::Pink,
+    ];
+
+    /// The colour a new machine gets: the palette in turn, skipping gray.
+    pub fn nth(n: usize) -> TabColor {
+        TabColor::ALL[1 + n % (TabColor::ALL.len() - 1)]
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TabColor::Gray => "Gray",
+            TabColor::Red => "Red",
+            TabColor::Orange => "Orange",
+            TabColor::Yellow => "Yellow",
+            TabColor::Green => "Green",
+            TabColor::Teal => "Teal",
+            TabColor::Blue => "Blue",
+            TabColor::Purple => "Purple",
+            TabColor::Pink => "Pink",
+        }
+    }
+
+    /// The colour as 0xRRGGBB, readable on light and dark backgrounds.
+    pub fn rgb(self) -> u32 {
+        match self {
+            TabColor::Gray => 0x8a8f96,
+            TabColor::Red => 0xd13438,
+            TabColor::Orange => 0xe8741c,
+            TabColor::Yellow => 0xd9a400,
+            TabColor::Green => 0x2e8b3a,
+            TabColor::Teal => 0x038387,
+            TabColor::Blue => 0x0067c0,
+            TabColor::Purple => 0x8764b8,
+            TabColor::Pink => 0xc239b3,
+        }
+    }
 }
 
 fn default_charset() -> String {
@@ -224,6 +294,8 @@ impl Machine {
             charset: default_charset(),
             home_folder: None,
             layout: Layout::default(),
+            color: TabColor::default(),
+            logout_command: String::new(),
         }
     }
 
@@ -298,6 +370,10 @@ impl MachineStore {
         })?;
         if self.get(&machine.id).is_some() {
             return Err(format!("A machine called {} already exists.", machine.id));
+        }
+        let mut machine = machine;
+        if machine.color == TabColor::Gray {
+            machine.color = TabColor::nth(self.machines.len());
         }
         self.machines.push(machine);
         Ok(())

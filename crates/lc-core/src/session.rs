@@ -89,14 +89,27 @@ pub struct ExecResult {
     pub exit_status: Option<i32>,
 }
 
-/// A live terminal: bytes both ways, and the window size where the protocol carries it.
-pub trait PtyStream: Read + Write + Send {
+/// The sending half of a live terminal; the receiving half is a plain `Read`.
+///
+/// Reads may fail with `TimedOut` / `WouldBlock` when nothing arrived for a while, so a reader
+/// thread can check for cancel; 0 bytes read means the machine closed the session.
+pub trait PtyWriter: Send {
+    /// Keystrokes or pasted text, already in the machine's character set.
+    fn send(&mut self, bytes: &[u8]) -> Result<()>;
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()>;
+    /// Close the session (the caller sends any logout command first).
+    fn close(&mut self) -> Result<()>;
+}
+
+/// A live terminal session, split so one thread reads while another sends.
+pub struct Pty {
+    pub reader: Box<dyn Read + Send>,
+    pub writer: Box<dyn PtyWriter>,
 }
 
 /// Running commands.
 pub trait ShellSession: Connection {
     fn caps(&self) -> ShellCaps;
     fn exec(&mut self, command: &str) -> Result<ExecResult>;
-    fn open_pty(&mut self, term: &str, cols: u16, rows: u16) -> Result<Box<dyn PtyStream + '_>>;
+    fn open_pty(&mut self, term: &str, cols: u16, rows: u16) -> Result<Pty>;
 }

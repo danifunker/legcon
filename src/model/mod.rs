@@ -7,4 +7,5 @@ pub mod machines;
 pub mod rate_tracker;
 pub mod session;
 pub mod settings;
+pub mod term;
 pub mod worker;
