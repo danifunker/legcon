@@ -26,7 +26,12 @@ struct Slot {
     state: ConnState,
     service: Option<ServiceKind>,
     session: Option<Shared>,
+    /// The protocol trace, for protocols that keep one (FTP).
+    trace: Option<Trace>,
 }
+
+/// A protocol's trace lines, as `> sent`, `< received` or `  note`.
+type Trace = Arc<Mutex<Vec<lc_ftp::Trace>>>;
 
 /// Every machine's file connection; cheap to clone and share.
 #[derive(Clone, Default)]
@@ -51,6 +56,25 @@ impl Sessions {
         lock_status(&self.slots)
             .get(machine)
             .and_then(|s| s.service)
+    }
+
+    /// The file connection's protocol trace, newest last, for the Log tab.
+    pub fn trace(&self, machine: &str) -> Vec<String> {
+        let Some(t) = lock_status(&self.slots)
+            .get(machine)
+            .and_then(|s| s.trace.clone())
+        else {
+            return Vec::new();
+        };
+        let lines = lock_status(&t);
+        lines
+            .iter()
+            .map(|l| match l {
+                lc_ftp::Trace::Sent(s) => format!("> {s}"),
+                lc_ftp::Trace::Received(s) => format!("< {s}"),
+                lc_ftp::Trace::Note(s) => format!("  {s}"),
+            })
+            .collect()
     }
 
     /// Machines with a live connection, in no particular order.
@@ -97,17 +121,18 @@ impl Sessions {
                     machine.address,
                     service.kind.label()
                 ));
-                let mut session = open_file_session(&machine, service.kind, password)?;
+                let (mut session, trace) = open_file_session(&machine, service.kind, password)?;
                 let home = session.home()?;
-                Ok::<_, anyhow::Error>((service.kind, session, home))
+                Ok::<_, anyhow::Error>((service.kind, session, home, trace))
             })();
             let mut slots = lock_status(&me.slots);
             let slot = slots.entry(machine.id.clone()).or_default();
             match result {
-                Ok((kind, session, home)) => {
+                Ok((kind, session, home, trace)) => {
                     slot.state = ConnState::Connected;
                     slot.service = Some(kind);
                     slot.session = Some(Arc::new(Mutex::new(session)));
+                    slot.trace = trace;
                     Ok(home)
                 }
                 Err(e) => {
@@ -161,11 +186,25 @@ impl Sessions {
 fn open_file_session(
     machine: &Machine,
     kind: ServiceKind,
-    _password: Option<String>,
-) -> anyhow::Result<Box<dyn FileSession>> {
+    password: Option<String>,
+) -> anyhow::Result<(Box<dyn FileSession>, Option<Trace>)> {
     match kind {
-        ServiceKind::Demo => Ok(Box::new(demo_machine())),
-        ServiceKind::Ftp => bail!("FTP arrives in phase 1 (connecting to {})", machine.address),
+        ServiceKind::Demo => Ok((Box::new(demo_machine()), None)),
+        ServiceKind::Ftp => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Ftp)
+                .map_or(lc_ftp::PORT, |s| s.port);
+            let opts = lc_ftp::Options {
+                charset: lc_core::Charset::from_label(&machine.charset).unwrap_or_default(),
+                ..lc_ftp::Options::default()
+            };
+            let pw = password.unwrap_or_default();
+            let session = lc_ftp::connect(&machine.address, port, &machine.user, &pw, &opts)?;
+            let trace = session.trace();
+            Ok((Box::new(session), Some(trace)))
+        }
         ServiceKind::Smb => bail!("SMB arrives in phase 3"),
         ServiceKind::Ssh => bail!("SSH and SFTP arrive in phase 4"),
         ServiceKind::Nfs => bail!("NFS arrives in phase 5"),

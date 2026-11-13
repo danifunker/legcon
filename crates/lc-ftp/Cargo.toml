@@ -1,0 +1,10 @@
+[package]
+name = "lc-ftp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "FTP client for legcon: passive mode only, 1990s LIST formats, names in the machine's character set"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }

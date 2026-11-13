@@ -306,6 +306,8 @@ about it at shutdown, and many old servers hold a session slot until they time o
 | D26 | **No inbound connections to the client, ever.** legcon only makes outgoing connections, so nothing has to be open or forwarded on the user's computer: FTP uses passive mode only (`PASV`, `EPSV` where offered; no `PORT`), rsh is asked for no stderr channel, NFS works without the lock manager's callbacks (no NLM), and no protocol is used in a mode where the server connects back. |
 | D27 | **rsh, rlogin and rcp come later** (phase 8). rexec, Telnet, FTP and SSH cover commands and files until then (§4.2). |
 | D28 | **Passwords are saved in legcon's own machines file by default** (encoded, not encrypted, as FileZilla does), with "Ask every time" and the OS credential store as per-machine choices (§5). |
+| D29 | **Telnet and FTP are our own code**, not wrappers (decided in phase 1, 2026-11-13). Telnet's option engine is small and needs exactly legcon's policy; suppaftp decodes listings with `from_utf8_lossy` and sends paths as UTF-8, which mangles the Latin-1 / MacRoman names 1990s servers use. Both crates depend only on `lc-core`. |
+| D30 | **Every machine has a tab colour** (a palette of nine, assigned in turn, changed from the tab's right-click menu): its tab is tinted with it and its header carries a strip of it. |
 | D19 | **SSH is libssh2** through the `ssh2` crate, built with a vendored OpenSSL with the legacy algorithms on, because the target is SSH servers from 2005 and earlier (§4.1). |
 | D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
 
@@ -352,8 +354,8 @@ we would do with it; every reuse is confirmed by a spike against the lab before 
 
 | Crate | Protocol | Existing crates | Plan | What we add on top |
 |---|---|---|---|---|
-| `lc-ftp` | FTP | **suppaftp** (mature; sync and async; active and passive mode; built-in `LIST` parser for Unix and DOS only). **ftp-cmd-list-parse** (Unix and DOS only). | **Wrap suppaftp** in sync mode for the control and data connections, **passive mode only** (D26). | The `LIST` parsers the 90s need: VMS, NetWare, OS/2, MVS, AS/400, MacOS (NetPresenz, AppleShare IP), Windows NT/IIS variants, each with fixtures; quirks (no `SIZE` / `MDTM` / `MLSD`, `TYPE L 8`, `REST` support, `SITE` commands). Fixes found go upstream. |
-| `lc-telnet` | Telnet | **libtelnet-rs** and its fork **libmudtelnet** (sans-I/O option parser: WILL/WONT/DO/DONT, subnegotiation, NAWS, TTYPE). The **telnet** crate refuses every option, so it is not usable. | **Wrap libtelnet-rs** (or libmudtelnet) as the option parser, with our own socket loop. | Option policy (ECHO, SGA, BINARY, TTYPE, NAWS), 7-bit hosts, login scripting (wait for `login:`, send the user). |
+| `lc-ftp` | FTP (own code, D29) | **suppaftp** (mature; sync and async; active and passive mode; built-in `LIST` parser for Unix and DOS only). **ftp-cmd-list-parse** (Unix and DOS only). | **Wrap suppaftp** in sync mode for the control and data connections, **passive mode only** (D26). | The `LIST` parsers the 90s need: VMS, NetWare, OS/2, MVS, AS/400, MacOS (NetPresenz, AppleShare IP), Windows NT/IIS variants, each with fixtures; quirks (no `SIZE` / `MDTM` / `MLSD`, `TYPE L 8`, `REST` support, `SITE` commands). Fixes found go upstream. |
+| `lc-telnet` | Telnet (own code, D29) | **libtelnet-rs** and its fork **libmudtelnet** (sans-I/O option parser: WILL/WONT/DO/DONT, subnegotiation, NAWS, TTYPE). The **telnet** crate refuses every option, so it is not usable. | **Wrap libtelnet-rs** (or libmudtelnet) as the option parser, with our own socket loop. | Option policy (ECHO, SGA, BINARY, TTYPE, NAWS), 7-bit hosts, login scripting (wait for `login:`, send the user). |
 | `src/model/term` (app code, not a crate) | terminal screen model (used by Telnet, rlogin, SSH) | **vt100** (a terminal parser plus in-memory screen, on top of **vte**). | **Reuse vt100** for VT100 / xterm. | VT52, VT220 extras, ANSI-BBS with CP437, and scrollback, if vt100 lacks them (extend or contribute). |
 | `lc-rcmd` | rsh, rlogin, rexec, rcp | None found. | **Write it**: each protocol is a few hundred lines. | The reserved source port rsh / rlogin / rcp use (§4.2); rexec needs none. Shares the rcp code with SCP. |
 | `lc-ssh` | SSH-2, SCP, SFTP | **ssh2** (libssh2; blocking API, which fits our job threads; SCP, SFTP v3, exec, pty, public-key and agent auth). libssh2 has long carried the pre-2005 set: `diffie-hellman-group1-sha1`, `group14-sha1`, `group-exchange-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`, `blowfish-cbc`, `cast128-cbc`, `arcfour`, `aes*-cbc`, `hmac-md5`, `hmac-sha1` (and `-96` variants), depending on how it is built. **russh** lacks `ssh-dss`, `hmac-md5` and `blowfish-cbc`, so it is not chosen (D19). | **Wrap ssh2**, built with `vendored-openssl`, the OpenSSL legacy provider loaded and DSA enabled, so the algorithm set does not depend on the user's system. The phase 0 spike lists `libssh2_session_supported_algs()` and connects to every SSH server in the lab. | Target servers up to 2005: OpenSSH 2.x to 4.2, SSH.com / F-Secure 2.x-3.x, Sun SSH 1.0 (Solaris 9), Dropbear 0.4x. **SSH-1** (servers from before about 2000 that speak nothing else) is our own code, later. |
@@ -542,6 +544,16 @@ full folder trees (the trees show the trail to the current folder), and the Add 
 | **7. Editor, preview, remote actions** | The editor and New file, the preview viewers and rules, remote-action templates with Show command, the local tar.gz writer | Edit and save a file on every protocol in the lab; Archive as .tar.gz on a Unix with and without gzip, and on Win95 (local) |
 | **8. Tier A extras** | rsh, rlogin and rcp (§4.2, deferred from phase 4), serial, Kermit, ZMODEM, TFTP, then AFP over DSI | A file to and from an emulated DOS machine over a virtual null-modem |
 | **9. Other GUI shells** | AppKit, GTK4 | Tier 8 flows on every shell |
+
+**Phase 1 progress (2026-11-13):** done: `lc-telnet` (RFC 854 options BINARY / ECHO / SGA / TTYPE /
+NAWS, tested against a fake telnetd), the terminal screen model on `vt100` with a reader job, the
+Shell tab in the Win32 shell (painted terminal, colours, cursor, VT220 keys, size follows its
+area, logout command on disconnect), `lc-ftp` (own client, passive only to the control address,
+Unix and DOS / IIS `LIST` parsers, names in the machine's charset, REST, STOR, rename, delete,
+QUIT on disconnect, protocol trace) wired into the remote pane and the Log tab, and the Win32
+shell restyled to the mockup with per-machine tab colours. Not yet: the FTP Console tab, transfers
+(copy between panes, the Transfers tab), VMS / NetWare / MacOS `LIST` parsers, the CP437 / CP850
+tables, and trying both protocols against real 1990s servers (the lab).
 
 ## 10. Risks
 

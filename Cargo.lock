@@ -336,6 +336,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lc-ftp"
+version = "0.1.0"
+dependencies = [
+ "lc-core",
+]
+
+[[package]]
 name = "lc-telnet"
 version = "0.1.0"
 dependencies = [
@@ -352,6 +359,7 @@ dependencies = [
  "clap",
  "dirs",
  "lc-core",
+ "lc-ftp",
  "lc-telnet",
  "log",
  "serde",

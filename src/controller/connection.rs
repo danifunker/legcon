@@ -597,8 +597,16 @@ impl ConnectionController {
                 ),
                 None => format!("{} has no command service set up.", self.machine.name),
             },
-            TermTab::Console => "The protocol console arrives with its protocol (phase 1 for FTP).".into(),
-            TermTab::Log => self.status_line(),
+            TermTab::Console => "The protocol console (raw FTP commands) is next in phase 1.".into(),
+            TermTab::Log => {
+                let lines = self.sessions.trace(&self.machine.id);
+                if lines.is_empty() {
+                    format!("No protocol trace yet. {}", self.status_line())
+                } else {
+                    // The recent end: a view shows the last screenful.
+                    lines[lines.len().saturating_sub(500)..].join("\n")
+                }
+            }
             TermTab::Transfers => "No transfers.".into(),
         }
     }

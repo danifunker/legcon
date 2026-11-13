@@ -13,6 +13,7 @@ path = "src/bin/lc.rs"
 
 [dependencies]
 lc-core = { path = "crates/lc-core" }
+lc-ftp = { path = "crates/lc-ftp" }
 lc-telnet = { path = "crates/lc-telnet" }
 vt100 = "0.16"
 anyhow = "1"

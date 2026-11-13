@@ -19,8 +19,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, NMHDR, NMTREEVIEWW, NM_DBLCLK, ODS_SELECTED,
-    SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
+    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, NMHDR, NMTREEVIEWW,
+    NM_DBLCLK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
@@ -725,7 +725,22 @@ fn refresh() {
         ui::set_visible(s.w.term.hwnd, on_shell);
         ui::set_visible(s.w.term_text, !on_shell);
         if !on_shell {
-            ui::set_text(s.w.term_text, &t.term_text().replace('\n', "\r\n"));
+            let text = t.term_text().replace('\n', "\r\n");
+            if ui::text(s.w.term_text) != text {
+                ui::set_text(s.w.term_text, &text);
+                // Show the newest lines, as a log viewer does.
+                let end = text.encode_utf16().count();
+                // SAFETY: plain edit-control messages.
+                unsafe {
+                    SendMessageW(
+                        s.w.term_text,
+                        EM_SETSEL,
+                        Some(WPARAM(end)),
+                        Some(LPARAM(end as isize)),
+                    );
+                    SendMessageW(s.w.term_text, EM_SCROLLCARET, None, None);
+                }
+            }
         }
         if on_shell && ui::shown(s.w.term.hwnd) {
             let grid = term_view::grid(s.w.term.hwnd);
