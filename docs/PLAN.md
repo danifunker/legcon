@@ -288,7 +288,7 @@ about it at shutdown, and many old servers hold a session slot until they time o
   as it copies, so nothing is downloaded before the drop and no temporary copy is left behind.
   Local rows drag out as plain files. Folders are listed in the descriptor with their contents.
 
-### 1.6 Mac resource forks off macOS (proposal, O11)
+### 1.6 Mac resource forks off macOS (D31)
 
 Windows and Linux have no resource forks, so a classic Mac file's fork and Finder info (type,
 creator, flags) must be kept some other way when it lands on this computer:
@@ -340,6 +340,7 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D28 | **Passwords are saved in legcon's own machines file by default** (encoded, not encrypted, as FileZilla does), with "Ask every time" and the OS credential store as per-machine choices (§5). |
 | D29 | **Telnet and FTP are our own code**, not wrappers (decided in phase 1, 2026-11-13). Telnet's option engine is small and needs exactly legcon's policy; suppaftp decodes listings with `from_utf8_lossy` and sends paths as UTF-8, which mangles the Latin-1 / MacRoman names 1990s servers use. Both crates depend only on `lc-core`. |
 | D30 | **Every machine has a tab colour** (a palette of nine, assigned in turn, changed from the tab's right-click menu): its tab is tinted with it and its header carries a strip of it. |
+| D31 | **Mac resource forks: AppleDouble by default, MacBinary as an option** (per transfer or per machine; decided 2026-11-13). NTFS streams are not offered for now. The code is reused from rusty-backup: `fs-mac` (MIT: `build_appledouble`, `parse_appledouble`, `build_macbinary`) and `arc-mac` (reading MacBinary, BinHex and StuffIt), taken from crates.io as rusty-backup publishes them. |
 | D19 | **SSH is libssh2** through the `ssh2` crate, built with a vendored OpenSSL with the legacy algorithms on, because the target is SSH servers from 2005 and earlier (§4.1). |
 | D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
 
@@ -606,7 +607,6 @@ servers (the lab).
 |---|---|---|
 | O9 | Model-suggested commands (a later extra): wanted at all, and if so local-only or a service? | Not before 1.0; decide then |
 | O10 | A master password that encrypts the saved passwords in the machines file | After phase 1; the file format leaves room for it (`password` holds a tagged value: `b64:` now, `enc:` later, `os:` for the credential store) |
-| O11 | How Mac resource forks are kept on this computer (§1.6) | AppleDouble by default, MacBinary and NTFS streams as choices |
 | O6 | Name | `legcon` / `lc` as a working name |
 
 ## 12. Next: GUI mockups and layouts

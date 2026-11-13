@@ -239,7 +239,21 @@ fn open_file_session(
             let trace = session.trace();
             Ok((Box::new(session), Some(trace)))
         }
-        ServiceKind::Smb => bail!("SMB arrives in phase 3"),
+        ServiceKind::Smb => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Smb)
+                .map_or(lc_smb::PORT, |s| s.port);
+            let opts = lc_smb::Options {
+                charset: lc_core::Charset::from_label(&machine.charset)
+                    .unwrap_or(lc_core::Charset::Windows1252),
+                ..lc_smb::Options::default()
+            };
+            let pw = password.unwrap_or_default();
+            let session = lc_smb::connect(&machine.address, port, &machine.user, &pw, &opts)?;
+            Ok((Box::new(session), None))
+        }
         ServiceKind::Ssh => bail!("SSH and SFTP arrive in phase 4"),
         ServiceKind::Nfs => bail!("NFS arrives in phase 5"),
         ServiceKind::Telnet | ServiceKind::Rexec => {
@@ -311,15 +325,15 @@ mod tests {
     #[test]
     fn a_protocol_not_built_yet_fails_and_leaves_it_disconnected() {
         let s = Sessions::new();
-        let mut m = Machine::new("win95", "192.168.1.41");
+        let mut m = Machine::new("indy", "192.168.1.42");
         m.services.push(Service {
-            kind: ServiceKind::Smb,
-            port: 139,
+            kind: ServiceKind::Nfs,
+            port: 2049,
         });
         let job = s.connect(&m, None, Arc::new(NoNotify));
         let snap = job.wait();
         assert!(
-            matches!(snap.status, crate::model::job::Status::Failed(ref e) if e.contains("phase 3"))
+            matches!(snap.status, crate::model::job::Status::Failed(ref e) if e.contains("phase 5"))
         );
         assert_eq!(s.state("win95"), ConnState::Disconnected);
     }
