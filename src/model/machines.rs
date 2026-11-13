@@ -1,0 +1,353 @@
+//! The saved machines (`machines.json`), with their services, layout and password.
+//!
+//! Passwords are saved here by default (PLAN.md D28), the way FileZilla keeps them in
+//! `sitemanager.xml`: Base64-encoded, which hides them from a glance but is **not encryption**.
+//! The field is tagged so other stores fit later without a format change: `b64:...` saved here,
+//! `ask` never saved (asked at connect, kept in memory until the tab closes); `enc:` (a master
+//! password, O10) and `os:` (the OS credential store) are reserved.
+
+use std::path::{Path, PathBuf};
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+
+use super::settings::DEFAULT_FILES_SHARE;
+
+/// A protocol legcon can use on a machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ServiceKind {
+    Ftp,
+    Telnet,
+    Smb,
+    Nfs,
+    Ssh,
+    Rexec,
+    /// A built-in machine held in memory, for trying the app without a real one.
+    Demo,
+}
+
+impl ServiceKind {
+    pub const ALL: [ServiceKind; 7] = [
+        ServiceKind::Ftp,
+        ServiceKind::Telnet,
+        ServiceKind::Smb,
+        ServiceKind::Nfs,
+        ServiceKind::Ssh,
+        ServiceKind::Rexec,
+        ServiceKind::Demo,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ServiceKind::Ftp => "FTP",
+            ServiceKind::Telnet => "Telnet",
+            ServiceKind::Smb => "SMB",
+            ServiceKind::Nfs => "NFS",
+            ServiceKind::Ssh => "SSH",
+            ServiceKind::Rexec => "rexec",
+            ServiceKind::Demo => "Demo",
+        }
+    }
+
+    /// The short name used in the CLI and in job resources.
+    pub fn key(self) -> &'static str {
+        match self {
+            ServiceKind::Ftp => "ftp",
+            ServiceKind::Telnet => "telnet",
+            ServiceKind::Smb => "smb",
+            ServiceKind::Nfs => "nfs",
+            ServiceKind::Ssh => "ssh",
+            ServiceKind::Rexec => "rexec",
+            ServiceKind::Demo => "demo",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<ServiceKind> {
+        ServiceKind::ALL
+            .into_iter()
+            .find(|k| k.key().eq_ignore_ascii_case(key))
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            ServiceKind::Ftp => 21,
+            ServiceKind::Telnet => 23,
+            ServiceKind::Smb => 139,
+            ServiceKind::Nfs => 2049,
+            ServiceKind::Ssh => 22,
+            ServiceKind::Rexec => 512,
+            ServiceKind::Demo => 0,
+        }
+    }
+
+    /// Whether it serves files, commands, or both.
+    pub fn serves_files(self) -> bool {
+        matches!(
+            self,
+            ServiceKind::Ftp
+                | ServiceKind::Smb
+                | ServiceKind::Nfs
+                | ServiceKind::Ssh
+                | ServiceKind::Demo
+        )
+    }
+
+    pub fn serves_commands(self) -> bool {
+        matches!(
+            self,
+            ServiceKind::Telnet | ServiceKind::Ssh | ServiceKind::Rexec
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Service {
+    pub kind: ServiceKind,
+    pub port: u16,
+}
+
+/// How the connection view is arranged for this machine; remembered when the user changes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layout {
+    /// The files area's share of the height (0.1 to 0.9).
+    pub files_share: f32,
+    /// The terminal area is on top.
+    pub swapped: bool,
+    pub local_tree: bool,
+    pub remote_tree: bool,
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Layout {
+            files_share: DEFAULT_FILES_SHARE,
+            swapped: false,
+            local_tree: true,
+            remote_tree: true,
+        }
+    }
+}
+
+/// Where a machine's password lives.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum Password {
+    /// Saved in `machines.json`, Base64-encoded (not encrypted).
+    Saved(String),
+    /// Never written; asked at connect.
+    #[default]
+    Ask,
+}
+
+impl Password {
+    fn to_tagged(&self) -> String {
+        match self {
+            Password::Saved(p) => {
+                format!(
+                    "b64:{}",
+                    base64::engine::general_purpose::STANDARD.encode(p)
+                )
+            }
+            Password::Ask => "ask".to_string(),
+        }
+    }
+
+    fn from_tagged(s: &str) -> Result<Password, String> {
+        if s == "ask" || s.is_empty() {
+            return Ok(Password::Ask);
+        }
+        if let Some(b) = s.strip_prefix("b64:") {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b)
+                .map_err(|e| format!("password: {e}"))?;
+            return String::from_utf8(bytes)
+                .map(Password::Saved)
+                .map_err(|e| format!("password: {e}"));
+        }
+        Err(format!(
+            "password: unknown store {:?}",
+            s.split(':').next().unwrap_or("")
+        ))
+    }
+}
+
+impl Serialize for Password {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.to_tagged())
+    }
+}
+
+impl<'de> Deserialize<'de> for Password {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Password::from_tagged(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// One old computer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Machine {
+    /// Stable id, also the name the CLI uses (`lc ls sparc:/usr`).
+    pub id: String,
+    pub name: String,
+    pub address: String,
+    #[serde(default)]
+    pub services: Vec<Service>,
+    #[serde(default)]
+    pub user: String,
+    #[serde(default)]
+    pub password: Password,
+    /// A character set label from `lc_core::Charset` (`ISO-8859-1`, `MacRoman`, ...).
+    #[serde(default = "default_charset")]
+    pub charset: String,
+    /// This machine's own home folder instead of the app's.
+    #[serde(default)]
+    pub home_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub layout: Layout,
+}
+
+fn default_charset() -> String {
+    lc_core::Charset::default().label().to_string()
+}
+
+impl Machine {
+    pub fn new(id: &str, address: &str) -> Machine {
+        Machine {
+            id: id.to_string(),
+            name: id.to_string(),
+            address: address.to_string(),
+            services: Vec::new(),
+            user: String::new(),
+            password: Password::Ask,
+            charset: default_charset(),
+            home_folder: None,
+            layout: Layout::default(),
+        }
+    }
+
+    /// The service used for files: the first that serves them.
+    pub fn file_service(&self) -> Option<&Service> {
+        self.services.iter().find(|s| s.kind.serves_files())
+    }
+
+    /// The service used for commands: the first that serves them.
+    pub fn command_service(&self) -> Option<&Service> {
+        self.services.iter().find(|s| s.kind.serves_commands())
+    }
+}
+
+/// A machine id: letters, digits, `-`, `_` and `.`, so it works as a CLI prefix (`sparc:/usr`).
+pub fn check_id(id: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err(String::new());
+    }
+    if id.len() > 40 {
+        return Err("At most 40 characters.".into());
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err("Use letters, digits, '-', '_' or '.' only.".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MachineStore {
+    #[serde(default)]
+    pub machines: Vec<Machine>,
+}
+
+impl MachineStore {
+    pub fn path_in(dir: &Path) -> PathBuf {
+        dir.join("machines.json")
+    }
+
+    /// Read `machines.json` from `dir`; a missing file is an empty store.
+    pub fn load(dir: &Path) -> anyhow::Result<MachineStore> {
+        match std::fs::read(Self::path_in(dir)) {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(MachineStore::default()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn save(&self, dir: &Path) -> anyhow::Result<()> {
+        super::config::write_atomic(&Self::path_in(dir), &serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn get(&self, id: &str) -> Option<&Machine> {
+        self.machines.iter().find(|m| m.id == id)
+    }
+
+    pub fn get_mut(&mut self, id: &str) -> Option<&mut Machine> {
+        self.machines.iter_mut().find(|m| m.id == id)
+    }
+
+    /// Add a machine; refuses a bad or taken id.
+    pub fn add(&mut self, machine: Machine) -> Result<(), String> {
+        check_id(&machine.id).map_err(|e| {
+            if e.is_empty() {
+                "No name given.".into()
+            } else {
+                e
+            }
+        })?;
+        if self.get(&machine.id).is_some() {
+            return Err(format!("A machine called {} already exists.", machine.id));
+        }
+        self.machines.push(machine);
+        Ok(())
+    }
+
+    pub fn remove(&mut self, id: &str) -> bool {
+        let before = self.machines.len();
+        self.machines.retain(|m| m.id != id);
+        self.machines.len() != before
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_is_base64_on_disk_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = MachineStore::default();
+        let mut m = Machine::new("sparc", "192.168.1.40");
+        m.services.push(Service {
+            kind: ServiceKind::Ftp,
+            port: 21,
+        });
+        m.user = "dani".into();
+        m.password = Password::Saved("s3cret".into());
+        store.add(m).unwrap();
+        store.add(Machine::new("win95", "192.168.1.41")).unwrap();
+        store.save(dir.path()).unwrap();
+        let text = std::fs::read_to_string(MachineStore::path_in(dir.path())).unwrap();
+        assert!(text.contains("\"b64:czNjcmV0\""), "{text}");
+        assert!(!text.contains("s3cret"));
+        assert!(text.contains("\"ask\""));
+        assert_eq!(MachineStore::load(dir.path()).unwrap(), store);
+    }
+
+    #[test]
+    fn ids_are_checked_and_unique() {
+        let mut store = MachineStore::default();
+        assert!(store.add(Machine::new("a b", "x")).is_err());
+        store.add(Machine::new("indy", "x")).unwrap();
+        assert!(store.add(Machine::new("indy", "y")).is_err());
+        assert!(store.remove("indy"));
+        assert!(!store.remove("indy"));
+    }
+
+    #[test]
+    fn an_unknown_password_store_is_an_error_not_a_silent_ask() {
+        let r: Result<Password, _> = serde_json::from_str("\"os:legcon/sparc\"");
+        assert!(r.is_err());
+    }
+}
