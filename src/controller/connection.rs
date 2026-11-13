@@ -1268,11 +1268,14 @@ impl Controller for ConnectionController {
                 }
                 self.console.push(format!("> {line}"));
                 let l = line.clone();
+                let Some(dir) = self.remote_dir.clone() else {
+                    return Vec::new();
+                };
                 self.console_job = Some(self.sessions.run(
                     &self.machine.id,
                     format!("Console: {line}"),
                     Arc::clone(&self.notify),
-                    move |fs, _| Ok(fs.quote(&l)?),
+                    move |fs, _| Ok(fs.quote(&dir, &l)?),
                 ));
             }
         }

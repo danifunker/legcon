@@ -512,8 +512,10 @@ impl FileSession for FtpSession {
         }
     }
 
-    fn quote(&mut self, line: &str) -> Result<String> {
+    fn quote(&mut self, dir: &RemotePath, line: &str) -> Result<String> {
         self.live()?;
+        // The server's folder moves with every listing and copy; the user means the pane's.
+        self.cd(dir)?;
         // A command that opens a data connection would leave the control channel out of step.
         let verb = line
             .split_whitespace()

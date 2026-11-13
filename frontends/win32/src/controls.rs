@@ -32,10 +32,16 @@ pub fn explorer_theme(h: HWND) {
 }
 
 /// A report list view with `columns` as (title, width in DIPs), its icons from a shared list.
-pub fn list(parent: HWND, id: &str, columns: &[(&str, i32)], images: HIMAGELIST) -> HWND {
-    let style = WINDOW_STYLE(
-        LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_SHAREIMAGELISTS | WS_TABSTOP.0,
-    );
+pub fn list(
+    parent: HWND,
+    id: &str,
+    columns: &[(&str, i32)],
+    images: HIMAGELIST,
+    single: bool,
+) -> HWND {
+    let one = if single { LVS_SINGLESEL } else { 0 };
+    let style =
+        WINDOW_STYLE(LVS_REPORT | LVS_SHOWSELALWAYS | one | LVS_SHAREIMAGELISTS | WS_TABSTOP.0);
     let h = ui::child(
         parent,
         w!("SysListView32"),
@@ -91,6 +97,19 @@ pub fn fill(list: HWND, rows: &[(i32, Vec<String>)]) {
 }
 
 /// The selected row of a single-selection list view.
+/// Every selected row, in order.
+pub fn selected_all(list: HWND) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut at = usize::MAX;
+    loop {
+        let i = send(list, LVM_GETNEXTITEM, at, LVNI_SELECTED as isize);
+        let Ok(i) = usize::try_from(i) else { break };
+        out.push(i);
+        at = i;
+    }
+    out
+}
+
 pub fn selected(list: HWND) -> Option<usize> {
     let i = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     usize::try_from(i).ok()

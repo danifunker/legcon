@@ -550,10 +550,13 @@ NAWS, tested against a fake telnetd), the terminal screen model on `vt100` with 
 Shell tab in the Win32 shell (painted terminal, colours, cursor, VT220 keys, size follows its
 area, logout command on disconnect), `lc-ftp` (own client, passive only to the control address,
 Unix and DOS / IIS `LIST` parsers, names in the machine's charset, REST, STOR, rename, delete,
-QUIT on disconnect, protocol trace) wired into the remote pane and the Log tab, and the Win32
-shell restyled to the mockup with per-machine tab colours. Not yet: the FTP Console tab, transfers
-(copy between panes, the Transfers tab), VMS / NetWare / MacOS `LIST` parsers, the CP437 / CP850
-tables, and trying both protocols against real 1990s servers (the lab).
+QUIT on disconnect, protocol trace) wired into the remote pane and the Log tab, the Win32
+shell restyled to the mockup with per-machine tab colours, copying between panes both ways
+(folders included, F6 or the right-click menu, an Overwrite / Skip existing / Cancel question,
+the Transfers tab with Cancel), New folder / Rename / Delete on either side, and the Console tab
+(the protocol's own commands, run in the pane's folder). Not yet: drag and drop, VMS / NetWare /
+MacOS `LIST` parsers, the CP437 / CP850 tables, and trying both protocols against real 1990s
+servers (the lab).
 
 ## 10. Risks
 

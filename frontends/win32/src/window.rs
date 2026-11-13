@@ -20,7 +20,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
     BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, NMHDR, NMTREEVIEWW,
-    NM_DBLCLK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
+    NM_DBLCLK, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE, TVN_SELCHANGEDW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
@@ -31,7 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetCursor, ShowWindow, TrackPopupMenu, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_PUSHLIKE,
     CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, HMENU, IDC_ARROW, IDC_SIZENS,
-    MF_CHECKED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
     WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
@@ -76,6 +76,9 @@ pub struct Widgets {
     term_tabs: HWND,
     term: TermView,
     term_text: HWND,
+    console: HWND,
+    console_send: HWND,
+    cancel_copy: HWND,
 }
 
 /// One tab as the strip paints it.
@@ -101,7 +104,7 @@ struct Drawn {
 }
 
 /// Everything a layout depends on.
-type LayoutKey = (i32, i32, i64, u32, bool, bool, bool, bool);
+type LayoutKey = (i32, i32, i64, u32, bool, bool, bool, i64);
 
 pub struct Shell {
     window: HWND,
@@ -254,7 +257,7 @@ fn pane(window: HWND, local: bool) -> Pane {
         },
         path,
         tree: controls::tree(window, tree_id),
-        list: controls::list(window, list_id, &cols, icons::system_list()),
+        list: controls::list(window, list_id, &cols, icons::system_list(), false),
     }
 }
 
@@ -310,6 +313,7 @@ fn build(window: HWND) -> Widgets {
                 ("Password", 140),
             ],
             icons::color_list(&colors, swatch),
+            true,
         ),
         header: header::create(window),
         local: pane(window, true),
@@ -317,6 +321,20 @@ fn build(window: HWND) -> Widgets {
         term_tabs,
         term: term_view::create(window),
         term_text,
+        console: {
+            let e = ui::child(
+                window,
+                w!("EDIT"),
+                "",
+                WINDOW_STYLE(ES_AUTOHSCROLL as u32 | WS_TABSTOP.0),
+                windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE,
+                "console.input",
+            );
+            ui::set_font(e, ui::mono_font_for(window));
+            e
+        },
+        console_send: ui::button(window, "Send", "console.send"),
+        cancel_copy: ui::button(window, "Cancel copy", "transfers.cancel"),
     }
 }
 
@@ -451,8 +469,10 @@ fn run(effects: Vec<Effect>) {
                     &spec.confirm_label,
                     spec.destructive,
                 );
-                if spec.purpose == "machines.remove" {
-                    dispatch(app::Action::RemoveConfirmed(yes));
+                match spec.purpose {
+                    "machines.remove" => dispatch(app::Action::RemoveConfirmed(yes)),
+                    "conn.delete" => conn_action(conn::Action::DeleteConfirmed(yes)),
+                    _ => {}
                 }
             }
             Effect::AskPassword(spec) => {
@@ -490,6 +510,7 @@ fn run(effects: Vec<Effect>) {
                     },
                 );
                 match spec.purpose {
+                    "conn.name" => conn_action(conn::Action::NewFolderAnswered(answer)),
                     "machines.add.address" => dispatch(app::Action::AddAddressAnswered(answer)),
                     "machines.add.name" => dispatch(app::Action::AddNameAnswered(answer)),
                     _ => {}
@@ -503,8 +524,10 @@ fn run(effects: Vec<Effect>) {
                     &spec.choices,
                     spec.dismiss,
                 );
-                if spec.purpose == "machines.add.service" {
-                    dispatch(app::Action::AddServiceChosen(i));
+                match spec.purpose {
+                    "machines.add.service" => dispatch(app::Action::AddServiceChosen(i)),
+                    "conn.copy.conflict" => conn_action(conn::Action::CopyConflict(i)),
+                    _ => {}
                 }
             }
             Effect::Message(text) => {
@@ -658,6 +681,9 @@ fn refresh() {
                 s.w.remote.tree,
                 s.w.term.hwnd,
                 s.w.term_text,
+                s.w.console,
+                s.w.console_send,
+                s.w.cancel_copy,
             ] {
                 ui::set_visible(h, false);
             }
@@ -724,6 +750,12 @@ fn refresh() {
         let on_shell = term == TermTab::Shell;
         ui::set_visible(s.w.term.hwnd, on_shell);
         ui::set_visible(s.w.term_text, !on_shell);
+        let on_console = term == TermTab::Console;
+        ui::set_visible(s.w.console, on_console);
+        ui::set_visible(s.w.console_send, on_console);
+        ui::set_enabled(s.w.console, t.can_console());
+        ui::set_enabled(s.w.console_send, t.can_console());
+        ui::set_visible(s.w.cancel_copy, term == TermTab::Transfers && t.copying());
         if !on_shell {
             let text = t.term_text().replace('\n', "\r\n");
             if ui::text(s.w.term_text) != text {
@@ -776,7 +808,7 @@ fn layout() {
         let r = ui::client(s.window);
         let (w, h) = (r.right, r.bottom);
         let key: LayoutKey = match s.app.active() {
-            Tab::Machines => (w, h, -1, 0, false, false, false, false),
+            Tab::Machines => (w, h, -1, 0, false, false, false, -1),
             Tab::Connection(i) => match s.app.tab(i) {
                 Some(t) => {
                     let l = t.layout();
@@ -789,10 +821,13 @@ fn layout() {
                         l.swapped,
                         l.local_tree,
                         l.remote_tree,
-                        t.term_tab() == TermTab::Shell,
+                        TermTab::ALL
+                            .iter()
+                            .position(|x| *x == t.term_tab())
+                            .unwrap_or(0) as i64,
                     )
                 }
-                None => (w, h, -2, 0, false, false, false, false),
+                None => (w, h, -2, 0, false, false, false, -1),
             },
         };
         if s.laid == Some(key) {
@@ -905,7 +940,21 @@ fn layout() {
         ui::place(s.w.term_tabs, (m, term_y, w - 2 * m, sc(26)));
         let body = (m, term_y + sc(26), w - 2 * m, term_h - sc(26));
         ui::place(s.w.term.hwnd, body);
-        ui::place(s.w.term_text, body);
+        let on_console = t.term_tab() == TermTab::Console;
+        let row = if on_console { sc(30) } else { 0 };
+        ui::place(s.w.term_text, (body.0, body.1, body.2, body.3 - row));
+        if on_console {
+            let y = body.1 + body.3 - row + sc(4);
+            ui::place(s.w.console, (body.0, y, body.2 - sc(86), sc(24)));
+            ui::place(
+                s.w.console_send,
+                (body.0 + body.2 - sc(80), y, sc(80), sc(24)),
+            );
+        }
+        ui::place(
+            s.w.cancel_copy,
+            (w - m - sc(110), term_y + 1, sc(106), sc(23)),
+        );
         true
     });
     if moved != Some(true) {
@@ -1156,7 +1205,103 @@ fn chord(vk: u16) -> Option<Chord> {
 }
 
 /// A key press from the message loop: the key map's command, if any. True when it was used.
+/// The names selected in one side's list.
+fn selected_names(side: Side) -> Vec<String> {
+    with(|s| {
+        let (list, rows) = match side {
+            Side::Local => (s.w.local.list, &s.drawn.local),
+            Side::Remote => (s.w.remote.list, &s.drawn.remote),
+        };
+        controls::selected_all(list)
+            .into_iter()
+            .filter_map(|i| rows.get(i).map(|r| r.name.clone()))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn send_console() {
+    let Some(edit) = with(|s| s.w.console) else {
+        return;
+    };
+    let line = ui::text(edit);
+    if !line.trim().is_empty() {
+        ui::set_text(edit, "");
+        conn_action(conn::Action::ConsoleSend(line));
+    }
+}
+
+/// The right-click menu of a file list: what can be done with its selection.
+fn file_menu(side: Side) {
+    let Some((hwnd, other)) = with(|s| {
+        let other = match s.app.active() {
+            Tab::Connection(i) => s.app.tab(i).map(|t| match side {
+                Side::Local => format!("Copy to {}", t.title()),
+                Side::Remote => "Copy to this computer".to_string(),
+            }),
+            Tab::Machines => None,
+        };
+        (s.window, other)
+    }) else {
+        return;
+    };
+    let names = selected_names(side);
+    let mut p = POINT::default();
+    let items: Vec<(usize, String, bool)> = vec![
+        (
+            1,
+            format!("{}\tF6", other.unwrap_or_else(|| "Copy".into())),
+            !names.is_empty(),
+        ),
+        (2, "New folder...\tCtrl+N".into(), true),
+        (3, "Rename...\tF2".into(), names.len() == 1),
+        (4, "Delete...\tDel".into(), !names.is_empty()),
+        (5, "Refresh\tF5".into(), true),
+    ];
+    // SAFETY: a popup menu built, shown modally and destroyed here.
+    let cmd = unsafe {
+        let _ = GetCursorPos(&mut p);
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let labels: Vec<Vec<u16>> = items.iter().map(|(_, l, _)| ui::wide(l)).collect();
+        for ((id, _, on), label) in items.iter().zip(&labels) {
+            let flags = if *on {
+                MF_STRING
+            } else {
+                MF_STRING | MF_GRAYED
+            };
+            let _ = AppendMenuW(menu, flags, *id, windows::core::PCWSTR(label.as_ptr()));
+            if *id == 1 || *id == 4 {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            }
+        }
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            p.x,
+            p.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        cmd
+    };
+    match cmd {
+        1 => conn_action(conn::Action::Copy(side, names)),
+        2 => conn_action(conn::Action::NewFolder(side)),
+        3 => conn_action(conn::Action::Rename(side, names[0].clone())),
+        4 => conn_action(conn::Action::Delete(side, names)),
+        5 => conn_action(conn::Action::Refresh(side)),
+        _ => {}
+    }
+}
+
 pub fn key(vk: u16, focus: HWND) -> bool {
+    if vk == 0x0D && with(|s| s.w.console == focus).unwrap_or(false) {
+        send_console();
+        return true;
+    }
     let Some(c) = chord(vk) else {
         return false;
     };
@@ -1223,6 +1368,19 @@ pub fn key(vk: u16, focus: HWND) -> bool {
         }
         Command::NextTab | Command::PrevTab => {}
         Command::ShowMachines => dispatch(app::Action::ShowMachines),
+        Command::Copy => conn_action(conn::Action::Copy(side, selected_names(side))),
+        Command::Rename => {
+            if let [one] = selected_names(side).as_slice() {
+                conn_action(conn::Action::Rename(side, one.clone()));
+            }
+        }
+        Command::Delete => {
+            let names = selected_names(side);
+            if !names.is_empty() {
+                conn_action(conn::Action::Delete(side, names));
+            }
+        }
+        Command::NewFolder => conn_action(conn::Action::NewFolder(side)),
     }
     true
 }
@@ -1238,6 +1396,14 @@ fn selected_machine() -> Option<String> {
 fn command(from: HWND, code: u32) {
     if code != BN_CLICKED {
         return;
+    }
+    if let Some((send, cancel)) = with(|s| (s.w.console_send, s.w.cancel_copy)) {
+        if from == send {
+            return send_console();
+        }
+        if from == cancel {
+            return conn_action(conn::Action::CancelTransfers);
+        }
     }
     let Some(b) = with(|s| {
         [
@@ -1309,6 +1475,12 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
         if let Some(t) = controls::tab_selected(term_tabs).and_then(|n| TermTab::ALL.get(n)) {
             conn_action(conn::Action::SelectTerm(*t));
         }
+    } else if hdr.code == NM_RCLICK && (from == l_list || from == r_list) {
+        file_menu(if from == l_list {
+            Side::Local
+        } else {
+            Side::Remote
+        });
     } else if hdr.code == NM_DBLCLK {
         if from == m_list {
             if let Some(id) = selected_machine() {

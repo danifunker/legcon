@@ -43,6 +43,11 @@ pub enum Command {
     NextTab,
     PrevTab,
     ShowMachines,
+    /// Copy the selection to the other pane.
+    Copy,
+    Rename,
+    Delete,
+    NewFolder,
 }
 
 const fn chord(key: Key, primary: bool, shift: bool) -> Chord {
@@ -69,6 +74,10 @@ pub const DEFAULTS: &[(Chord, Command)] = &[
     (chord(Key::Tab, true, false), Command::NextTab),
     (chord(Key::Tab, true, true), Command::PrevTab),
     (chord(Key::Digit(0), true, false), Command::ShowMachines),
+    (chord(Key::F(6), false, false), Command::Copy),
+    (chord(Key::F(2), false, false), Command::Rename),
+    (chord(Key::Delete, false, false), Command::Delete),
+    (chord(Key::Char('N'), true, false), Command::NewFolder),
 ];
 
 /// The command bound to `c`, if any. Letters match whatever their case.
