@@ -8,6 +8,7 @@
 use std::io::{Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use lc_core::rcp::{self, shell_error};
 use lc_core::{Entry, Error, RemotePath, Result};
 use ssh2::Channel;
 
@@ -27,38 +28,37 @@ pub fn sq(b: &[u8]) -> Vec<u8> {
     v
 }
 
-/// What a failed command said, as the error the user sees.
-fn shell_error(what: &str, stderr: &[u8]) -> Error {
-    let text = String::from_utf8_lossy(stderr).trim().to_string();
-    let lower = text.to_lowercase();
-    let msg = if text.is_empty() {
-        what.to_string()
-    } else {
-        format!("{what}: {text}")
-    };
-    if lower.contains("no such file") || lower.contains("not found") {
-        Error::NotFound(msg)
-    } else if lower.contains("permission denied") || lower.contains("not permitted") {
-        Error::Denied(msg)
-    } else {
-        Error::Protocol(msg)
+/// An exec channel as the link an rcp copy runs over.
+pub struct ChannelLink(Channel);
+
+impl Read for ChannelLink {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(b)
     }
 }
 
-/// Read the acknowledgement byte; an error's text follows 1 or 2 up to the newline.
-fn ack(ch: &mut Channel, what: &str) -> Result<()> {
-    let mut b = [0u8; 1];
-    ch.read_exact(&mut b)
-        .map_err(|_| Error::Protocol(format!("{what}: scp ended without a reply")))?;
-    if b[0] == 0 {
-        return Ok(());
+impl Write for ChannelLink {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.write(b)
     }
-    let mut line = Vec::new();
-    while ch.read(&mut b).unwrap_or(0) == 1 && b[0] != b'\n' {
-        line.push(b[0]);
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
     }
-    Err(shell_error(what, &line))
 }
+
+impl rcp::Link for ChannelLink {
+    fn end(&mut self) {
+        let _ = self.0.send_eof();
+        let _ = self.0.wait_close();
+    }
+    fn abort(&mut self) {
+        // Closing the channel makes scp give up on the file.
+        let _ = self.0.close();
+    }
+}
+
+pub type ScpReader = rcp::Receiver<ChannelLink>;
+pub type ScpWriter = rcp::Sender<ChannelLink>;
 
 impl SshSession {
     fn exec_channel(&mut self, cmd: &[u8]) -> Result<Channel> {
@@ -159,51 +159,8 @@ impl SshSession {
     pub(crate) fn scp_read(&mut self, path: &RemotePath, at: u64) -> Result<ScpReader> {
         let mut cmd = b"scp -f ".to_vec();
         cmd.extend_from_slice(&self.qpath(path));
-        let mut ch = self.exec_channel(&cmd)?;
-        let what = path.to_string();
-        ch.write_all(&[0])?;
-        let mut line = Vec::new();
-        let mut b = [0u8; 1];
-        loop {
-            ch.read_exact(&mut b)
-                .map_err(|_| Error::Protocol(format!("{what}: scp sent nothing")))?;
-            if line.is_empty() && (b[0] == 1 || b[0] == 2) {
-                let mut msg = Vec::new();
-                while ch.read(&mut b).unwrap_or(0) == 1 && b[0] != b'\n' {
-                    msg.push(b[0]);
-                }
-                return Err(shell_error(&what, &msg));
-            }
-            if b[0] == b'\n' {
-                // `T` lines (times) come only with -p; skip one if a server sends it anyway.
-                if line.first() == Some(&b'T') {
-                    ch.write_all(&[0])?;
-                    line.clear();
-                    continue;
-                }
-                break;
-            }
-            line.push(b[0]);
-        }
-        let text = String::from_utf8_lossy(&line).into_owned();
-        let size: u64 = match (text.starts_with('C'), text.split(' ').nth(1)) {
-            (true, Some(n)) => n
-                .parse()
-                .map_err(|_| Error::Protocol(format!("{what}: scp said {text:?}")))?,
-            _ => {
-                return Err(Error::Unsupported(format!(
-                    "{what} is not a plain file ({text})"
-                )))
-            }
-        };
-        ch.write_all(&[0])?;
-        let mut r = ScpReader {
-            ch,
-            left: size,
-            done: false,
-        };
-        std::io::copy(&mut (&mut r).take(at), &mut std::io::sink())?;
-        Ok(r)
+        let ch = self.exec_channel(&cmd)?;
+        rcp::receive(ChannelLink(ch), &path.to_string(), at)
     }
 
     /// Write a file of `size` bytes with `scp -t`.
@@ -213,108 +170,8 @@ impl SshSession {
             .unwrap_or_else(|| RemotePath::root(path.style));
         let mut cmd = b"scp -t ".to_vec();
         cmd.extend_from_slice(&self.qpath(&parent));
-        let mut ch = self.exec_channel(&cmd)?;
-        let what = path.to_string();
-        ack(&mut ch, &what)?;
-        let mut header = format!("C0644 {size} ").into_bytes();
-        header.extend_from_slice(&self.enc(path.name()));
-        header.push(b'\n');
-        ch.write_all(&header)?;
-        ack(&mut ch, &what)?;
-        let mut w = ScpWriter {
-            ch,
-            left: size,
-            what,
-            finished: false,
-        };
-        if size == 0 {
-            w.finish()?;
-        }
-        Ok(w)
-    }
-}
-
-pub struct ScpReader {
-    ch: Channel,
-    left: u64,
-    done: bool,
-}
-
-impl Read for ScpReader {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.left == 0 {
-            if !self.done {
-                self.done = true;
-                // The sender's closing 0, then ours.
-                let mut b = [0u8; 1];
-                self.ch.read_exact(&mut b)?;
-                self.ch.write_all(&[0])?;
-            }
-            return Ok(0);
-        }
-        let want = buf.len().min(self.left.min(usize::MAX as u64) as usize);
-        let n = self.ch.read(&mut buf[..want])?;
-        if n == 0 {
-            return Err(std::io::ErrorKind::UnexpectedEof.into());
-        }
-        self.left -= n as u64;
-        Ok(n)
-    }
-}
-
-impl Drop for ScpReader {
-    fn drop(&mut self) {
-        let _ = self.ch.send_eof();
-        let _ = self.ch.close();
-    }
-}
-
-pub struct ScpWriter {
-    ch: Channel,
-    left: u64,
-    what: String,
-    finished: bool,
-}
-
-impl ScpWriter {
-    /// Our closing 0, and the server's word that the file is complete.
-    fn finish(&mut self) -> Result<()> {
-        self.finished = true;
-        self.ch.write_all(&[0])?;
-        ack(&mut self.ch, &self.what)?;
-        let _ = self.ch.send_eof();
-        let _ = self.ch.wait_close();
-        Ok(())
-    }
-}
-
-impl Write for ScpWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        if self.left == 0 {
-            return Err(std::io::Error::other(format!(
-                "{}: more bytes than announced to scp",
-                self.what
-            )));
-        }
-        let n = buf.len().min(self.left.min(usize::MAX as u64) as usize);
-        let n = self.ch.write(&buf[..n])?;
-        self.left -= n as u64;
-        if self.left == 0 {
-            self.finish().map_err(std::io::Error::other)?;
-        }
-        Ok(n)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Drop for ScpWriter {
-    fn drop(&mut self) {
-        if !self.finished {
-            // Cut short: closing the channel makes scp give up on the file.
-            let _ = self.ch.close();
-        }
+        let ch = self.exec_channel(&cmd)?;
+        let name = self.enc(path.name());
+        rcp::send(ChannelLink(ch), &name, size, &path.to_string())
     }
 }

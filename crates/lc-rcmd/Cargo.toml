@@ -8,3 +8,4 @@ publish = false
 
 [dependencies]
 lc-core = { path = "../lc-core" }
+socket2 = "0.5"

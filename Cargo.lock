@@ -501,6 +501,7 @@ name = "lc-rcmd"
 version = "0.1.0"
 dependencies = [
  "lc-core",
+ "socket2",
 ]
 
 [[package]]

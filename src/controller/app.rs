@@ -49,12 +49,14 @@ pub enum Action {
 }
 
 /// The services Add machine offers, in order.
-const ADD_SERVICES: [ServiceKind; 7] = [
+const ADD_SERVICES: [ServiceKind; 9] = [
     ServiceKind::Ftp,
     ServiceKind::Smb,
     ServiceKind::Ssh,
     ServiceKind::Telnet,
     ServiceKind::Rexec,
+    ServiceKind::Rsh,
+    ServiceKind::Rlogin,
     ServiceKind::Nfs,
     ServiceKind::Demo,
 ];

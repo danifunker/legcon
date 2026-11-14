@@ -195,6 +195,39 @@ impl TermSession {
                     );
                     line_term::open(&machine.name, &banner, runner, Arc::clone(&notify))
                 }
+                ServiceKind::Rlogin => {
+                    let cs = Charset::from_label(&machine.charset).unwrap_or_default();
+                    let enc = |t: &str| cs.encode(t).unwrap_or_else(|| t.as_bytes().to_vec());
+                    let local = machine.local_user.as_deref().unwrap_or(&machine.user);
+                    lc_rcmd::rsh::rlogin(
+                        &machine.address,
+                        service.port,
+                        &enc(local),
+                        &enc(&machine.user),
+                        "vt100",
+                        cols,
+                        rows,
+                        Duration::from_millis(250),
+                        &lc_rcmd::Options::default(),
+                    )?
+                }
+                ServiceKind::Rsh => {
+                    let r = lc_rcmd::rsh::Rsh::connect(
+                        &machine.address,
+                        service.port,
+                        machine.local_user.as_deref().unwrap_or(&machine.user),
+                        &machine.user,
+                        Charset::from_label(&machine.charset).unwrap_or_default(),
+                        &lc_rcmd::Options::default(),
+                    )?;
+                    let runner: line_term::Runner =
+                        Arc::new(move |cmd: &[u8]| r.run(cmd).map_err(Into::into));
+                    let banner = format!(
+                        "rsh to {}: each line runs as its own command. cd is remembered; exit ends.",
+                        machine.address
+                    );
+                    line_term::open(&machine.name, &banner, runner, Arc::clone(&notify))
+                }
                 other => bail!("{} is not a command service", other.label()),
             };
             let charset = Charset::from_label(&machine.charset).unwrap_or_default();

@@ -302,7 +302,23 @@ fn open_file_session(
             );
             Ok((Box::new(session), None))
         }
-        ServiceKind::Telnet | ServiceKind::Rexec => {
+        ServiceKind::Rsh => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Rsh)
+                .map_or(lc_rcmd::rsh::RSH_PORT, |s| s.port);
+            let session = lc_rcmd::rsh::Rsh::connect(
+                &machine.address,
+                port,
+                machine.local_user.as_deref().unwrap_or(&machine.user),
+                &machine.user,
+                lc_core::Charset::from_label(&machine.charset).unwrap_or_default(),
+                &lc_rcmd::Options::default(),
+            )?;
+            Ok((Box::new(session), None))
+        }
+        ServiceKind::Telnet | ServiceKind::Rexec | ServiceKind::Rlogin => {
             bail!("{} is a command service, not a file service", kind.label())
         }
     }

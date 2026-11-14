@@ -586,18 +586,7 @@ impl ConnectionController {
             s.map(|s| format!("{what}: {}", s.kind.label()))
                 .unwrap_or_else(|| none.to_string())
         };
-        let plain = |k: Option<ServiceKind>| {
-            matches!(
-                k,
-                Some(
-                    ServiceKind::Ftp
-                        | ServiceKind::Telnet
-                        | ServiceKind::Rexec
-                        | ServiceKind::Smb
-                        | ServiceKind::Nfs
-                )
-            )
-        };
+        let plain = |k: Option<ServiceKind>| k.is_some_and(ServiceKind::plaintext);
         HeaderInfo {
             name: self.machine.name.clone(),
             address: self.machine.address.clone(),
@@ -681,8 +670,8 @@ impl ConnectionController {
         }
         // Telnet logs in on the screen, SSH may have a key; the others need the password up front.
         let kind = self.machine.command_service().map(|s| s.kind);
-        let needed = kind != Some(ServiceKind::Telnet)
-            && !(kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some());
+        let key = kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some();
+        let needed = !key && kind.is_some_and(ServiceKind::needs_password);
         match self.password_for(Login::Shell, needed) {
             Ok(p) => self.open_shell(p),
             Err(ask) => return vec![*ask],
@@ -768,16 +757,9 @@ impl ConnectionController {
 
     /// Whether the file service sends passwords in the clear.
     pub fn plaintext(&self) -> bool {
-        matches!(
-            self.machine.file_service().map(|s| s.kind),
-            Some(
-                ServiceKind::Ftp
-                    | ServiceKind::Telnet
-                    | ServiceKind::Rexec
-                    | ServiceKind::Smb
-                    | ServiceKind::Nfs
-            )
-        )
+        self.machine
+            .file_service()
+            .is_some_and(|s| s.kind.plaintext())
     }
 
     pub fn can_connect(&self) -> bool {
@@ -1428,7 +1410,7 @@ impl Controller for ConnectionController {
                 let kind = self.machine.file_service().map(|s| s.kind);
                 // No password for the demo or NFS, nor for SSH with a login key.
                 let key = kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some();
-                let needed = !(key || matches!(kind, Some(ServiceKind::Demo | ServiceKind::Nfs)));
+                let needed = !key && kind.is_some_and(ServiceKind::needs_password);
                 match self.password_for(Login::Files, needed) {
                     Ok(p) => self.connect(p),
                     Err(ask) => return vec![*ask],

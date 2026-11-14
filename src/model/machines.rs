@@ -23,18 +23,24 @@ pub enum ServiceKind {
     Nfs,
     Ssh,
     Rexec,
+    /// rsh: files over rcp and one command at a time, trusted through `.rhosts`.
+    Rsh,
+    /// rlogin: a terminal, trusted through `.rhosts` (or a password typed on screen).
+    Rlogin,
     /// A built-in machine held in memory, for trying the app without a real one.
     Demo,
 }
 
 impl ServiceKind {
-    pub const ALL: [ServiceKind; 7] = [
+    pub const ALL: [ServiceKind; 9] = [
         ServiceKind::Ftp,
         ServiceKind::Telnet,
         ServiceKind::Smb,
         ServiceKind::Nfs,
         ServiceKind::Ssh,
         ServiceKind::Rexec,
+        ServiceKind::Rsh,
+        ServiceKind::Rlogin,
         ServiceKind::Demo,
     ];
 
@@ -46,6 +52,8 @@ impl ServiceKind {
             ServiceKind::Nfs => "NFS",
             ServiceKind::Ssh => "SSH",
             ServiceKind::Rexec => "rexec",
+            ServiceKind::Rsh => "rsh",
+            ServiceKind::Rlogin => "rlogin",
             ServiceKind::Demo => "Demo",
         }
     }
@@ -59,6 +67,8 @@ impl ServiceKind {
             ServiceKind::Nfs => "nfs",
             ServiceKind::Ssh => "ssh",
             ServiceKind::Rexec => "rexec",
+            ServiceKind::Rsh => "rsh",
+            ServiceKind::Rlogin => "rlogin",
             ServiceKind::Demo => "demo",
         }
     }
@@ -77,6 +87,8 @@ impl ServiceKind {
             ServiceKind::Nfs => 2049,
             ServiceKind::Ssh => 22,
             ServiceKind::Rexec => 512,
+            ServiceKind::Rsh => 514,
+            ServiceKind::Rlogin => 513,
             ServiceKind::Demo => 0,
         }
     }
@@ -89,6 +101,7 @@ impl ServiceKind {
                 | ServiceKind::Smb
                 | ServiceKind::Nfs
                 | ServiceKind::Ssh
+                | ServiceKind::Rsh
                 | ServiceKind::Demo
         )
     }
@@ -96,8 +109,26 @@ impl ServiceKind {
     pub fn serves_commands(self) -> bool {
         matches!(
             self,
-            ServiceKind::Telnet | ServiceKind::Ssh | ServiceKind::Rexec
+            ServiceKind::Telnet
+                | ServiceKind::Ssh
+                | ServiceKind::Rexec
+                | ServiceKind::Rsh
+                | ServiceKind::Rlogin
         )
+    }
+
+    /// Whether connecting needs a password up front. Telnet and rlogin ask on screen; rsh and
+    /// NFS trust the client; SSH may log in with a key instead (the caller checks that).
+    pub fn needs_password(self) -> bool {
+        matches!(
+            self,
+            ServiceKind::Ftp | ServiceKind::Smb | ServiceKind::Ssh | ServiceKind::Rexec
+        )
+    }
+
+    /// Whether the password or the commands cross the network unencrypted.
+    pub fn plaintext(self) -> bool {
+        !matches!(self, ServiceKind::Ssh | ServiceKind::Demo)
     }
 }
 
@@ -226,6 +257,9 @@ pub struct Machine {
     pub uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gid: Option<u32>,
+    /// The name on this computer that rsh / rlogin present (`.rhosts` lists it); the user when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_user: Option<String>,
 }
 
 fn yes() -> bool {
@@ -319,6 +353,7 @@ impl Machine {
             key_file: None,
             uid: None,
             gid: None,
+            local_user: None,
         }
     }
 

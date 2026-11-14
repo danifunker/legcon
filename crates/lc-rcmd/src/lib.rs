@@ -1,13 +1,15 @@
-//! The BSD r-commands for legcon (docs/PLAN.md §4.1, §4.2). Only rexec so far.
+//! The BSD r-commands for legcon (docs/PLAN.md §4.1, §4.2): rexec, and rsh / rlogin / rcp ([`rsh`]).
 //!
 //! rexec (port 512) runs one command with a user name and password, from any source port, so it
 //! needs no privileges on the client. legcon sends `0` as the stderr port: the server then
 //! merges stderr into the output instead of connecting back to us (D26). rexec reports no exit
-//! status. rsh, rlogin and rcp (reserved source ports) come in phase 8 (D27).
+//! status.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, TcpStream, ToSocketAddrs};
 use std::time::Duration;
+
+pub mod rsh;
 
 use lc_core::{ConnState, Connection, Error, ExecResult, Pty, Result, ShellCaps, ShellSession};
 

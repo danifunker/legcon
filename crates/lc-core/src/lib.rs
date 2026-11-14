@@ -14,6 +14,7 @@ pub mod error;
 pub mod listing;
 pub mod memory;
 pub mod path;
+pub mod rcp;
 pub mod session;
 
 pub use charset::Charset;
