@@ -3,6 +3,7 @@
 pub mod appledouble;
 pub mod config;
 pub mod job;
+pub mod keystore;
 pub mod line_term;
 pub mod local;
 pub mod machines;

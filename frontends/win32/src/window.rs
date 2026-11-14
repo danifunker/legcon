@@ -10,6 +10,7 @@ use std::sync::Arc;
 use legcon::controller::app::{self, default_dir, AppController, Tab};
 use legcon::controller::connection::{self as conn, HeaderInfo, Row, Side, TermScreen, TermTab};
 use legcon::controller::keys::{self, Chord, Command, Key, Mods};
+use legcon::controller::ssh_keys as sshkeys;
 use legcon::controller::{ids, ConnState, Controller, Effect, TabColor};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -51,6 +52,8 @@ use crate::wake::{Win32Wake, WM_APP_JOB};
 
 /// Posted by the tab strip: close tab `wParam` (0 is Machines).
 const WM_APP_CLOSE_TAB: u32 = WM_APP + 3;
+/// The tab strip holds Machines and Keys, then one tab per connection.
+const FIRST_CONN: usize = 2;
 /// Posted by the tab strip: the colour menu for tab `wParam`.
 const WM_APP_TAB_MENU: u32 = WM_APP + 4;
 
@@ -73,6 +76,12 @@ pub struct Widgets {
     m_settings: HWND,
     m_disconnect_all: HWND,
     m_list: HWND,
+    k_new: HWND,
+    k_import: HWND,
+    k_export: HWND,
+    k_copy: HWND,
+    k_delete: HWND,
+    k_list: HWND,
     header: Header,
     local: Pane,
     remote: Pane,
@@ -97,6 +106,7 @@ struct TabLook {
 struct Drawn {
     tabs: Vec<TabLook>,
     machines: Vec<(i32, Vec<String>)>,
+    keys: Vec<(i32, Vec<String>)>,
     local: Vec<Row>,
     remote: Vec<Row>,
     local_trail: Vec<String>,
@@ -325,6 +335,24 @@ fn build(window: HWND) -> Widgets {
             icons::color_list(&colors, swatch),
             true,
         ),
+        k_new: ui::button(window, "New key...", ids::KEYS_NEW),
+        k_import: ui::button(window, "Import...", ids::KEYS_IMPORT),
+        k_export: ui::button(window, "Export...", ids::KEYS_EXPORT),
+        k_copy: ui::button(window, "Copy public key", ids::KEYS_COPY),
+        k_delete: ui::button(window, "Delete", ids::KEYS_DELETE),
+        k_list: controls::list(
+            window,
+            ids::KEYS_LIST,
+            &[
+                ("Name", 150),
+                ("Kind", 120),
+                ("Used by", 150),
+                ("Comment", 130),
+                ("Fingerprint (SHA256)", 340),
+            ],
+            icons::system_list(),
+            true,
+        ),
         header: header::create(window),
         local: pane(window, true),
         remote: pane(window, false),
@@ -364,7 +392,7 @@ fn active_machine() -> Option<String> {
 fn active_conn() -> Option<usize> {
     with(|s| match s.app.active() {
         Tab::Connection(i) => Some(i),
-        Tab::Machines => None,
+        Tab::Machines | Tab::Keys => None,
     })
     .flatten()
 }
@@ -383,7 +411,7 @@ pub fn shell_screen() -> Option<TermScreen> {
 pub fn shell_message() -> String {
     with(|s| match s.app.active() {
         Tab::Connection(i) => s.app.tab(i).map(|t| t.shell_message()).unwrap_or_default(),
-        Tab::Machines => String::new(),
+        Tab::Machines | Tab::Keys => String::new(),
     })
     .unwrap_or_default()
 }
@@ -443,7 +471,7 @@ pub fn place_term_connect() {
                     t.shell_connect_label(),
                 )
             }),
-            Tab::Machines => (false, String::new()),
+            Tab::Machines | Tab::Keys => (false, String::new()),
         };
         term_view::place_connect(&s.w.term, show, &label);
     });
@@ -459,8 +487,19 @@ fn run(effects: Vec<Effect>) {
             Effect::PickFolder(spec) => {
                 let path =
                     effects::pick_folder(owner, spec.purpose, &spec.title, spec.start.as_ref());
-                if spec.purpose == "app.home" {
-                    dispatch(app::Action::HomePicked(path));
+                match spec.purpose {
+                    "app.home" => dispatch(app::Action::HomePicked(path)),
+                    "keys.export" => {
+                        dispatch(app::Action::Keys(sshkeys::Action::ExportPicked(path)))
+                    }
+                    _ => {}
+                }
+            }
+            Effect::PickFile(spec) => {
+                let path =
+                    effects::pick_file(owner, spec.purpose, &spec.title, spec.start.as_ref());
+                if spec.purpose == "keys.import" {
+                    dispatch(app::Action::Keys(sshkeys::Action::ImportPicked(path)));
                 }
             }
             Effect::AskPath(spec) => {
@@ -493,6 +532,9 @@ fn run(effects: Vec<Effect>) {
                 match spec.purpose {
                     "machines.remove" => dispatch(app::Action::RemoveConfirmed(yes)),
                     "conn.delete" => conn_action(conn::Action::DeleteConfirmed(yes)),
+                    "keys.delete" => {
+                        dispatch(app::Action::Keys(sshkeys::Action::DeleteConfirmed(yes)))
+                    }
                     _ => {}
                 }
             }
@@ -534,6 +576,9 @@ fn run(effects: Vec<Effect>) {
                     "conn.name" => conn_action(conn::Action::NewFolderAnswered(answer)),
                     "machines.add.address" => dispatch(app::Action::AddAddressAnswered(answer)),
                     "machines.add.name" => dispatch(app::Action::AddNameAnswered(answer)),
+                    "keys.import.name" => dispatch(app::Action::Keys(
+                        sshkeys::Action::ImportNameAnswered(answer),
+                    )),
                     _ => {}
                 }
             }
@@ -558,15 +603,24 @@ fn run(effects: Vec<Effect>) {
             }
             Effect::Form(spec) => {
                 let answer = form::show(owner, &spec);
-                if spec.purpose == legcon::controller::machine_form::PURPOSE {
-                    dispatch(app::Action::MachineFormAnswered(answer));
+                match spec.purpose {
+                    legcon::controller::machine_form::PURPOSE => {
+                        dispatch(app::Action::MachineFormAnswered(answer))
+                    }
+                    sshkeys::NEW_PURPOSE => {
+                        dispatch(app::Action::Keys(sshkeys::Action::NewAnswered(answer)))
+                    }
+                    _ => {}
                 }
             }
             Effect::Message(text) => {
                 set_status(&text);
                 effects::note(owner, "legcon", &text);
             }
-            Effect::CopyToClipboard(text) => effects::copy_text(owner, &text),
+            Effect::CopyToClipboard(text) => {
+                effects::copy_text(owner, &text);
+                set_status("Copied to the clipboard.");
+            }
             Effect::Quit => {
                 // SAFETY: destroying our own main window ends the message loop.
                 let _ = unsafe { DestroyWindow(owner) };
@@ -623,17 +677,19 @@ fn set_check(h: HWND, on: bool) {
 fn refresh() {
     let mut resize = None;
     let status = with(|s| {
-        let looks: Vec<TabLook> = std::iter::once(TabLook {
-            title: "Machines".into(),
-            color: None,
-            state: None,
-        })
-        .chain(s.app.tabs().iter().map(|t| TabLook {
-            title: t.title(),
-            color: Some(t.color().rgb()),
-            state: Some(t.tab_state()),
-        }))
-        .collect();
+        let looks: Vec<TabLook> = ["Machines", "Keys"]
+            .into_iter()
+            .map(|t| TabLook {
+                title: t.into(),
+                color: None,
+                state: None,
+            })
+            .chain(s.app.tabs().iter().map(|t| TabLook {
+                title: t.title(),
+                color: Some(t.color().rgb()),
+                state: Some(t.tab_state()),
+            }))
+            .collect();
         if looks
             .iter()
             .map(|l| &l.title)
@@ -651,10 +707,38 @@ fn refresh() {
             s.w.tabs,
             match active {
                 Tab::Machines => 0,
-                Tab::Connection(i) => i + 1,
+                Tab::Keys => 1,
+                Tab::Connection(i) => i + FIRST_CONN,
             },
         );
         let on_machines = active == Tab::Machines;
+        let on_keys = active == Tab::Keys;
+        let on_conn = matches!(active, Tab::Connection(_));
+        for h in [
+            s.w.k_new,
+            s.w.k_import,
+            s.w.k_export,
+            s.w.k_copy,
+            s.w.k_delete,
+            s.w.k_list,
+        ] {
+            ui::set_visible(h, on_keys);
+        }
+        let keys: Vec<(i32, Vec<String>)> = s
+            .app
+            .keys()
+            .into_iter()
+            .map(|k| {
+                (
+                    icons::file_icon("key.pem", false),
+                    vec![k.name, k.kind, k.used_by, k.comment, k.fingerprint],
+                )
+            })
+            .collect();
+        if keys != s.drawn.keys {
+            controls::fill(s.w.k_list, &keys);
+            s.drawn.keys = keys;
+        }
         for h in [
             s.w.m_add,
             s.w.m_open,
@@ -667,11 +751,11 @@ fn refresh() {
         }
         for p in [&s.w.local, &s.w.remote] {
             for h in [p.toggle, p.title, p.home, p.other, p.path, p.list] {
-                ui::set_visible(h, !on_machines);
+                ui::set_visible(h, on_conn);
             }
         }
         for h in [s.w.header.hwnd, s.w.term_tabs] {
-            ui::set_visible(h, !on_machines);
+            ui::set_visible(h, on_conn);
         }
         let machines: Vec<(i32, Vec<String>)> = s
             .app
@@ -716,6 +800,14 @@ fn refresh() {
                 ui::set_visible(h, false);
             }
             s.drawn.header = None;
+            if on_keys {
+                return s.app.keys_busy().unwrap_or_else(|| {
+                    format!(
+                        "{} keys, kept in legcon's config folder. Export copies one out; nothing is written to ~/.ssh.",
+                        s.drawn.keys.len()
+                    )
+                });
+            }
             return format!(
                 "{} machines saved. Double-click one to open it; right-click a tab to colour it.",
                 s.drawn.machines.len()
@@ -842,6 +934,7 @@ fn layout() {
         let (w, h) = (r.right, r.bottom);
         let key: LayoutKey = match s.app.active() {
             Tab::Machines => (w, h, -1, 0, false, false, false, -1),
+            Tab::Keys => (w, h, -3, 0, false, false, false, -1),
             Tab::Connection(i) => match s.app.tab(i) {
                 Some(t) => {
                     let l = t.layout();
@@ -899,6 +992,24 @@ fn layout() {
             }
             ui::place(
                 s.w.m_list,
+                (m, top + btn + 2 * m, w - 2 * m, bottom - top - btn - 2 * m),
+            );
+            return true;
+        }
+        if s.app.active() == Tab::Keys {
+            let mut x = m;
+            for (b, bw) in [
+                (s.w.k_new, 100),
+                (s.w.k_import, 90),
+                (s.w.k_export, 90),
+                (s.w.k_copy, 130),
+                (s.w.k_delete, 80),
+            ] {
+                ui::place(b, (x, top + m, sc(bw), btn));
+                x += sc(bw) + m;
+            }
+            ui::place(
+                s.w.k_list,
                 (m, top + btn + 2 * m, w - 2 * m, bottom - top - btn - 2 * m),
             );
             return true;
@@ -1015,7 +1126,13 @@ fn paint_main(hwnd: HWND) {
         let r = ui::client(hwnd);
         paint::fill(dc, &r, paint::FACE);
         let dpi = ui::dpi(hwnd);
-        let parts = with(|s| (s.panes, s.splitter, s.app.active() != Tab::Machines));
+        let parts = with(|s| {
+            (
+                s.panes,
+                s.splitter,
+                matches!(s.app.active(), Tab::Connection(_)),
+            )
+        });
         if let Some((panes, split, true)) = parts {
             let band = ui::scale(32, dpi);
             let path_h = ui::scale(22, dpi);
@@ -1114,7 +1231,7 @@ fn draw_tab(d: &DRAWITEMSTRUCT) {
 
 fn tab_menu(tab: usize) {
     let Some((hwnd, id, current, keys)) = with(|s| {
-        let t = s.app.tab(tab.checked_sub(1)?)?;
+        let t = s.app.tab(tab.checked_sub(FIRST_CONN)?)?;
         Some((
             s.window,
             t.machine_id().to_string(),
@@ -1172,8 +1289,11 @@ fn tab_menu(tab: usize) {
         cmd
     };
     match cmd {
-        99 => dispatch(app::Action::CloseTab(tab - 1)),
-        98 => dispatch(app::Action::Conn(tab - 1, conn::Action::SetUpKeyLogin)),
+        99 => dispatch(app::Action::CloseTab(tab - FIRST_CONN)),
+        98 => dispatch(app::Action::Conn(
+            tab - FIRST_CONN,
+            conn::Action::SetUpKeyLogin,
+        )),
         97 => dispatch(app::Action::EditMachine(id)),
         c if (100..100 + TabColor::ALL.len()).contains(&c) => {
             dispatch(app::Action::SetColor(id, TabColor::ALL[c - 100]))
@@ -1200,19 +1320,19 @@ unsafe extern "system" fn tabs_proc(
     };
     match msg {
         WM_MBUTTONUP => {
-            if let Some((i, _)) = controls::tab_at(hwnd, x, y).filter(|(i, _)| *i > 0) {
+            if let Some((i, _)) = controls::tab_at(hwnd, x, y).filter(|(i, _)| *i >= FIRST_CONN) {
                 post(WM_APP_CLOSE_TAB, i);
             }
         }
         WM_RBUTTONUP => {
-            if let Some((i, _)) = controls::tab_at(hwnd, x, y).filter(|(i, _)| *i > 0) {
+            if let Some((i, _)) = controls::tab_at(hwnd, x, y).filter(|(i, _)| *i >= FIRST_CONN) {
                 post(WM_APP_TAB_MENU, i);
             }
         }
         WM_LBUTTONUP => {
             let close_w = ui::scale(20, ui::dpi(hwnd));
-            if let Some((i, _)) =
-                controls::tab_at(hwnd, x, y).filter(|(i, r)| *i > 0 && x >= r.right - close_w)
+            if let Some((i, _)) = controls::tab_at(hwnd, x, y)
+                .filter(|(i, r)| *i >= FIRST_CONN && x >= r.right - close_w)
             {
                 post(WM_APP_CLOSE_TAB, i);
             }
@@ -1294,7 +1414,7 @@ fn file_menu(side: Side) {
                 Side::Local => format!("Copy to {}", t.title()),
                 Side::Remote => "Copy to this computer".to_string(),
             }),
-            Tab::Machines => None,
+            Tab::Machines | Tab::Keys => None,
         };
         (s.window, other)
     }) else {
@@ -1407,21 +1527,21 @@ pub fn key(vk: u16, focus: HWND) -> bool {
                 dispatch(app::Action::CloseTab(i));
             }
         }
-        Command::NextTab | Command::PrevTab if tabs > 0 => {
-            let n = tabs + 1;
-            let at = current.map_or(0, |i| i + 1);
+        Command::NextTab | Command::PrevTab => {
+            let n = tabs + FIRST_CONN;
+            let on_keys = with(|s| s.app.active() == Tab::Keys).unwrap_or(false);
+            let at = current.map_or(usize::from(on_keys), |i| i + FIRST_CONN);
             let next = if cmd == Command::NextTab {
                 (at + 1) % n
             } else {
                 (at + n - 1) % n
             };
-            dispatch(if next == 0 {
-                app::Action::ShowMachines
-            } else {
-                app::Action::SelectTab(next - 1)
+            dispatch(match next {
+                0 => app::Action::ShowMachines,
+                1 => app::Action::ShowKeys,
+                n => app::Action::SelectTab(n - FIRST_CONN),
             });
         }
-        Command::NextTab | Command::PrevTab => {}
         Command::ShowMachines => dispatch(app::Action::ShowMachines),
         Command::Copy => conn_action(conn::Action::Copy(side, selected_names(side))),
         Command::Rename => {
@@ -1440,6 +1560,14 @@ pub fn key(vk: u16, focus: HWND) -> bool {
     true
 }
 
+fn selected_key() -> Option<String> {
+    with(|s| {
+        let names: Vec<String> = s.app.keys().into_iter().map(|k| k.name).collect();
+        controls::selected(s.w.k_list).and_then(|i| names.get(i).cloned())
+    })
+    .flatten()
+}
+
 fn selected_machine() -> Option<String> {
     with(|s| {
         let ids: Vec<String> = s.app.machines().into_iter().map(|m| m.id).collect();
@@ -1451,6 +1579,30 @@ fn selected_machine() -> Option<String> {
 fn command(from: HWND, code: u32) {
     if code != BN_CLICKED {
         return;
+    }
+    if let Some(k) = with(|s| {
+        [
+            s.w.k_new,
+            s.w.k_import,
+            s.w.k_export,
+            s.w.k_copy,
+            s.w.k_delete,
+        ]
+    }) {
+        let [new, import, export, copy, delete] = k;
+        let named = |f: fn(String) -> sshkeys::Action| {
+            if let Some(name) = selected_key() {
+                dispatch(app::Action::Keys(f(name)));
+            }
+        };
+        match from {
+            h if h == new => return dispatch(app::Action::Keys(sshkeys::Action::New)),
+            h if h == import => return dispatch(app::Action::Keys(sshkeys::Action::Import)),
+            h if h == export => return named(sshkeys::Action::Export),
+            h if h == copy => return named(sshkeys::Action::CopyPublic),
+            h if h == delete => return named(sshkeys::Action::Delete),
+            _ => {}
+        }
     }
     if let Some((send, cancel)) = with(|s| (s.w.console_send, s.w.cancel_copy)) {
         if from == send {
@@ -1530,7 +1682,8 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
     if from == tabs && hdr.code == TCN_SELCHANGE {
         match controls::tab_selected(tabs) {
             Some(0) | None => dispatch(app::Action::ShowMachines),
-            Some(n) => dispatch(app::Action::SelectTab(n - 1)),
+            Some(1) => dispatch(app::Action::ShowKeys),
+            Some(n) => dispatch(app::Action::SelectTab(n - FIRST_CONN)),
         }
     } else if from == term_tabs && hdr.code == TCN_SELCHANGE {
         if let Some(t) = controls::tab_selected(term_tabs).and_then(|n| TermTab::ALL.get(n)) {
@@ -1594,7 +1747,7 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
 /// Which pane a point in the main window's client area is over.
 pub fn pane_at(x: i32, y: i32) -> Option<Side> {
     with(|s| {
-        if s.app.active() == Tab::Machines {
+        if !matches!(s.app.active(), Tab::Connection(_)) {
             return None;
         }
         let inside = |r: &RECT| x >= r.left && x < r.right && y >= r.top && y < r.bottom;
@@ -1610,8 +1763,10 @@ pub fn pane_at(x: i32, y: i32) -> Option<Side> {
 }
 
 fn over_splitter(y: i32) -> bool {
-    with(|s| s.app.active() != Tab::Machines && y >= s.splitter.top && y < s.splitter.bottom)
-        .unwrap_or(false)
+    with(|s| {
+        matches!(s.app.active(), Tab::Connection(_)) && y >= s.splitter.top && y < s.splitter.bottom
+    })
+    .unwrap_or(false)
 }
 
 fn cursor_y(hwnd: HWND) -> i32 {
@@ -1649,8 +1804,8 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             LRESULT(0)
         }
         WM_APP_CLOSE_TAB => {
-            if wp.0 > 0 {
-                dispatch(app::Action::CloseTab(wp.0 - 1));
+            if wp.0 >= FIRST_CONN {
+                dispatch(app::Action::CloseTab(wp.0 - FIRST_CONN));
             }
             LRESULT(0)
         }
@@ -1703,7 +1858,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 with(|s| {
                     let share = match s.app.active() {
                         Tab::Connection(i) => s.app.tab(i).map_or(0.75, |t| t.layout().files_share),
-                        Tab::Machines => 0.75,
+                        Tab::Machines | Tab::Keys => 0.75,
                     };
                     s.drag = Some(share);
                 });
@@ -1724,7 +1879,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                 let (top, h) = s.split_area;
                 let swapped = match s.app.active() {
                     Tab::Connection(i) => s.app.tab(i).is_some_and(|t| t.layout().swapped),
-                    Tab::Machines => false,
+                    Tab::Machines | Tab::Keys => false,
                 };
                 let f = ((y - top) as f32 / h.max(1) as f32)
                     .clamp(conn::MIN_SHARE, 1.0 - conn::MIN_SHARE);

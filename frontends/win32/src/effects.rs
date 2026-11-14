@@ -23,7 +23,7 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, SetFocus};
 use windows::Win32::UI::Shell::{
     FileOpenDialog, IFileDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName,
-    FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
+    FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetWindowRect,
@@ -53,6 +53,42 @@ pub fn pick_folder(
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         let dialog: IFileDialog = d.cast().ok()?;
         let opts = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_PICKFOLDERS;
+        let _ = dialog.SetOptions(opts);
+        let t = ui::wide(title);
+        let _ = dialog.SetTitle(PCWSTR(t.as_ptr()));
+        if let Some(start) = start {
+            let s = ui::wide(&start.display().to_string());
+            if let Ok(item) =
+                SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(s.as_ptr()), None)
+            {
+                let _ = dialog.SetFolder(&item);
+            }
+        }
+        dialog.Show(Some(owner)).ok()?;
+        let item = dialog.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as *const _));
+        path.map(PathBuf::from)
+    }
+}
+
+/// The system file picker for an existing file, or the flow suite's scripted answer.
+pub fn pick_file(
+    owner: HWND,
+    purpose: &str,
+    title: &str,
+    start: Option<&PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(answer) = picks::scripted(purpose) {
+        return answer;
+    }
+    // SAFETY: COM is initialised on this thread; every string outlives the call that takes it.
+    unsafe {
+        let d: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let dialog: IFileDialog = d.cast().ok()?;
+        let opts = dialog.GetOptions().ok()? | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST;
         let _ = dialog.SetOptions(opts);
         let t = ui::wide(title);
         let _ = dialog.SetTitle(PCWSTR(t.as_ptr()));

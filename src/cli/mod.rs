@@ -40,12 +40,48 @@ enum Command {
     },
     /// What a machine offers (FTP, SMB, SSH, NFS, AFP ...), found without logging in.
     Probe { address: String },
+    /// SSH login keys: list, make (old kinds too: DSA, SSH-1), import, export, show, delete.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
     /// Make a login key for a machine, install it over SSH, and check that it works.
     KeyLogin {
         machine: String,
         /// Use this password instead of the saved one (not stored).
         #[arg(long)]
         password: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    List,
+    /// Make a key: rsa2048, rsa1024, dsa1024, ssh1-rsa1024 or ssh1-rsa2048.
+    New {
+        name: String,
+        #[arg(long, default_value = "rsa2048")]
+        kind: String,
+        #[arg(long, default_value = "legcon")]
+        comment: String,
+    },
+    /// Copy a private key (OpenSSH, PEM, PuTTY .ppk, SSH-1 identity) into legcon's keys.
+    Import {
+        file: PathBuf,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Write the key's files into a folder (private key, .pub, and .secsh.pub for SSH.com).
+    Export {
+        name: String,
+        folder: PathBuf,
+    },
+    /// Print the public key line and fingerprints.
+    Show {
+        name: String,
+    },
+    Delete {
+        name: String,
     },
 }
 
@@ -184,6 +220,48 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
         } => {
             cli_ops::set_machine(&mut open()?, &name, &settings)?;
             println!("Saved {name}.");
+            Ok(())
+        }
+        Command::Keys { command } => {
+            let mut machines = open()?;
+            match command {
+                KeysCommand::List => {
+                    let rows = cli_ops::key_rows(&machines);
+                    if rows.is_empty() {
+                        println!("No keys yet. Make one with: lc keys new NAME --kind rsa2048");
+                    }
+                    for r in rows {
+                        println!(
+                            "{:<20} {:<16} {}  {}",
+                            r.name, r.kind, r.fingerprint, r.used_by
+                        );
+                    }
+                }
+                KeysCommand::New {
+                    name,
+                    kind,
+                    comment,
+                } => {
+                    let label = cli_ops::new_key(&machines, &name, &kind, &comment)?;
+                    println!("Made {name} ({label}).");
+                }
+                KeysCommand::Import { file, name } => {
+                    println!(
+                        "Imported {}.",
+                        cli_ops::import_key(&machines, &file, name.as_deref())?
+                    );
+                }
+                KeysCommand::Export { name, folder } => {
+                    for f in cli_ops::export_key(&machines, &name, &folder)? {
+                        println!("{}", f.display());
+                    }
+                }
+                KeysCommand::Show { name } => print!("{}", cli_ops::show_key(&machines, &name)?),
+                KeysCommand::Delete { name } => {
+                    cli_ops::delete_key(&mut machines, &name)?;
+                    println!("Deleted {name}.");
+                }
+            }
             Ok(())
         }
         Command::Home { path: None } => {

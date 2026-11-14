@@ -174,14 +174,52 @@ impl MachinesController {
         self.save()
     }
 
+    /// The SSH login keys in the config folder's key store.
+    pub fn keys(&self) -> Vec<crate::model::keystore::KeyInfo> {
+        crate::model::keystore::list(&self.keys_dir())
+    }
+
+    pub fn keys_dir(&self) -> PathBuf {
+        crate::model::keystore::dir_in(&self.dir)
+    }
+
+    /// A machine's settings form.
+    pub fn form(&self, id: &str) -> Option<super::FormSpec> {
+        let keys = self.keys();
+        self.store
+            .get(id)
+            .map(|m| super::machine_form::form(m, &keys))
+    }
+
+    /// The ids of machines that log in with `key`.
+    pub fn using_key(&self, key: &Path) -> Vec<String> {
+        self.store
+            .machines
+            .iter()
+            .filter(|m| m.key_file.as_deref() == Some(key))
+            .map(|m| m.id.clone())
+            .collect()
+    }
+
+    /// Forget `key` on every machine that used it (it was deleted).
+    pub fn drop_key(&mut self, key: &Path) -> Result<(), String> {
+        for m in self.store.machines.iter_mut() {
+            if m.key_file.as_deref() == Some(key) {
+                m.key_file = None;
+            }
+        }
+        self.save()
+    }
+
     /// Save a machine settings form; the edited machine, or why not.
     pub fn edit(&mut self, id: &str, v: &super::FormValues) -> Result<Machine, String> {
+        let keys = self.keys();
         let m = self
             .store
             .get_mut(id)
             .ok_or_else(|| format!("No machine called {id}."))?;
         let mut edited = m.clone();
-        super::machine_form::apply(&mut edited, v)?;
+        super::machine_form::apply(&mut edited, v, &keys)?;
         *m = edited.clone();
         self.save()?;
         Ok(edited)

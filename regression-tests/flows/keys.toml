@@ -1,0 +1,78 @@
+# The Keys tab: making, importing, exporting, deleting SSH login keys, old kinds included (FLOWS.md).
+
+[[case]]
+id = "flow.keys.new-dsa"
+description = "Make a DSA 1024 key for an old OpenSSH from the Keys tab"
+ui = [
+  { op = "section", id = "tabs", name = "Keys" },
+  { op = "activate", id = "keys.new" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "key.name", text = "sun" },
+  { op = "choose", id = "key.kind", option = "DSA 1024, SSH-2 (OpenSSH before 2.5, SSH.com before 2.4)" },
+  { op = "fill", id = "key.comment", text = "dani@sun" },
+  { op = "activate", id = "keys.new.ok" },
+  { op = "expect_no_dialog" },
+  { op = "expect_row", id = "keys.list", name = "sun", timeout = 30 },
+]
+lc = [{ args = ["keys", "show", "sun"], stdout_has = ["ssh-dss ", "dani@sun", "DSA 1024"] }]
+
+[[case]]
+id = "flow.keys.new-ssh1"
+description = "Make an SSH-1 RSA key: it is listed, and offered for other clients rather than logins"
+ui = [
+  { op = "section", id = "tabs", name = "Keys" },
+  { op = "activate", id = "keys.new" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "key.name", text = "ssh1" },
+  { op = "choose", id = "key.kind", option = "RSA 1024, SSH-1 (SSH 1.2.x, OpenSSH with Protocol 1)" },
+  { op = "activate", id = "keys.new.ok" },
+  { op = "expect_row", id = "keys.list", name = "ssh1", timeout = 30 },
+  { op = "expect_text", text = "(SSH-1 key)" },
+]
+lc = [{ args = ["keys", "list"], stdout_has = ["SSH-1 RSA 1024"] }]
+
+[[case]]
+id = "flow.keys.import-and-export"
+description = "Import a key file picked from disk, then export it to a folder"
+setup_lc = [
+  { args = ["keys", "new", "src", "--kind", "rsa1024", "--comment", "made@elsewhere"] },
+  { args = ["keys", "export", "src", "{work}"] },
+  { args = ["keys", "delete", "src"] },
+]
+picks = { "keys.import" = "{work}/src", "keys.export" = "{work}" }
+ui = [
+  { op = "section", id = "tabs", name = "Keys" },
+  { op = "activate", id = "keys.import" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "indy" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "press", name = "OK" },
+  { op = "expect_row", id = "keys.list", name = "indy" },
+  { op = "select_row", id = "keys.list", name = "indy" },
+  { op = "activate", id = "keys.export" },
+  { op = "press", name = "OK" },
+]
+expect_files = ["indy", "indy.pub", "indy.secsh.pub"]
+lc = [{ args = ["keys", "show", "indy"], stdout_has = ["made@elsewhere", "RSA 1024"] }]
+
+[[case]]
+id = "flow.keys.choose-for-a-machine"
+description = "Choose a stored key in a machine's settings; deleting the key later clears it"
+setup_lc = [{ args = ["keys", "new", "lab", "--kind", "rsa1024"] }]
+machines = [{ id = "indy", name = "indy", address = "192.168.99.60", services = [{ kind = "ssh", port = 22 }], user = "root" }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "indy" },
+  { op = "activate", id = "machines.settings" },
+  { op = "wait_dialog" },
+  { op = "section", id = "machines.settings.sections", name = "Login" },
+  { op = "choose", id = "machine.key_file", option = "lab (RSA 1024)" },
+  { op = "activate", id = "machines.settings.ok" },
+  { op = "expect_no_dialog" },
+  { op = "section", id = "tabs", name = "Keys" },
+  { op = "expect_text", text = "indy" },
+  { op = "select_row", id = "keys.list", name = "lab" },
+  { op = "activate", id = "keys.delete" },
+  { op = "press", name = "Delete" },
+  { op = "expect_row", id = "keys.list", name = "lab", present = false },
+]
+lc = [{ args = ["machines", "show", "indy"], stdout_has = ["(none: Set up key login makes one)"] }]

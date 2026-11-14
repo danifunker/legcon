@@ -20,6 +20,7 @@ pub mod log;
 pub mod machine_form;
 pub mod machines;
 pub mod picks;
+pub mod ssh_keys;
 pub mod task;
 
 use std::path::PathBuf;
@@ -55,6 +56,8 @@ pub trait Controller {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     PickFolder(PickSpec),
+    /// An existing file to open (Import key); answer with the controller's `...Picked`.
+    PickFile(PickSpec),
     /// A local folder path to type, paste or browse for, with recent places (Leave home...).
     AskPath(PathSpec),
     Confirm(ConfirmSpec),

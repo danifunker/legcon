@@ -14,14 +14,50 @@ use rand::rngs::OsRng;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
     Rsa2048,
+    /// Quicker to use on a slow 1990s machine; still taken by every SSH-2 server.
+    Rsa1024,
     Dsa1024,
+    /// SSH-1 RSA identity files (SSH 1.2.x, OpenSSH `Protocol 1`).
+    Ssh1Rsa1024,
+    Ssh1Rsa2048,
 }
 
 impl KeyKind {
+    pub const ALL: [KeyKind; 5] = [
+        KeyKind::Rsa2048,
+        KeyKind::Rsa1024,
+        KeyKind::Dsa1024,
+        KeyKind::Ssh1Rsa1024,
+        KeyKind::Ssh1Rsa2048,
+    ];
+
     pub fn algorithm(self) -> &'static str {
         match self {
-            KeyKind::Rsa2048 => "ssh-rsa",
+            KeyKind::Rsa2048 | KeyKind::Rsa1024 => "ssh-rsa",
             KeyKind::Dsa1024 => "ssh-dss",
+            KeyKind::Ssh1Rsa1024 | KeyKind::Ssh1Rsa2048 => "rsa1",
+        }
+    }
+
+    pub fn bits(self) -> usize {
+        match self {
+            KeyKind::Rsa2048 | KeyKind::Ssh1Rsa2048 => 2048,
+            KeyKind::Rsa1024 | KeyKind::Dsa1024 | KeyKind::Ssh1Rsa1024 => 1024,
+        }
+    }
+
+    pub fn is_ssh1(self) -> bool {
+        matches!(self, KeyKind::Ssh1Rsa1024 | KeyKind::Ssh1Rsa2048)
+    }
+
+    /// What to call it when offering it, with the servers that take it.
+    pub fn label(self) -> &'static str {
+        match self {
+            KeyKind::Rsa2048 => "RSA 2048, SSH-2 (OpenSSH 2.5 and later, SSH.com 2.4 and later)",
+            KeyKind::Rsa1024 => "RSA 1024, SSH-2 (the same servers; quicker on slow machines)",
+            KeyKind::Dsa1024 => "DSA 1024, SSH-2 (OpenSSH before 2.5, SSH.com before 2.4)",
+            KeyKind::Ssh1Rsa1024 => "RSA 1024, SSH-1 (SSH 1.2.x, OpenSSH with Protocol 1)",
+            KeyKind::Ssh1Rsa2048 => "RSA 2048, SSH-1 (the same servers)",
         }
     }
 
@@ -49,13 +85,13 @@ pub struct KeyPair {
     pub blob: Vec<u8>,
 }
 
-fn put_str(out: &mut Vec<u8>, s: &[u8]) {
+pub(crate) fn put_str(out: &mut Vec<u8>, s: &[u8]) {
     out.extend_from_slice(&(s.len() as u32).to_be_bytes());
     out.extend_from_slice(s);
 }
 
 /// An SSH `mpint` from big-endian magnitude bytes.
-fn put_mpint(out: &mut Vec<u8>, be: &[u8]) {
+pub(crate) fn put_mpint(out: &mut Vec<u8>, be: &[u8]) {
     let be = &be[be.iter().take_while(|&&b| b == 0).count()..];
     let mut v = Vec::with_capacity(be.len() + 1);
     if be.first().is_some_and(|&b| b & 0x80 != 0) {
@@ -66,7 +102,7 @@ fn put_mpint(out: &mut Vec<u8>, be: &[u8]) {
 }
 
 /// A DER INTEGER from big-endian magnitude bytes.
-fn der_int(out: &mut Vec<u8>, be: &[u8]) {
+pub(crate) fn der_int(out: &mut Vec<u8>, be: &[u8]) {
     let be = &be[be
         .iter()
         .take_while(|&&b| b == 0)
@@ -82,7 +118,7 @@ fn der_int(out: &mut Vec<u8>, be: &[u8]) {
     out.extend_from_slice(&v);
 }
 
-fn der_len(out: &mut Vec<u8>, n: usize) {
+pub(crate) fn der_len(out: &mut Vec<u8>, n: usize) {
     if n < 0x80 {
         out.push(n as u8);
     } else {
@@ -111,7 +147,7 @@ fn base64(data: &[u8]) -> String {
     s
 }
 
-fn pem(label: &str, der: &[u8]) -> String {
+pub(crate) fn pem(label: &str, der: &[u8]) -> String {
     let b = base64(der);
     let mut s = format!("-----BEGIN {label}-----\n");
     for line in b.as_bytes().chunks(64) {
@@ -122,14 +158,18 @@ fn pem(label: &str, der: &[u8]) -> String {
     s
 }
 
-/// Make a new key pair; RSA 2048 takes a few seconds.
+/// Make a new SSH-2 key pair; RSA 2048 takes a few seconds.
 pub fn generate(kind: KeyKind) -> Result<KeyPair> {
     let fail = |e: String| Error::Protocol(format!("could not make the key: {e}"));
     match kind {
-        KeyKind::Rsa2048 => {
+        KeyKind::Ssh1Rsa1024 | KeyKind::Ssh1Rsa2048 => {
+            Err(fail("SSH-1 keys are made with generate_ssh1".into()))
+        }
+        KeyKind::Rsa2048 | KeyKind::Rsa1024 => {
             use rsa::pkcs1::EncodeRsaPrivateKey;
             use rsa::traits::PublicKeyParts;
-            let k = rsa::RsaPrivateKey::new(&mut OsRng, 2048).map_err(|e| fail(e.to_string()))?;
+            let k = rsa::RsaPrivateKey::new(&mut OsRng, kind.bits())
+                .map_err(|e| fail(e.to_string()))?;
             let private_pem = k
                 .to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
                 .map_err(|e| fail(e.to_string()))?
@@ -283,6 +323,56 @@ pub fn save(pair: &KeyPair, path: &Path, comment: &str) -> Result<()> {
     }
     std::fs::write(path, &pair.private_pem)?;
     std::fs::write(public_path(path), openssh_line(&pair.blob, comment) + "\n")?;
+    Ok(())
+}
+
+/// An SSH-1 identity file (unencrypted) and its `.pub` line (`bits e n comment`).
+pub fn generate_ssh1(kind: KeyKind, comment: &str) -> Result<(Vec<u8>, String)> {
+    use rand::RngCore;
+    use rsa::traits::{PrivateKeyParts, PublicKeyParts};
+    let fail = |e: String| Error::Protocol(format!("could not make the key: {e}"));
+    let mut k =
+        rsa::RsaPrivateKey::new(&mut OsRng, kind.bits()).map_err(|e| fail(e.to_string()))?;
+    k.precompute().map_err(|e| fail(e.to_string()))?;
+    let (p, q) = (&k.primes()[0], &k.primes()[1]);
+    // The file keeps OpenSSL's iqmp (q^-1 mod p), then q and p swapped.
+    let iqmp = k
+        .crt_coefficient()
+        .ok_or_else(|| fail("no CRT coefficient".into()))?;
+    fn mp(out: &mut Vec<u8>, n: &rsa::BigUint) {
+        out.extend_from_slice(&(n.bits() as u16).to_be_bytes());
+        out.extend_from_slice(&n.to_bytes_be());
+    }
+    let mut secret = Vec::new();
+    let mut check = [0u8; 2];
+    OsRng.fill_bytes(&mut check);
+    secret.extend_from_slice(&[check[0], check[1], check[0], check[1]]);
+    mp(&mut secret, k.d());
+    mp(&mut secret, &iqmp);
+    mp(&mut secret, q);
+    mp(&mut secret, p);
+    while secret.len() % 8 != 0 {
+        secret.push(0);
+    }
+    let mut file = b"SSH PRIVATE KEY FILE FORMAT 1.1\n\0".to_vec();
+    file.push(0); // cipher: none
+    file.extend_from_slice(&0u32.to_be_bytes());
+    file.extend_from_slice(&(k.n().bits() as u32).to_be_bytes());
+    mp(&mut file, k.n());
+    mp(&mut file, k.e());
+    put_str(&mut file, comment.as_bytes());
+    file.extend_from_slice(&secret);
+    let line = format!("{} {} {} {comment}", k.n().bits(), k.e(), k.n());
+    Ok((file, line))
+}
+
+/// Write an SSH-1 key as `path` (identity) and `path.pub`.
+pub fn save_ssh1(identity: &[u8], line: &str, path: &Path) -> Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    std::fs::write(path, identity)?;
+    std::fs::write(public_path(path), format!("{}\n", line.trim_end()))?;
     Ok(())
 }
 

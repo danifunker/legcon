@@ -38,6 +38,18 @@ pub const TERM_CONNECT: &str = "term.connect";
 
 // Machine settings form (controller::machine_form).
 pub const MACHINES_SETTINGS: &str = "machines.settings";
+
+// The Keys tab (controller::ssh_keys).
+pub const TAB_KEYS: &str = "tabs.keys";
+pub const KEYS_LIST: &str = "keys.list";
+pub const KEYS_NEW: &str = "keys.new";
+pub const KEYS_IMPORT: &str = "keys.import";
+pub const KEYS_EXPORT: &str = "keys.export";
+pub const KEYS_COPY: &str = "keys.copy";
+pub const KEYS_DELETE: &str = "keys.delete";
+pub const KEY_NAME: &str = "key.name";
+pub const KEY_KIND: &str = "key.kind";
+pub const KEY_COMMENT: &str = "key.comment";
 pub const CONN_SETTINGS: &str = "conn.settings";
 pub const MS_GENERAL: &str = "machine.section.general";
 pub const MS_NAME: &str = "machine.name";

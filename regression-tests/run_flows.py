@@ -34,7 +34,29 @@ def lookup(obj, dotted):
     return obj
 
 
+def fill(value, work):
+    """Replace {work} (the flow's scratch folder) everywhere in a case."""
+    if isinstance(value, str):
+        return value.replace("{work}", work)
+    if isinstance(value, list):
+        return [fill(v, work) for v in value]
+    if isinstance(value, dict):
+        return {k: fill(v, work) for k, v in value.items()}
+    return value
+
+
+def run_lc(step, env):
+    p = subprocess.run([LC] + step["args"], env=env, capture_output=True, text=True)
+    if p.returncode != step.get("exit", 0):
+        return f"lc {step['args']} exited {p.returncode}: {p.stderr.strip()}"
+    for text in step.get("stdout_has", []):
+        if text not in p.stdout:
+            return f"lc {step['args']} did not print {text!r}:\n{p.stdout}"
+    return None
+
+
 def run_case(case, shell, work):
+    case = fill(case, work)
     cfg = os.path.join(work, "config")
     os.makedirs(cfg)
     secrets = os.path.join(work, "secrets.json")
@@ -44,10 +66,17 @@ def run_case(case, shell, work):
         json.dump({"home_folder": work}, f)
     with open(secrets, "w") as f:
         json.dump(case.get("secrets", {}), f)
-    env = dict(os.environ, LEGCON_CONFIG_DIR=cfg, LEGCON_TEST_SECRETS=secrets)
+    picks = os.path.join(work, "picks.txt")
+    with open(picks, "w") as f:
+        f.writelines(f"{k}\t{v}\n" for k, v in case.get("picks", {}).items())
+    env = dict(os.environ, LEGCON_CONFIG_DIR=cfg, LEGCON_TEST_SECRETS=secrets, LEGCON_TEST_PICKS=picks)
+    for step in case.get("setup_lc", []):
+        why = run_lc(step, env)
+        if why:
+            return f"setup: {why}"
 
     s = SHELLS[shell]
-    d = subprocess.Popen(s["driver"] + [s["exe"], cfg, secrets], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    d = subprocess.Popen(s["driver"] + [s["exe"], cfg, secrets], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
     hello = json.loads(d.stdout.readline() or '{"ready": false}')
     if not hello.get("ready"):
         return f"the shell did not start: {hello.get('error')}"
@@ -80,12 +109,9 @@ def run_case(case, shell, work):
         if stored.get(key, "__absent__") != want:
             return f"secret {key} is {stored.get(key)!r}, expected {want!r}"
     for step in case.get("lc", []):
-        p = subprocess.run([LC] + step["args"], env=env, capture_output=True, text=True)
-        if p.returncode != step.get("exit", 0):
-            return f"lc {step['args']} exited {p.returncode}: {p.stderr.strip()}"
-        for text in step.get("stdout_has", []):
-            if text not in p.stdout:
-                return f"lc {step['args']} did not print {text!r}"
+        why = run_lc(step, env)
+        if why:
+            return why
     return None
 
 

@@ -3,6 +3,7 @@
 use lc_core::Charset;
 
 use super::{ids, Field, FieldKind, FieldValue, FormSpec, FormValues};
+use crate::model::keystore::KeyInfo;
 use crate::model::machines::{Machine, Password, Service, ServiceKind};
 use crate::model::secrets;
 
@@ -78,8 +79,25 @@ fn service_fields(m: &Machine, files: bool) -> (FieldKind, FieldKind) {
     (choice(options, selected), FieldKind::Text(port))
 }
 
+/// The login keys the form offers after "none": the store's SSH-2 keys, plus the machine's own if elsewhere.
+fn key_choices(m: &Machine, keys: &[KeyInfo]) -> Vec<(String, std::path::PathBuf)> {
+    let mut v: Vec<(String, std::path::PathBuf)> = keys
+        .iter()
+        .filter(|k| k.is_ssh2())
+        .map(|k| (format!("{} ({})", k.name, k.kind_label()), k.path.clone()))
+        .collect();
+    if let Some(p) = m
+        .key_file
+        .as_ref()
+        .filter(|p| !v.iter().any(|(_, k)| k == *p))
+    {
+        v.push((p.display().to_string(), p.clone()));
+    }
+    v
+}
+
 /// The settings form for `m`; the password is read from the OS store when it is kept there.
-pub fn form(m: &Machine) -> FormSpec {
+pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
     let (files, files_port) = service_fields(m, true);
     let (commands, commands_port) = service_fields(m, false);
     let (password, os_hint) = match &m.password {
@@ -99,10 +117,15 @@ pub fn form(m: &Machine) -> FormSpec {
         .host_key
         .clone()
         .unwrap_or_else(|| "Not seen yet; learned on the first SSH connection.".into());
-    let key_file = m.key_file.as_ref().map_or_else(
-        || "None. Set up key login from the machine's tab menu.".to_string(),
-        |k| k.display().to_string(),
-    );
+    let choices = key_choices(m, keys);
+    let key_selected = m
+        .key_file
+        .as_ref()
+        .and_then(|p| choices.iter().position(|(_, k)| k == p))
+        .map_or(0, |i| i + 1);
+    let key_options = std::iter::once("(none: Set up key login makes one)".to_string())
+        .chain(choices.into_iter().map(|(label, _)| label))
+        .collect();
     let fields = vec![
         heading(ids::MS_GENERAL, "Machine"),
         field(ids::MS_NAME, "Name", FieldKind::Text(m.name.clone()), ""),
@@ -143,8 +166,8 @@ pub fn form(m: &Machine) -> FormSpec {
         field(
             ids::MS_KEY_FILE,
             "SSH login key",
-            FieldKind::Info(key_file),
-            "",
+            choice(key_options, key_selected),
+            "Keys are made and imported on the Keys tab.",
         ),
         field(
             ids::MS_HOST_KEY,
@@ -271,8 +294,13 @@ fn service(m: &Machine, files: bool, choice: usize, port_text: &str) -> Option<S
 }
 
 /// Write the answer into `m`, the password into the OS store when asked; the form's error else.
-pub fn apply(m: &mut Machine, v: &FormValues) -> Result<(), String> {
+pub fn apply(m: &mut Machine, v: &FormValues, keys: &[KeyInfo]) -> Result<(), String> {
     validate(v)?;
+    let key = v
+        .choice(ids::MS_KEY_FILE)
+        .checked_sub(1)
+        .and_then(|i| key_choices(m, keys).into_iter().nth(i))
+        .map(|(_, p)| p);
     let files = service(m, true, v.choice(ids::MS_FILES), v.text(ids::MS_FILES_PORT));
     let commands = service(
         m,
@@ -310,6 +338,7 @@ pub fn apply(m: &mut Machine, v: &FormValues) -> Result<(), String> {
     let home = v.text(ids::MS_HOME).trim();
     m.home_folder = (!home.is_empty()).then(|| home.into());
     m.logout_command = v.text(ids::MS_LOGOUT).trim().to_string();
+    m.key_file = key;
     m.check_host_key = v.check(ids::MS_CHECK_HOST_KEY);
     if v.check(ids::MS_FORGET_HOST_KEY) {
         m.host_key = None;
@@ -397,9 +426,9 @@ mod tests {
     #[test]
     fn opening_and_saving_unchanged_keeps_the_machine() {
         let m = machine();
-        let spec = form(&m);
+        let spec = form(&m, &[]);
         let mut edited = m.clone();
-        apply(&mut edited, &spec.initial()).unwrap();
+        apply(&mut edited, &spec.initial(), &[]).unwrap();
         assert_eq!(edited, m);
     }
 
@@ -407,7 +436,7 @@ mod tests {
     fn changes_land_in_the_machine() {
         secrets::use_memory_store();
         let mut m = machine();
-        let spec = form(&m);
+        let spec = form(&m, &[]);
         let mut v = spec.initial();
         set_from_text(&spec, &mut v, ids::MS_FILES, "SSH").unwrap();
         set_from_text(&spec, &mut v, ids::MS_COMMANDS, "ssh").unwrap();
@@ -415,7 +444,7 @@ mod tests {
         set_from_text(&spec, &mut v, ids::MS_CHARSET, "MacRoman").unwrap();
         set_from_text(&spec, &mut v, ids::MS_UID, "100").unwrap();
         set_from_text(&spec, &mut v, ids::MS_OS_STORE, "yes").unwrap();
-        apply(&mut m, &v).unwrap();
+        apply(&mut m, &v, &[]).unwrap();
         assert_eq!(
             m.services,
             vec![Service {
@@ -428,11 +457,11 @@ mod tests {
         assert_eq!(m.password, Password::Os);
         assert_eq!(secrets::get("form-test").unwrap(), "pw");
         // Unticking moves it back into the file and out of the store.
-        let spec = form(&m);
+        let spec = form(&m, &[]);
         let mut v = spec.initial();
         assert_eq!(v.text(ids::MS_PASSWORD), "pw");
         set_from_text(&spec, &mut v, ids::MS_OS_STORE, "no").unwrap();
-        apply(&mut m, &v).unwrap();
+        apply(&mut m, &v, &[]).unwrap();
         assert_eq!(m.password, Password::Saved("pw".into()));
         assert!(secrets::get("form-test").is_err());
     }
@@ -440,7 +469,7 @@ mod tests {
     #[test]
     fn bad_answers_are_refused_with_a_reason() {
         let m = machine();
-        let spec = form(&m);
+        let spec = form(&m, &[]);
         let mut v = spec.initial();
         v.set(ids::MS_FILES_PORT, FieldValue::Text("99999".into()));
         assert!(spec.validate(&v).unwrap_err().contains("port"));
@@ -459,10 +488,10 @@ mod tests {
     #[test]
     fn an_empty_password_means_ask() {
         let mut m = machine();
-        let spec = form(&m);
+        let spec = form(&m, &[]);
         let mut v = spec.initial();
         v.set(ids::MS_PASSWORD, FieldValue::Text(String::new()));
-        apply(&mut m, &v).unwrap();
+        apply(&mut m, &v, &[]).unwrap();
         assert_eq!(m.password, Password::Ask);
     }
 }

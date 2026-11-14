@@ -6,6 +6,7 @@
 //! only used when the server offers nothing newer; [`SshSession::negotiated`] says which won.
 //! SFTP is our own code ([`sftp`]) so file names stay bytes in the machine's character set.
 
+pub mod keyfile;
 pub mod keys;
 mod scp;
 pub mod sftp;

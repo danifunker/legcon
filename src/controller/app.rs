@@ -25,6 +25,8 @@ use crate::model::settings::Settings;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Machines,
+    /// SSH login keys (controller::ssh_keys).
+    Keys,
     Connection(usize),
 }
 
@@ -34,6 +36,9 @@ pub enum Action {
     Start,
     HomePicked(Option<PathBuf>),
     ShowMachines,
+    ShowKeys,
+    /// An action on the Keys tab.
+    Keys(super::ssh_keys::Action),
     SelectTab(usize),
     /// Open (or show) a machine's tab.
     OpenMachine(String),
@@ -96,6 +101,7 @@ pub struct AppController {
     adding: Option<Adding>,
     removing: Option<String>,
     editing: Option<String>,
+    keys: super::ssh_keys::KeysController,
 }
 
 impl AppController {
@@ -106,7 +112,7 @@ impl AppController {
             settings: Settings::load(dir)?,
             machines: MachinesController::open(dir)?,
             sessions: Sessions::new(),
-            notify,
+            notify: Arc::clone(&notify),
             tabs: Vec::new(),
             active: Tab::Machines,
             log: LogStore::default(),
@@ -115,6 +121,10 @@ impl AppController {
             adding: None,
             removing: None,
             editing: None,
+            keys: super::ssh_keys::KeysController::new(
+                crate::model::keystore::dir_in(dir),
+                Arc::clone(&notify),
+            ),
         })
     }
 
@@ -132,6 +142,15 @@ impl AppController {
 
     pub fn machines(&self) -> Vec<MachineRow> {
         self.machines.rows(&self.sessions)
+    }
+
+    pub fn keys(&self) -> Vec<super::ssh_keys::KeyRow> {
+        self.keys.rows(&self.machines)
+    }
+
+    /// The Keys tab's background work, for the status line.
+    pub fn keys_busy(&self) -> Option<String> {
+        self.keys.busy()
     }
 
     pub fn log(&self) -> &LogStore {
@@ -260,10 +279,10 @@ impl AppController {
             }
             Err(e) => {
                 // Show the form again with what the user typed, and say why.
-                let Some(m) = self.machines.get(&id) else {
+                let Some(spec) = self.machines.form(&id) else {
                     return vec![Effect::Message(e)];
                 };
-                let spec = super::machine_form::refill(super::machine_form::form(m), &values);
+                let spec = super::machine_form::refill(spec, &values);
                 self.editing = Some(id);
                 vec![Effect::Message(e), Effect::Form(spec)]
             }
@@ -309,6 +328,19 @@ impl Controller for AppController {
                 }
             }
             Action::ShowMachines => self.active = Tab::Machines,
+            Action::ShowKeys => {
+                self.active = Tab::Keys;
+                return self
+                    .keys
+                    .apply(super::ssh_keys::Action::Refresh, &mut self.machines);
+            }
+            Action::Keys(a) => {
+                let out = self.keys.apply(a, &mut self.machines);
+                for n in self.keys.take_notes() {
+                    self.log.info(n);
+                }
+                return out;
+            }
             Action::SelectTab(i) if i < self.tabs.len() => self.active = Tab::Connection(i),
             Action::SelectTab(_) => {}
             Action::OpenMachine(id) => return self.open_machine(&id),
@@ -426,10 +458,9 @@ impl Controller for AppController {
                 }
             }
             Action::EditMachine(id) => {
-                let Some(m) = self.machines.get(&id) else {
+                let Some(spec) = self.machines.form(&id) else {
                     return vec![Effect::Message(format!("No machine called {id}."))];
                 };
-                let spec = super::machine_form::form(m);
                 self.editing = Some(id);
                 return vec![Effect::Form(spec)];
             }
@@ -477,6 +508,10 @@ impl Controller for AppController {
         }
         self.closing.retain(|j| j.is_running());
         out.extend(self.probe_done());
+        out.extend(self.keys.tick());
+        for n in self.keys.take_notes() {
+            self.log.info(n);
+        }
         self.log.extend_from_capture(super::log::capture::drain());
         if self.quitting {
             // Nothing may stop the app closing: problems while logging off go to the log.

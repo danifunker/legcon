@@ -304,6 +304,7 @@ def main():
     global PROC, MAIN
     exe, cfg, secrets = sys.argv[1:4]
     env = dict(os.environ, LEGCON_CONFIG_DIR=cfg, LEGCON_TEST_SECRETS=secrets)
+    # LEGCON_TEST_PICKS, when the runner sets it, passes through to the shell.
     PROC = subprocess.Popen([exe], env=env)
     for _ in range(100):
         time.sleep(0.1)

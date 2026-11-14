@@ -122,8 +122,8 @@ pub fn port(machine: &Machine) -> u16 {
 /// Where a machine's own login key lives: `<machine id>_rsa` (or `_dsa`) in `keys_dir`.
 pub fn key_path(machine: &Machine, kind: lc_ssh::keys::KeyKind, keys_dir: &Path) -> PathBuf {
     let suffix = match kind {
-        lc_ssh::keys::KeyKind::Rsa2048 => "rsa",
         lc_ssh::keys::KeyKind::Dsa1024 => "dsa",
+        _ => "rsa",
     };
     keys_dir.join(format!("{}_{suffix}", machine.id))
 }
@@ -162,6 +162,8 @@ pub fn set_up_key_login(
     notify: Arc<dyn Notify>,
 ) -> Job<KeySetup> {
     let mut m = machine.clone();
+    // A key chosen in the machine's settings is used as it is; otherwise the machine gets its own.
+    let chosen = m.key_file.clone().filter(|p| p.is_file());
     Job::spawn(
         format!("Set up key login on {}", m.name),
         notify,
@@ -173,7 +175,17 @@ pub fn set_up_key_login(
             let banner = s.negotiated().banner.clone();
             let family = lc_ssh::keys::Family::of(&banner);
             let kind = lc_ssh::keys::KeyKind::for_banner(&banner);
-            let path = key_path(&m, kind, &keys_dir);
+            if let Some(p) = &chosen {
+                let alg = lc_ssh::keyfile::describe(&read_blob(p)?)?.algorithm;
+                if kind == lc_ssh::keys::KeyKind::Dsa1024 && alg != "ssh-dss" {
+                    bail!(
+                        "{banner} takes only ssh-dss (DSA) keys, and this machine's key is {alg}; choose a DSA key in its settings, or none to have one made"
+                    );
+                }
+            }
+            let path = chosen
+                .clone()
+                .unwrap_or_else(|| key_path(&m, kind, &keys_dir));
             let new_key = !path.exists();
             if new_key {
                 ctx.set_phase(format!("Making a {} key", kind.algorithm()));
@@ -196,9 +208,10 @@ pub fn set_up_key_login(
             let mut s = connect(&m, port, None, &note)
                 .context("the key was installed, but logging in with it failed")?;
             let _ = lc_core::Connection::disconnect(&mut s, super::session::LOGOFF_TIMEOUT);
+            let algorithm = lc_ssh::keyfile::describe(&blob)?.algorithm;
             Ok(KeySetup {
                 key_file: path,
-                algorithm: kind.algorithm().to_string(),
+                algorithm,
                 installed_in: family.describe().to_string(),
                 new_key,
             })

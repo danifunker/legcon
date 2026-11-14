@@ -31,6 +31,8 @@ ui = [
   { op = "fill", id = "machine.uid", text = "1001" },
   { op = "activate", id = "machines.settings.ok" },
 ]
+setup_lc = [{ args = ["keys", "new", "lab", "--kind", "rsa1024"] }]   # before the shell starts
+picks = { "keys.import" = "{work}/src" } # answers to file and folder pickers, by purpose
 expect_files = ["incoming"]              # relative to the home folder
 expect_secrets = { sparc = "pw" }        # "__absent__" for gone
 lc = [{ args = ["machines", "show", "sparc"], stdout_has = ["1001"] }]
@@ -38,6 +40,9 @@ lc = [{ args = ["machines", "show", "sparc"], stdout_has = ["1001"] }]
 [case.expect_machines]                   # dotted paths into machines.json's list
 "0.uid" = 1001
 ```
+
+`{work}` anywhere in a case is the flow's scratch folder (the home folder; the config is in
+`{work}/config`).
 
 Controls are named by their **controller widget id** (`src/controller/ids.rs`), never by what one
 shell calls them, so a flow runs unchanged on every shell that has a driver. Form fields use their
