@@ -14,6 +14,7 @@ path = "src/bin/lc.rs"
 [dependencies]
 lc-core = { path = "crates/lc-core" }
 lc-ftp = { path = "crates/lc-ftp" }
+lc-http = { path = "crates/lc-http" }
 lc-nfs = { path = "crates/lc-nfs" }
 lc-rcmd = { path = "crates/lc-rcmd" }
 lc-smb = { path = "crates/lc-smb" }

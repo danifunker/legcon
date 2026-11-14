@@ -13,7 +13,12 @@ fn main() {
     let opts = lc_rcmd::Options::default();
     let mut r = Rsh::connect(&a[0], port, &a[2], &a[3], Charset::Latin1, &opts).expect("rsh");
     let home = r.home().expect("home");
-    let names: Vec<_> = r.list(&home).expect("list").into_iter().map(|e| e.name).collect();
+    let names: Vec<_> = r
+        .list(&home)
+        .expect("list")
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
     println!("{home}: {names:?}");
     let file = home.join("legcon-try.txt");
     let body: Vec<u8> = (0..100_000u32)
@@ -35,5 +40,8 @@ fn main() {
         .expect("read");
     println!("read back {} bytes, equal {}", back.len(), back == body);
     r.remove(&moved).expect("delete");
-    println!("console: {:?}", r.quote(&home, "echo hi from $0").expect("quote"));
+    println!(
+        "console: {:?}",
+        r.quote(&home, "echo hi from $0").expect("quote")
+    );
 }

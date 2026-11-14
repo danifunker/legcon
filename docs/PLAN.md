@@ -611,6 +611,8 @@ tables that Windows 9x share names really use, and a real Windows 95 / NT 4 / Sa
 
 **rsh / rlogin / rcp (2026-11-13, D33):** `lc-rcmd::rsh`. Both connect from a reserved source port (1023 downwards; a clear message on Linux without the capability), with the machine's `local_user` (default: its user) as the name `.rhosts` trusts. rsh is a file service (rcp for contents, `ls -laL` / `mkdir` / `mv` / `rm` through `/bin/sh -c`, whatever the login shell, with the exit status echoed since rsh reports none) and a line-mode terminal; rlogin is a real terminal with the window size sent. The rcp protocol moved to `lc-core::rcp`, shared with SCP. Tested against pretend rshd / rlogind servers (Rust tests) and a pretend rshd running real commands. Not yet: a real 1990s rshd.
 
+**HTTP/1.0 and Gopher (2026-11-13, D33):** `lc-http`, own code, read-only file services. HTTP: a folder is the links on its index page that point directly inside it (Apache / NCSA `Index of` pages give dates and sizes too), files are GETs with `Range` for resuming, one request per connection, Basic auth when the machine has a user, redirects followed, HTTP/0.9 answers accepted. Gopher: menus are folders, paths are chains of display names, items on other hosts and info / search / Telnet lines are left out, text files lose their closing `.` line. Tested against pretend servers, a local index page and the live gopher.floodgap.com. Not yet: WebDAV and PUT, following links to other hosts.
+
 ## 10. Risks
 
 | Risk | Mitigation |

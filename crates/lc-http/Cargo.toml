@@ -1,0 +1,10 @@
+[package]
+name = "lc-http"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "HTTP/1.0 and Gopher for legcon: read-only browsing of 1990s web servers and Gopher holes"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }

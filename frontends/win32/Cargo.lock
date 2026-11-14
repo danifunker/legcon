@@ -462,6 +462,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lc-http"
+version = "0.1.0"
+dependencies = [
+ "lc-core",
+]
+
+[[package]]
 name = "lc-nfs"
 version = "0.1.0"
 dependencies = [
@@ -517,6 +524,7 @@ dependencies = [
  "dirs",
  "lc-core",
  "lc-ftp",
+ "lc-http",
  "lc-nfs",
  "lc-rcmd",
  "lc-smb",

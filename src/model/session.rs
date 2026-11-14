@@ -318,6 +318,27 @@ fn open_file_session(
             )?;
             Ok((Box::new(session), None))
         }
+        ServiceKind::Http | ServiceKind::Gopher => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == kind)
+                .map_or(kind.default_port(), |s| s.port);
+            let opts = lc_http::Options {
+                charset: lc_core::Charset::from_label(&machine.charset).unwrap_or_default(),
+                ..lc_http::Options::default()
+            };
+            if kind == ServiceKind::Gopher {
+                return Ok((
+                    Box::new(lc_http::gopher::connect(&machine.address, port, &opts)?),
+                    None,
+                ));
+            }
+            let pw = password.unwrap_or_default();
+            let s = lc_http::http::connect(&machine.address, port, &machine.user, &pw, &opts)?;
+            log::info!("{}: {}", machine.name, s.server);
+            Ok((Box::new(s), None))
+        }
         ServiceKind::Telnet | ServiceKind::Rexec | ServiceKind::Rlogin => {
             bail!("{} is a command service, not a file service", kind.label())
         }

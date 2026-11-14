@@ -27,12 +27,16 @@ pub enum ServiceKind {
     Rsh,
     /// rlogin: a terminal, trusted through `.rhosts` (or a password typed on screen).
     Rlogin,
+    /// HTTP/1.0: a web server's index pages, read-only.
+    Http,
+    /// Gopher menus, read-only.
+    Gopher,
     /// A built-in machine held in memory, for trying the app without a real one.
     Demo,
 }
 
 impl ServiceKind {
-    pub const ALL: [ServiceKind; 9] = [
+    pub const ALL: [ServiceKind; 11] = [
         ServiceKind::Ftp,
         ServiceKind::Telnet,
         ServiceKind::Smb,
@@ -41,6 +45,8 @@ impl ServiceKind {
         ServiceKind::Rexec,
         ServiceKind::Rsh,
         ServiceKind::Rlogin,
+        ServiceKind::Http,
+        ServiceKind::Gopher,
         ServiceKind::Demo,
     ];
 
@@ -54,6 +60,8 @@ impl ServiceKind {
             ServiceKind::Rexec => "rexec",
             ServiceKind::Rsh => "rsh",
             ServiceKind::Rlogin => "rlogin",
+            ServiceKind::Http => "HTTP",
+            ServiceKind::Gopher => "Gopher",
             ServiceKind::Demo => "Demo",
         }
     }
@@ -69,6 +77,8 @@ impl ServiceKind {
             ServiceKind::Rexec => "rexec",
             ServiceKind::Rsh => "rsh",
             ServiceKind::Rlogin => "rlogin",
+            ServiceKind::Http => "http",
+            ServiceKind::Gopher => "gopher",
             ServiceKind::Demo => "demo",
         }
     }
@@ -89,6 +99,8 @@ impl ServiceKind {
             ServiceKind::Rexec => 512,
             ServiceKind::Rsh => 514,
             ServiceKind::Rlogin => 513,
+            ServiceKind::Http => 80,
+            ServiceKind::Gopher => 70,
             ServiceKind::Demo => 0,
         }
     }
@@ -102,6 +114,8 @@ impl ServiceKind {
                 | ServiceKind::Nfs
                 | ServiceKind::Ssh
                 | ServiceKind::Rsh
+                | ServiceKind::Http
+                | ServiceKind::Gopher
                 | ServiceKind::Demo
         )
     }
