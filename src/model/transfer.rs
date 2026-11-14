@@ -42,6 +42,8 @@ struct Step {
     remote: RemotePath,
     local: PathBuf,
     size: Option<u64>,
+    /// The remote file's modification time (seconds since 1970), when known.
+    modified: Option<i64>,
     /// A folder to create on the target side, not a file to copy.
     folder: bool,
 }
@@ -58,6 +60,7 @@ fn walk_remote(
         remote: remote.clone(),
         local: local.clone(),
         size: None,
+        modified: None,
         folder: true,
     });
     for e in fs.list(&remote)? {
@@ -72,6 +75,7 @@ fn walk_remote(
                 remote: r,
                 local: l,
                 size: e.size,
+                modified: e.modified.map(|t| t.unix),
                 folder: false,
             });
         }
@@ -91,6 +95,7 @@ fn walk_local(
         remote: remote.clone(),
         local: local.clone(),
         size: None,
+        modified: None,
         folder: true,
     });
     for item in std::fs::read_dir(&local).with_context(|| format!("reading {}", local.display()))? {
@@ -104,6 +109,7 @@ fn walk_local(
                 remote: remote.join(&name),
                 local: item.path(),
                 size: Some(meta.len()),
+                modified: None,
                 folder: false,
             });
         }
@@ -155,16 +161,36 @@ fn sidecar_of(local: &Path) -> Option<PathBuf> {
     Some(local.with_file_name(super::appledouble::sidecar_name(&name)))
 }
 
+fn system_time(unix: i64) -> Option<std::time::SystemTime> {
+    let base = std::time::UNIX_EPOCH;
+    if unix >= 0 {
+        base.checked_add(std::time::Duration::from_secs(unix as u64))
+    } else {
+        base.checked_sub(std::time::Duration::from_secs(unix.unsigned_abs()))
+    }
+}
+
 /// After a download: the file's resource fork and Finder info as an AppleDouble `._name`.
-fn save_sidecar(fs: &mut dyn FileSession, remote: &RemotePath, local: &Path) -> anyhow::Result<()> {
+fn save_sidecar(
+    fs: &mut dyn FileSession,
+    remote: &RemotePath,
+    local: &Path,
+    modified: Option<i64>,
+) -> anyhow::Result<()> {
     let Some(x) = fs.mac_extras(remote)? else {
         return Ok(());
     };
     let Some(side) = sidecar_of(local) else {
         return Ok(());
     };
-    std::fs::write(&side, super::appledouble::build(&x))
-        .with_context(|| format!("writing {}", side.display()))
+    let side_file = std::fs::write(&side, super::appledouble::build(&x, modified));
+    if let (Ok(()), Some(t)) = (&side_file, modified.and_then(system_time)) {
+        let _ = File::options()
+            .write(true)
+            .open(&side)
+            .and_then(|f| f.set_modified(t));
+    }
+    side_file.with_context(|| format!("writing {}", side.display()))
 }
 
 /// After an upload: a `._name` next to the local file becomes its fork and Finder info there.
@@ -226,12 +252,22 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
         match (dir, p.is_dir) {
             (Direction::Download, true) => walk_remote(fs, r, l, &mut steps, ctx)?,
             (Direction::Upload, true) => walk_local(l, r, &mut steps, &to_remote, ctx)?,
-            _ => steps.push(Step {
-                remote: r,
-                local: l,
-                size: *size,
-                folder: false,
-            }),
+            _ => {
+                // A picked file's date comes from the machine; a failed look costs only the date.
+                let modified = match dir {
+                    Direction::Download => {
+                        fs.stat(&r).ok().and_then(|e| e.modified).map(|t| t.unix)
+                    }
+                    Direction::Upload => None,
+                };
+                steps.push(Step {
+                    remote: r,
+                    local: l,
+                    size: *size,
+                    modified,
+                    folder: false,
+                })
+            }
         }
     }
     // Sidecars travel with their file into a protocol that keeps forks, not as files of their own.
@@ -299,8 +335,13 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
                     .with_context(|| format!("creating {}", s.local.display()))?;
                 let n = pump(&mut src, &mut dst, &mut done, total, ctx)?;
                 drop(src);
+                if let Some(t) = s.modified.and_then(system_time) {
+                    // Keeping the machine's date matters more than the copy itself failing over it.
+                    let _ = dst.set_modified(t);
+                }
+                drop(dst);
                 if forks {
-                    save_sidecar(fs, &s.remote, &s.local)?;
+                    save_sidecar(fs, &s.remote, &s.local, s.modified)?;
                 }
                 Ok(n)
             }

@@ -78,6 +78,17 @@ fn forks_travel_as_appledouble_both_ways() {
     let x = appledouble::parse(&side).unwrap();
     assert_eq!(x.resource_fork, b"\0\0\x01\0resource fork bytes");
     assert_eq!(x.type_code(), *b"APPL");
+    // The machine's date (the pretend server says Nov 1997) stays on both files.
+    let when = 946_684_800 - 68_000_000;
+    assert_eq!(appledouble::modified(&side), Some(when));
+    for f in ["SimpleText\u{2122}", "._SimpleText\u{2122}"] {
+        let t = std::fs::metadata(dir.path().join(f))
+            .unwrap()
+            .modified()
+            .unwrap();
+        let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert_eq!(secs, when, "{f}");
+    }
     // A plain text file has no fork but keeps its type and creator.
     run(
         &s,
@@ -95,7 +106,11 @@ fn forks_travel_as_appledouble_both_ways() {
         resource_fork: vec![7; 5000],
     };
     std::fs::write(dir.path().join("Navigator"), b"data fork").unwrap();
-    std::fs::write(dir.path().join("._Navigator"), appledouble::build(&mine)).unwrap();
+    std::fs::write(
+        dir.path().join("._Navigator"),
+        appledouble::build(&mine, None),
+    )
+    .unwrap();
     let sum = run(
         &s,
         Direction::Upload,
