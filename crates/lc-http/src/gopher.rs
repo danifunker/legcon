@@ -44,13 +44,26 @@ pub fn parse_menu(data: &[u8]) -> Vec<Item> {
         }
         out.push(Item {
             kind,
-            display: f[0].to_vec(),
+            display: listing_name(f[0], f[1]),
             selector: f[1].to_vec(),
             host: String::from_utf8_lossy(f[2]).into_owned(),
             port: String::from_utf8_lossy(f[3]).trim().parse().unwrap_or(PORT),
         });
     }
     out
+}
+
+/// The name in a directory listing's display text: Gophernicus and others pad it with date and
+/// size columns, so the selector's last part followed by two spaces is the name.
+fn listing_name(display: &[u8], selector: &[u8]) -> Vec<u8> {
+    let path = selector.strip_suffix(b"/").unwrap_or(selector);
+    let base = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+    let padded = display.len() > base.len() && display[base.len()..].starts_with(b"  ");
+    if !base.is_empty() && display.starts_with(base) && padded {
+        base.to_vec()
+    } else {
+        display.to_vec()
+    }
 }
 
 /// Menus and documents shown; info, errors, searches, Telnet and CSO lines are not.
@@ -258,5 +271,17 @@ mod tests {
             part_name(&String::from_utf8_lossy(&m[2].display)),
             "About-this"
         );
+    }
+
+    #[test]
+    fn listing_columns_are_not_part_of_the_name() {
+        // As Gophernicus lists a folder (seen in the lab, 2026-11-14).
+        let m = parse_menu(
+            b"1notes                                 2026-Nov-14 21:45   --------/\t/notes/\th\t70\r\n0readme.txt                            2026-Nov-14 21:45     0.0 KB\t/readme.txt\th\t70\r\n0Read me first\t/readme.txt\th\t70\r\n",
+        );
+        assert_eq!(m[0].display, b"notes");
+        assert_eq!(m[1].display, b"readme.txt");
+        // A real title that is not padded stays as it is.
+        assert_eq!(m[2].display, b"Read me first");
     }
 }

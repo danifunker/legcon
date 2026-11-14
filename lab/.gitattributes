@@ -1,0 +1,4 @@
+# Everything in the lab runs inside Linux containers: keep Unix line endings on every checkout.
+* text=auto eol=lf
+*.gz binary
+*.tgz binary

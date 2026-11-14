@@ -1,0 +1,16 @@
+{"machines": [
+  {"id": "lab-vsftpd", "name": "lab-vsftpd", "address": "127.0.0.1", "services": [{"kind": "ftp", "port": 10021}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-proftpd", "name": "lab-proftpd", "address": "127.0.0.1", "services": [{"kind": "ftp", "port": 10121}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-telnet", "name": "lab-telnet", "address": "127.0.0.1", "services": [{"kind": "telnet", "port": 10023}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-rexec", "name": "lab-rexec", "address": "127.0.0.1", "services": [{"kind": "rexec", "port": 10512}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-rlogin", "name": "lab-rlogin", "address": "127.0.0.1", "services": [{"kind": "rlogin", "port": 10513}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-rsh", "name": "lab-rsh", "address": "127.0.0.1", "services": [{"kind": "rsh", "port": 10514}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-samba", "name": "lab-samba", "address": "127.0.0.1", "services": [{"kind": "smb", "port": 10139}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-openssh", "name": "lab-openssh", "address": "127.0.0.1", "services": [{"kind": "ssh", "port": 10022}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-dropbear", "name": "lab-dropbear", "address": "127.0.0.1", "services": [{"kind": "ssh", "port": 10222}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-ssh1", "name": "lab-ssh1", "address": "127.0.0.1", "services": [{"kind": "ssh", "port": 10200}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-nfs", "name": "lab-nfs", "address": "127.0.0.1", "services": [{"kind": "nfs", "port": 10111}], "user": "lab", "password": "b64:bGFi", "check_host_key": false, "uid": 1000, "gid": 1000},
+  {"id": "lab-netatalk", "name": "lab-netatalk", "address": "127.0.0.1", "services": [{"kind": "afp", "port": 10548}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-apache", "name": "lab-apache", "address": "127.0.0.1", "services": [{"kind": "http", "port": 10080}], "user": "lab", "password": "b64:bGFi", "check_host_key": false},
+  {"id": "lab-gophernicus", "name": "lab-gophernicus", "address": "127.0.0.1", "services": [{"kind": "gopher", "port": 10070}], "user": "lab", "password": "b64:bGFi", "check_host_key": false}
+]}

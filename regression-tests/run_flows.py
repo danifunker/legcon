@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 
 import tomli
 
@@ -24,6 +25,8 @@ SHELLS = {
     },
 }
 LC = os.path.join(ROOT, "target", "debug", "lc.exe" if os.name == "nt" else "lc")
+# The lab container's machines (`lab/lab.sh machines`), for cases with machines = "lab".
+LAB_MACHINES = os.path.join(HERE, "lab-machines.json")
 
 
 def lookup(obj, dotted):
@@ -34,14 +37,14 @@ def lookup(obj, dotted):
     return obj
 
 
-def fill(value, work):
-    """Replace {work} (the flow's scratch folder) everywhere in a case."""
+def fill(value, work, run):
+    """Replace {work} (the flow's scratch folder) and {run} (unique per run) everywhere in a case."""
     if isinstance(value, str):
-        return value.replace("{work}", work)
+        return value.replace("{work}", work).replace("{run}", run)
     if isinstance(value, list):
-        return [fill(v, work) for v in value]
+        return [fill(v, work, run) for v in value]
     if isinstance(value, dict):
-        return {k: fill(v, work) for k, v in value.items()}
+        return {fill(k, work, run): fill(v, work, run) for k, v in value.items()}
     return value
 
 
@@ -56,12 +59,18 @@ def run_lc(step, env):
 
 
 def run_case(case, shell, work):
-    case = fill(case, work)
+    case = fill(case, work, uuid.uuid4().hex[:8])
     cfg = os.path.join(work, "config")
     os.makedirs(cfg)
     secrets = os.path.join(work, "secrets.json")
+    machines = case.get("machines", [])
+    if machines == "lab":
+        machines = json.load(open(LAB_MACHINES))["machines"]
     with open(os.path.join(cfg, "machines.json"), "w") as f:
-        json.dump({"machines": case.get("machines", [])}, f)
+        json.dump({"machines": machines}, f)
+    for name, text in case.get("local_files", {}).items():
+        with open(os.path.join(work, name), "w") as f:
+            f.write(text)
     with open(os.path.join(cfg, "settings.json"), "w") as f:
         json.dump({"home_folder": work}, f)
     with open(secrets, "w") as f:
@@ -133,11 +142,14 @@ def drive(case, shell, cfg, secrets, env, work):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shell", default="win32", choices=sorted(SHELLS))
+    ap.add_argument("--lab", action="store_true", help="also run lab = true cases (needs lab/lab.sh up)")
     ap.add_argument("names", nargs="*", help="flow ids or files to run (all when none)")
     a = ap.parse_args()
     cases = []
     for path in sorted(glob.glob(os.path.join(HERE, "flows", "*.toml"))):
         for c in tomli.load(open(path, "rb"))["case"]:
+            if c.get("lab") and not a.lab:
+                continue
             if a.shell in c.get("shells", ["win32"]):
                 if not a.names or c["id"] in a.names or os.path.basename(path) in a.names:
                     cases.append(c)

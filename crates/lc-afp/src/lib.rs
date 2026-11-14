@@ -821,6 +821,8 @@ impl FileSession for AfpSession {
                 0 => {}
                 // Past the last item: the listing is complete.
                 err::OBJECT_NOT_FOUND if start > 1 => break,
+                // An empty folder answers the first request the same way (netatalk, Mac OS).
+                err::OBJECT_NOT_FOUND if self.params(dir).is_ok() => break,
                 c => return Err(afp_error(c, &what)),
             }
             let nodes = parse_enumerate(&r)?;

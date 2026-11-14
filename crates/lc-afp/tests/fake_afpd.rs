@@ -149,3 +149,16 @@ fn cleartext_and_a_wrong_password() {
     assert!(matches!(e, Error::Auth(_)), "{e}");
     assert!(f.store.lock().unwrap().log.is_empty());
 }
+
+#[test]
+fn an_empty_folder_lists_as_empty_and_a_missing_one_fails() {
+    // AFP answers "object not found" to the first enumerate of an empty folder (found in the lab).
+    let f = fake::start(fake::sample());
+    let mut s = open(f.port, "dani", "pw");
+    s.mkdir(&mp("Macintosh HD:Empty")).unwrap();
+    assert!(s.list(&mp("Macintosh HD:Empty")).unwrap().is_empty());
+    assert!(matches!(
+        s.list(&mp("Macintosh HD:Nowhere")),
+        Err(Error::NotFound(_))
+    ));
+}

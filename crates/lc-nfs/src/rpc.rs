@@ -82,6 +82,43 @@ fn bind(sock: &Socket, addr: &SocketAddr, reserved: bool) -> bool {
     false
 }
 
+/// A TCP connection, from a reserved port when asked. A port whose last connection to this
+/// server is still in TIME_WAIT binds but cannot connect, so the next port is tried.
+fn connect_tcp(
+    domain: Domain,
+    addr: SocketAddr,
+    reserved: bool,
+    timeout: Duration,
+) -> Result<(Socket, bool)> {
+    if reserved {
+        let mut any: SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse().unwrap()
+        } else {
+            "[::]:0".parse().unwrap()
+        };
+        for port in (600..1024).rev() {
+            let s = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+            any.set_port(port);
+            if s.bind(&SockAddr::from(any)).is_err() {
+                continue;
+            }
+            match s.connect_timeout(&SockAddr::from(addr), timeout) {
+                Ok(()) => return Ok((s, true)),
+                Err(e)
+                    if matches!(e.kind(), ErrorKind::AddrInUse | ErrorKind::AddrNotAvailable) =>
+                {
+                    continue
+                }
+                Err(e) => return Err(io_err(e, timeout)),
+            }
+        }
+    }
+    let s = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+    s.connect_timeout(&SockAddr::from(addr), timeout)
+        .map_err(|e| io_err(e, timeout))?;
+    Ok((s, false))
+}
+
 fn io_err(e: std::io::Error, timeout: Duration) -> Error {
     if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {
         Error::Timeout(timeout)
@@ -102,10 +139,7 @@ impl Client {
     ) -> Result<Client> {
         let domain = Domain::for_address(addr);
         let (link, got_reserved) = if tcp {
-            let s = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
-            let r = bind(&s, &addr, reserved);
-            s.connect_timeout(&SockAddr::from(addr), timeout)
-                .map_err(|e| io_err(e, timeout))?;
+            let (s, r) = connect_tcp(domain, addr, reserved, timeout)?;
             let s: TcpStream = s.into();
             s.set_nodelay(true)?;
             s.set_read_timeout(Some(timeout))?;

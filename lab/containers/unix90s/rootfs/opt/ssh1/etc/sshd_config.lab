@@ -1,0 +1,10 @@
+# OpenSSH 7.3p1 speaking only SSH-1 (protocol 1.5) for the legcon lab.
+Port 2200
+Protocol 1
+HostKey /opt/ssh1/etc/ssh_host_key
+UsePrivilegeSeparation no
+PermitRootLogin no
+PasswordAuthentication yes
+RSAAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PidFile /run/sshd1.pid

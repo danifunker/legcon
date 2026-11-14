@@ -1,0 +1,15 @@
+# OpenSSH (SSH-2) for the legcon lab, with the old algorithms 1990s-era clients expect added back.
+Port 22
+HostKey /etc/ssh/ssh_host_rsa_key
+HostKey /etc/ssh/ssh_host_ecdsa_key
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication yes
+KbdInteractiveAuthentication no
+UsePAM yes
+PermitRootLogin no
+Subsystem sftp internal-sftp
+HostKeyAlgorithms +ssh-rsa
+PubkeyAcceptedAlgorithms +ssh-rsa,ssh-dss
+KexAlgorithms +diffie-hellman-group14-sha1,diffie-hellman-group1-sha1
+Ciphers +aes128-cbc,3des-cbc
+MACs +hmac-sha1

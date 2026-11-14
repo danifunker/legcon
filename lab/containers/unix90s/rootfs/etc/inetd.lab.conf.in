@@ -1,0 +1,6 @@
+# openbsd-inetd services for the legcon lab; @HOST@ and @GOPHER_PORT@ are filled in at start.
+telnet stream tcp nowait root /usr/sbin/telnetd telnetd
+shell  stream tcp nowait root /usr/sbin/in.rshd in.rshd
+login  stream tcp nowait root /usr/sbin/in.rlogind in.rlogind
+exec   stream tcp nowait root /usr/sbin/in.rexecd in.rexecd
+gopher stream tcp nowait nobody /usr/sbin/gophernicus gophernicus -h @HOST@ -p @GOPHER_PORT@ -r /srv/gopher

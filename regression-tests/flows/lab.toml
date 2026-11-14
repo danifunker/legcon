@@ -1,0 +1,203 @@
+# GUI end to end against the lab container (lab/README.md): every file service through the window.
+# Run with: lab/lab.sh up, then python regression-tests/run_flows.py --lab lab.toml
+
+[[case]]
+id = "flow.lab.ftp-vsftpd"
+description = "Connect, download readme.txt, upload a file (lab-vsftpd)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-vsftpd" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.ftp-proftpd"
+description = "Connect, download readme.txt, upload a file (lab-proftpd)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-proftpd" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.smb-samba"
+description = "Connect, download readme.txt, upload a file (lab-samba)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-samba" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "lab", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "lab" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.sftp-openssh"
+description = "Connect, download readme.txt, upload a file (lab-openssh)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-openssh" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.sftp-dropbear"
+description = "Connect, download readme.txt, upload a file (lab-dropbear)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-dropbear" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.scp-ssh1"
+description = "Connect, download readme.txt, upload a file (lab-ssh1)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-ssh1" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.nfs-unfs3"
+description = "Connect, download readme.txt, upload a file (lab-nfs)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-nfs" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "home", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "home" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "lab", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "lab" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.afp-netatalk"
+description = "Connect, download readme.txt, upload a file (lab-netatalk)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-netatalk" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.http-apache"
+description = "Connect, download readme.txt (lab-apache)"
+lab = true
+machines = "lab"
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-apache" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.gopher-gophernicus"
+description = "Connect, download readme.txt (lab-gophernicus)"
+lab = true
+machines = "lab"
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-gophernicus" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]

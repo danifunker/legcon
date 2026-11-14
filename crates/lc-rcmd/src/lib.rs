@@ -6,7 +6,7 @@
 //! status.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 pub mod rsh;
@@ -88,7 +88,7 @@ pub fn start(
             Error::Denied(text)
         });
     }
-    let _ = s.shutdown(Shutdown::Write);
+    // No half-close here: some rexecds and NAT relays drop the reply when the client sends FIN.
     Ok(s)
 }
 

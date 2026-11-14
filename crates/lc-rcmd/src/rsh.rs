@@ -209,8 +209,8 @@ impl Rsh {
 
     /// Run `command` and collect its output (errors merged in).
     pub fn run(&self, command: &[u8]) -> Result<Vec<u8>> {
+        // Not half-closed: some servers and NAT relays then drop the reply (seen with rexecd).
         let mut s = self.stream(command)?;
-        let _ = s.shutdown(Shutdown::Write);
         let mut out = Vec::new();
         s.read_to_end(&mut out).map_err(|e| {
             if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) {

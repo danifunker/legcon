@@ -42,6 +42,11 @@ lc = [{ args = ["machines", "show", "sparc"], stdout_has = ["1001"] }]
 "0.uid" = 1001
 ```
 
+`lab = true` marks a case that needs the lab container (lab/README.md); it runs only with
+`run_flows.py --lab`. `machines = "lab"` gives the case the lab's machines (`lab-machines.json`,
+from `lab/lab.sh machines`). `local_files = { "name" = "text" }` puts files in the home folder
+first, and `{run}` is unique per run, so repeated runs do not collide on the lab server.
+
 `{work}` anywhere in a case is the flow's scratch folder (the home folder; the config is in
 `{work}/config`).
 
