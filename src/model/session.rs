@@ -318,6 +318,29 @@ fn open_file_session(
             )?;
             Ok((Box::new(session), None))
         }
+        ServiceKind::Afp => {
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Afp)
+                .map_or(lc_afp::PORT, |s| s.port);
+            let opts = lc_afp::Options {
+                charset: lc_core::Charset::from_label(&machine.charset)
+                    .unwrap_or(lc_core::Charset::MacRoman),
+                ..lc_afp::Options::default()
+            };
+            let pw = password.unwrap_or_default();
+            let s = lc_afp::connect(&machine.address, port, &machine.user, &pw, &opts)?;
+            log::info!(
+                "{}: {} ({}), {}, {}",
+                machine.name,
+                s.info.name,
+                s.info.machine,
+                s.version,
+                s.uam
+            );
+            Ok((Box::new(s), None))
+        }
         ServiceKind::Http | ServiceKind::Gopher => {
             let port = machine
                 .services

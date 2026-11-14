@@ -120,10 +120,7 @@ fn index_date(s: &str) -> Option<i64> {
 
 /// `Thu, 13 Nov 1997 10:04:00 GMT` (Last-Modified).
 fn http_date(s: &str) -> Option<i64> {
-    let f: Vec<&str> = s
-        .split([' ', ','])
-        .filter(|x| !x.is_empty())
-        .collect();
+    let f: Vec<&str> = s.split([' ', ',']).filter(|x| !x.is_empty()).collect();
     let (day, mon, year, time) = (
         f.get(1)?.parse().ok()?,
         month(f.get(2)?)?,

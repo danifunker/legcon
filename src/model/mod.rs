@@ -1,5 +1,6 @@
 //! The model: machines, settings, sessions, local files and jobs. No UI.
 
+pub mod appledouble;
 pub mod config;
 pub mod job;
 pub mod line_term;

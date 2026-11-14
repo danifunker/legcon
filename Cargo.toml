@@ -12,6 +12,7 @@ name = "lc"
 path = "src/bin/lc.rs"
 
 [dependencies]
+lc-afp = { path = "crates/lc-afp" }
 lc-core = { path = "crates/lc-core" }
 lc-ftp = { path = "crates/lc-ftp" }
 lc-http = { path = "crates/lc-http" }

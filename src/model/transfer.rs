@@ -146,6 +146,39 @@ pub struct Batch<'a> {
     pub overwrite: bool,
 }
 
+fn sidecar_of(local: &Path) -> Option<PathBuf> {
+    let name = local.file_name()?.to_string_lossy().into_owned();
+    Some(local.with_file_name(super::appledouble::sidecar_name(&name)))
+}
+
+/// After a download: the file's resource fork and Finder info as an AppleDouble `._name`.
+fn save_sidecar(fs: &mut dyn FileSession, remote: &RemotePath, local: &Path) -> anyhow::Result<()> {
+    let Some(x) = fs.mac_extras(remote)? else {
+        return Ok(());
+    };
+    let Some(side) = sidecar_of(local) else {
+        return Ok(());
+    };
+    std::fs::write(&side, super::appledouble::build(&x))
+        .with_context(|| format!("writing {}", side.display()))
+}
+
+/// After an upload: a `._name` next to the local file becomes its fork and Finder info there.
+fn apply_sidecar(
+    fs: &mut dyn FileSession,
+    local: &Path,
+    remote: &RemotePath,
+) -> anyhow::Result<()> {
+    let Some(side) = sidecar_of(local).filter(|p| p.is_file()) else {
+        return Ok(());
+    };
+    let data = std::fs::read(&side).with_context(|| format!("reading {}", side.display()))?;
+    match super::appledouble::parse(&data) {
+        Some(x) => Ok(fs.set_mac_extras(remote, &x)?),
+        None => Ok(()),
+    }
+}
+
 /// Delete a remote file, or a folder with everything in it.
 pub fn remove_tree(
     fs: &mut dyn FileSession,
@@ -184,6 +217,17 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
                 folder: false,
             }),
         }
+    }
+    // Sidecars travel with their file into a protocol that keeps forks, not as files of their own.
+    let forks = fs.keeps_mac_extras();
+    if forks && dir == Direction::Upload {
+        steps.retain(|s| {
+            let name = s
+                .local
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned());
+            !name.is_some_and(|n| super::appledouble::is_sidecar(&n))
+        });
     }
     let total: u64 = steps.iter().filter_map(|s| s.size).sum();
     let files = steps.iter().filter(|s| !s.folder).count();
@@ -231,14 +275,24 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
                 let mut src = fs.open_read(&s.remote, 0)?;
                 let mut dst = File::create(&s.local)
                     .with_context(|| format!("creating {}", s.local.display()))?;
-                pump(&mut src, &mut dst, &mut done, total, ctx)
+                let n = pump(&mut src, &mut dst, &mut done, total, ctx)?;
+                drop(src);
+                if forks {
+                    save_sidecar(fs, &s.remote, &s.local)?;
+                }
+                Ok(n)
             }
             Direction::Upload => {
                 let mut src = File::open(&s.local)
                     .with_context(|| format!("opening {}", s.local.display()))?;
                 let size = src.metadata()?.len();
                 let mut dst = fs.open_write_sized(&s.remote, WriteMode::Overwrite, size)?;
-                pump(&mut src, &mut dst, &mut done, total, ctx)
+                let n = pump(&mut src, &mut dst, &mut done, total, ctx)?;
+                drop(dst);
+                if forks {
+                    apply_sidecar(fs, &s.local, &s.remote)?;
+                }
+                Ok(n)
             }
         })();
         match r {

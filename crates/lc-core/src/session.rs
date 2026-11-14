@@ -50,6 +50,28 @@ pub enum WriteMode {
     Resume(u64),
 }
 
+/// A classic Mac file's other half: its Finder info (type, creator, flags) and resource fork.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacExtras {
+    pub finder_info: [u8; 32],
+    pub resource_fork: Vec<u8>,
+}
+
+impl MacExtras {
+    pub fn type_code(&self) -> [u8; 4] {
+        self.finder_info[..4].try_into().unwrap()
+    }
+
+    pub fn creator(&self) -> [u8; 4] {
+        self.finder_info[4..8].try_into().unwrap()
+    }
+
+    /// Nothing worth keeping: no fork and no type or creator.
+    pub fn is_empty(&self) -> bool {
+        self.resource_fork.is_empty() && self.finder_info[..8].iter().all(|&b| b == 0)
+    }
+}
+
 /// Browsing and transferring files.
 pub trait FileSession: Connection {
     fn caps(&self) -> FileCaps;
@@ -76,6 +98,25 @@ pub trait FileSession: Connection {
     fn mkdir(&mut self, path: &RemotePath) -> Result<()>;
     fn remove(&mut self, path: &RemotePath) -> Result<()>;
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()>;
+
+    /// Whether the protocol keeps Finder info and resource forks (AFP), so they can travel.
+    fn keeps_mac_extras(&self) -> bool {
+        false
+    }
+
+    /// A file's Finder info and resource fork, where the protocol has them.
+    fn mac_extras(&mut self, path: &RemotePath) -> Result<Option<MacExtras>> {
+        let _ = path;
+        Ok(None)
+    }
+
+    /// Set a file's Finder info and resource fork (the data fork is written separately).
+    fn set_mac_extras(&mut self, path: &RemotePath, extras: &MacExtras) -> Result<()> {
+        let _ = (path, extras);
+        Err(crate::Error::Unsupported(
+            "this protocol has no resource forks".into(),
+        ))
+    }
 
     /// Send one of the protocol's own commands as typed (the Console tab), in folder `dir` so
     /// relative names mean what the user sees; the reply text.

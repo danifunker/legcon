@@ -31,12 +31,14 @@ pub enum ServiceKind {
     Http,
     /// Gopher menus, read-only.
     Gopher,
+    /// AFP over TCP: AppleShare IP, Mac OS 9 File Sharing, netatalk; resource forks kept.
+    Afp,
     /// A built-in machine held in memory, for trying the app without a real one.
     Demo,
 }
 
 impl ServiceKind {
-    pub const ALL: [ServiceKind; 11] = [
+    pub const ALL: [ServiceKind; 12] = [
         ServiceKind::Ftp,
         ServiceKind::Telnet,
         ServiceKind::Smb,
@@ -47,6 +49,7 @@ impl ServiceKind {
         ServiceKind::Rlogin,
         ServiceKind::Http,
         ServiceKind::Gopher,
+        ServiceKind::Afp,
         ServiceKind::Demo,
     ];
 
@@ -62,6 +65,7 @@ impl ServiceKind {
             ServiceKind::Rlogin => "rlogin",
             ServiceKind::Http => "HTTP",
             ServiceKind::Gopher => "Gopher",
+            ServiceKind::Afp => "AFP",
             ServiceKind::Demo => "Demo",
         }
     }
@@ -79,6 +83,7 @@ impl ServiceKind {
             ServiceKind::Rlogin => "rlogin",
             ServiceKind::Http => "http",
             ServiceKind::Gopher => "gopher",
+            ServiceKind::Afp => "afp",
             ServiceKind::Demo => "demo",
         }
     }
@@ -101,6 +106,7 @@ impl ServiceKind {
             ServiceKind::Rlogin => 513,
             ServiceKind::Http => 80,
             ServiceKind::Gopher => 70,
+            ServiceKind::Afp => 548,
             ServiceKind::Demo => 0,
         }
     }
@@ -116,6 +122,7 @@ impl ServiceKind {
                 | ServiceKind::Rsh
                 | ServiceKind::Http
                 | ServiceKind::Gopher
+                | ServiceKind::Afp
                 | ServiceKind::Demo
         )
     }
@@ -136,7 +143,11 @@ impl ServiceKind {
     pub fn needs_password(self) -> bool {
         matches!(
             self,
-            ServiceKind::Ftp | ServiceKind::Smb | ServiceKind::Ssh | ServiceKind::Rexec
+            ServiceKind::Ftp
+                | ServiceKind::Smb
+                | ServiceKind::Ssh
+                | ServiceKind::Rexec
+                | ServiceKind::Afp
         )
     }
 

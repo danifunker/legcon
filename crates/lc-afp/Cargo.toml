@@ -1,0 +1,11 @@
+[package]
+name = "lc-afp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "AFP 2.x over TCP (DSI) for legcon: AppleShare IP, Mac OS 9 File Sharing, netatalk, with resource forks"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }
+des = "0.8"

@@ -89,6 +89,10 @@ impl MachinesController {
             .collect();
         m.user = new.user;
         m.password = new.password.map(Password::Saved).unwrap_or(Password::Ask);
+        // Classic Mac servers name files in MacRoman.
+        if m.file_service().is_some_and(|s| s.kind == ServiceKind::Afp) {
+            m.charset = lc_core::Charset::MacRoman.label().to_string();
+        }
         self.store.add(m)?;
         self.save()
     }

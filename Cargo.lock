@@ -474,6 +474,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lc-afp"
+version = "0.1.0"
+dependencies = [
+ "des",
+ "lc-core",
+]
+
+[[package]]
 name = "lc-core"
 version = "0.1.0"
 dependencies = [
@@ -549,6 +557,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "lc-afp",
  "lc-core",
  "lc-ftp",
  "lc-http",

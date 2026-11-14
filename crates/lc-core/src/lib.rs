@@ -22,6 +22,6 @@ pub use entry::{Entry, EntryKind, TimePrecision, Timestamp};
 pub use error::{Error, Result};
 pub use path::{PathStyle, RemotePath};
 pub use session::{
-    ConnState, Connection, ExecResult, FileCaps, FileSession, Pty, PtyWriter, ShellCaps,
+    ConnState, Connection, ExecResult, FileCaps, FileSession, MacExtras, Pty, PtyWriter, ShellCaps,
     ShellSession, WriteMode,
 };
