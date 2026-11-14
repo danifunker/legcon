@@ -1011,6 +1011,7 @@ name = "lc-ssh"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "des",
  "dsa",
  "lc-core",
  "md-5",

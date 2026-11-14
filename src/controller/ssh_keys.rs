@@ -69,7 +69,7 @@ fn new_form(name: String, kind: usize, comment: String) -> FormSpec {
                     options: KeyKind::ALL.iter().map(|k| k.label().to_string()).collect(),
                     selected: kind,
                 },
-                hint: "legcon logs in over SSH-2; SSH-1 keys are for other clients.".into(),
+                hint: "SSH-1 keys are for machines that speak only SSH-1.".into(),
             },
             Field {
                 id: ids::KEY_COMMENT,
@@ -106,11 +106,7 @@ impl KeysController {
                 kind: k.kind_label(),
                 fingerprint: k.sha256.clone(),
                 comment: k.comment.clone(),
-                used_by: if k.is_ssh2() {
-                    machines.using_key(&k.path).join(", ")
-                } else {
-                    "(SSH-1 key)".into()
-                },
+                used_by: machines.using_key(&k.path).join(", "),
             })
             .collect()
     }

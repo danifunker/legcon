@@ -173,8 +173,7 @@ impl TermSession {
                     lc_telnet::connect(&machine.address, service.port, &opts)?
                 }
                 ServiceKind::Ssh => {
-                    super::ssh::connect(&machine, service.port, password, &key_note)?
-                        .into_pty("vt100", cols, rows)?
+                    super::ssh::open_pty(&machine, service.port, password, &key_note, cols, rows)?
                 }
                 ServiceKind::Rexec => {
                     let cs = Charset::from_label(&machine.charset).unwrap_or_default();

@@ -5,7 +5,7 @@ file, the OS-store stand-in, files in the home folder, `lc` output), never the s
 prove a shell is wired to the shared controllers; the logic itself is tested by `cargo test`.
 
 ```bash
-cargo build && (cd frontends/win32 && cargo build)
+cargo build && cargo build -p lc-ssh --example fake_sshd1 && (cd frontends/win32 && cargo build)
 python regression-tests/run_flows.py                    # every flow on win32
 python regression-tests/run_flows.py connection.toml    # one file
 python regression-tests/run_flows.py flow.settings.os-store
@@ -31,6 +31,7 @@ ui = [
   { op = "fill", id = "machine.uid", text = "1001" },
   { op = "activate", id = "machines.settings.ok" },
 ]
+servers = [{ example = "fake_sshd1", args = ["2231"] }]   # pretend servers, from target/debug/examples
 setup_lc = [{ args = ["keys", "new", "lab", "--kind", "rsa1024"] }]   # before the shell starts
 picks = { "keys.import" = "{work}/src" } # answers to file and folder pickers, by purpose
 expect_files = ["incoming"]              # relative to the home folder

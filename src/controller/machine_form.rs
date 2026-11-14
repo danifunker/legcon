@@ -79,11 +79,10 @@ fn service_fields(m: &Machine, files: bool) -> (FieldKind, FieldKind) {
     (choice(options, selected), FieldKind::Text(port))
 }
 
-/// The login keys the form offers after "none": the store's SSH-2 keys, plus the machine's own if elsewhere.
+/// The login keys the form offers after "none": the store's keys, plus the machine's own if elsewhere.
 fn key_choices(m: &Machine, keys: &[KeyInfo]) -> Vec<(String, std::path::PathBuf)> {
     let mut v: Vec<(String, std::path::PathBuf)> = keys
         .iter()
-        .filter(|k| k.is_ssh2())
         .map(|k| (format!("{} ({})", k.name, k.kind_label()), k.path.clone()))
         .collect();
     if let Some(p) = m

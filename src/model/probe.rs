@@ -221,8 +221,8 @@ pub fn probe_ports(address: &str, ports: &Ports, ctx: Option<&JobCtx>) -> anyhow
     phase("SSH");
     if let Some(s) = is_up(ports.ssh).then(|| open(addr, ports.ssh)).flatten() {
         let g = greeting(s);
-        let note = if g.starts_with("SSH-1.5") {
-            format!("{g} (SSH-1 only; legcon speaks SSH-2)")
+        let note = if lc_ssh::ssh1::is_ssh1(&g) {
+            format!("{g} (SSH-1 only: 3DES, weak by today's measure)")
         } else {
             g
         };

@@ -45,21 +45,52 @@ fn line(k: &lc_ssh::HostKey) -> String {
     )
 }
 
-/// Connect and log in to `machine`'s SSH service on `port`.
-pub fn connect(
-    machine: &Machine,
-    port: u16,
-    password: Option<String>,
-    note: &KeySlot,
-) -> anyhow::Result<lc_ssh::SshSession> {
-    let opts = lc_ssh::Options {
+fn options(machine: &Machine) -> lc_ssh::Options {
+    lc_ssh::Options {
         charset: Charset::from_label(&machine.charset).unwrap_or_default(),
         ..lc_ssh::Options::default()
-    };
+    }
+}
+
+/// Whether the file is an SSH-1 identity (SSH-1 servers take only those).
+pub fn is_ssh1_key(path: &Path) -> bool {
+    std::fs::read(path)
+        .ok()
+        .and_then(|d| lc_ssh::keyfile::ssh1_identity(&d).ok().flatten())
+        .is_some()
+}
+
+/// The machine's login key, when it suits the protocol the server speaks.
+fn auth(machine: &Machine, password: Option<String>, ssh1: bool) -> lc_ssh::Auth {
+    let key = machine
+        .key_file
+        .as_ref()
+        .filter(|p| is_ssh1_key(p) == ssh1)
+        .map(|p| lc_ssh::KeyFiles {
+            private: p.clone(),
+            public: lc_ssh::keys::public_path(p),
+        });
+    lc_ssh::Auth {
+        password: password.or_else(|| key.is_none().then(String::new)),
+        key,
+    }
+}
+
+/// Whether the machine speaks only SSH-1, from its version line.
+pub fn speaks_ssh1(machine: &Machine, port: u16) -> anyhow::Result<bool> {
+    let banner = lc_ssh::ssh1::banner(&machine.address, port, &options(machine))?;
+    Ok(lc_ssh::ssh1::is_ssh1(&banner))
+}
+
+/// The host-key check for `machine`: learn a first key, stop on a changed one (see the module doc).
+fn verifier<'a>(
+    machine: &Machine,
+    note: &'a KeySlot,
+) -> impl FnMut(&lc_ssh::HostKey) -> lc_core::Result<()> + 'a {
     let known = machine.host_key.clone();
     let check = machine.check_host_key;
     *lock_status(note) = None;
-    let mut verify = |k: &lc_ssh::HostKey| {
+    move |k: &lc_ssh::HostKey| {
         let seen = line(k);
         match &known {
             _ if !check => Ok(()),
@@ -79,22 +110,23 @@ pub fn connect(
                 ))
             }
         }
-    };
-    let key = machine.key_file.as_ref().map(|p| lc_ssh::KeyFiles {
-        private: p.clone(),
-        public: lc_ssh::keys::public_path(p),
-    });
-    let auth = lc_ssh::Auth {
-        password: password.or_else(|| key.is_none().then(String::new)),
-        key,
-    };
+    }
+}
+
+/// Connect and log in to `machine`'s SSH service on `port` over SSH-2.
+pub fn connect(
+    machine: &Machine,
+    port: u16,
+    password: Option<String>,
+    note: &KeySlot,
+) -> anyhow::Result<lc_ssh::SshSession> {
     let s = lc_ssh::connect(
         &machine.address,
         port,
         &machine.user,
-        &auth,
-        &opts,
-        &mut verify,
+        &auth(machine, password, false),
+        &options(machine),
+        &mut verifier(machine, note),
     )?;
     let n = s.negotiated();
     log::info!(
@@ -108,6 +140,73 @@ pub fn connect(
         if n.weak() { "; weak algorithms" } else { "" }
     );
     Ok(s)
+}
+
+/// Connect and log in over SSH-1, ready for one command.
+pub fn connect1(
+    machine: &Machine,
+    port: u16,
+    password: Option<String>,
+    note: &KeySlot,
+) -> anyhow::Result<lc_ssh::ssh1::Conn> {
+    let c = lc_ssh::ssh1::Conn::open(
+        &machine.address,
+        port,
+        &machine.user,
+        &auth(machine, password, true),
+        &options(machine),
+        &mut verifier(machine, note),
+    )?;
+    log_ssh1(machine, &c.info);
+    Ok(c)
+}
+
+fn log_ssh1(machine: &Machine, i: &lc_ssh::ssh1::Ssh1Info) {
+    log::info!(
+        "{}: {} (SSH-1, 3DES, host key {} bits, server key {} bits; weak algorithms)",
+        machine.name,
+        i.banner,
+        i.host_bits,
+        i.server_bits
+    );
+}
+
+/// The machine's files over SSH: SFTP or SCP on SSH-2, SCP and shell commands on SSH-1.
+pub fn open_files(
+    machine: &Machine,
+    port: u16,
+    password: Option<String>,
+    note: &KeySlot,
+) -> anyhow::Result<Box<dyn lc_core::FileSession>> {
+    if speaks_ssh1(machine, port)? {
+        let f = lc_ssh::ssh1::Ssh1Files::open(
+            &machine.address,
+            port,
+            &machine.user,
+            &auth(machine, password, true),
+            &options(machine),
+            &mut verifier(machine, note),
+        )?;
+        log_ssh1(machine, &f.info);
+        return Ok(Box::new(f));
+    }
+    Ok(Box::new(connect(machine, port, password, note)?))
+}
+
+/// A terminal over SSH-1 or SSH-2, whichever the machine speaks.
+pub fn open_pty(
+    machine: &Machine,
+    port: u16,
+    password: Option<String>,
+    note: &KeySlot,
+    cols: u16,
+    rows: u16,
+) -> anyhow::Result<lc_core::Pty> {
+    if speaks_ssh1(machine, port)? {
+        let poll = options(machine).poll;
+        return Ok(connect1(machine, port, password, note)?.into_pty("vt100", cols, rows, poll)?);
+    }
+    Ok(connect(machine, port, password, note)?.into_pty("vt100", cols, rows)?)
 }
 
 /// The machine's SSH port: its SSH service's, or 22.
@@ -152,6 +251,56 @@ pub struct KeySetup {
     pub new_key: bool,
 }
 
+/// "Set up key login" on an SSH-1 machine: an SSH-1 RSA key in `~/.ssh/authorized_keys`.
+fn set_up_ssh1(
+    m: &mut Machine,
+    port: u16,
+    password: Option<String>,
+    chosen: Option<PathBuf>,
+    keys_dir: &Path,
+    note: &KeySlot,
+    ctx: &super::job::JobCtx,
+) -> anyhow::Result<KeySetup> {
+    if let Some(p) = chosen.as_ref().filter(|p| !is_ssh1_key(p)) {
+        bail!(
+            "{} speaks only SSH-1, and its key {} is an SSH-2 key; choose an SSH-1 key in its settings, or none to have one made",
+            m.name,
+            p.display()
+        );
+    }
+    let kind = lc_ssh::keys::KeyKind::Ssh1Rsa1024;
+    let path = chosen.unwrap_or_else(|| keys_dir.join(format!("{}_rsa1", m.id)));
+    let new_key = !path.exists();
+    if new_key {
+        ctx.set_phase("Making an SSH-1 RSA key");
+        let (identity, line) = lc_ssh::keys::generate_ssh1(kind, &format!("legcon-{}", m.id))?;
+        lc_ssh::keys::save_ssh1(&identity, &line, &path)?;
+    }
+    let line = std::fs::read_to_string(lc_ssh::keys::public_path(&path))?;
+    ctx.set_phase("Installing it in ~/.ssh/authorized_keys (SSH-1)");
+    let r = connect1(m, port, password, note)?.exec(
+        lc_ssh::keys::install_command_ssh1(line.trim()).as_bytes(),
+        b"",
+    )?;
+    if r.exit_status.unwrap_or(0) != 0 {
+        bail!(
+            "installing the key failed: {}",
+            String::from_utf8_lossy(&r.errors).trim()
+        );
+    }
+    ctx.set_phase("Logging in with the key");
+    m.key_file = Some(path.clone());
+    connect1(m, port, None, note)
+        .context("the key was installed, but logging in with it failed")?
+        .exec(b"true", b"")?;
+    Ok(KeySetup {
+        key_file: path,
+        algorithm: "rsa1".into(),
+        installed_in: "~/.ssh/authorized_keys (SSH-1)".into(),
+        new_key,
+    })
+}
+
 /// Log in with the password, install this machine's key (made if needed) the way the server
 /// wants it, then prove it by logging in again with the key alone (docs/PLAN.md §5.1).
 pub fn set_up_key_login(
@@ -171,6 +320,12 @@ pub fn set_up_key_login(
             let port = port(&m);
             ctx.set_phase("Logging in with the password");
             m.key_file = None;
+            if speaks_ssh1(&m, port)? {
+                return set_up_ssh1(&mut m, port, password, chosen, &keys_dir, &note, ctx);
+            }
+            if chosen.as_deref().is_some_and(is_ssh1_key) {
+                bail!("{} speaks SSH-2, and this machine's key is an SSH-1 key; choose another in its settings, or none to have one made", m.name);
+            }
             let mut s = connect(&m, port, password, &note)?;
             let banner = s.negotiated().banner.clone();
             let family = lc_ssh::keys::Family::of(&banner);

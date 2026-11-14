@@ -10,6 +10,7 @@ pub mod keyfile;
 pub mod keys;
 mod scp;
 pub mod sftp;
+pub mod ssh1;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};

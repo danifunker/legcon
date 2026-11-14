@@ -316,6 +316,20 @@ pub fn install_command(family: Family, blob: &[u8], name: &str) -> String {
     }
 }
 
+/// The command that adds an SSH-1 public line (`bits e n comment`) to `~/.ssh/authorized_keys`,
+/// through `/bin/sh` since the login shell may be csh.
+pub fn install_command_ssh1(line: &str) -> String {
+    let modulus = line.split_whitespace().nth(2).unwrap_or(line);
+    let inner = format!(
+        "cd && umask 077 && (test -d .ssh || mkdir .ssh) && chmod 700 .ssh && \
+         (grep {m} .ssh/authorized_keys >/dev/null 2>&1 || echo {l} >> .ssh/authorized_keys) && \
+         chmod 600 .ssh/authorized_keys",
+        m = sq(modulus),
+        l = sq(line),
+    );
+    format!("/bin/sh -c {}", sq(&inner))
+}
+
 /// Write the pair as `path` (private) and `path.pub` (OpenSSH public line).
 pub fn save(pair: &KeyPair, path: &Path, comment: &str) -> Result<()> {
     if let Some(d) = path.parent() {

@@ -1,0 +1,20 @@
+# An SSH-1-only machine (a pretend SSH 1.2.27, `cargo build -p lc-ssh --example fake_sshd1` first).
+
+[[case]]
+id = "flow.ssh1.browse-and-copy"
+description = "Connect to an SSH-1 machine, list its home folder, copy a file home over SCP"
+servers = [{ example = "fake_sshd1", args = ["2231"] }]
+machines = [{ id = "sun", name = "sun", address = "127.0.0.1", services = [{ kind = "ssh", port = 2231 }], user = "dani", password = "b64:c2VjcmV0" }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sun" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "hello.txt", timeout = 15 },
+  { op = "select_row", id = "remote.list", name = "hello.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "hello.txt", timeout = 15 },
+]
+expect_files = ["hello.txt"]
+
+[case.expect_machines]
+"0.host_key" = "__any__"

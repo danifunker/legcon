@@ -39,7 +39,7 @@ impl KeyInfo {
         format!("{a} {}", self.bits)
     }
 
-    /// legcon logs in over SSH-2 only; SSH-1 keys are for other clients and old servers' files.
+    /// An SSH-2 key (SSH-1 keys log in to SSH-1-only machines).
     pub fn is_ssh2(&self) -> bool {
         self.algorithm != "rsa1"
     }

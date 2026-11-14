@@ -145,6 +145,36 @@ pub fn ssh1_identity(data: &[u8]) -> Result<Option<String>> {
     ))
 }
 
+/// The private key in an unencrypted SSH-1 identity file.
+pub fn ssh1_private(data: &[u8]) -> Result<rsa::RsaPrivateKey> {
+    let rest = data
+        .strip_prefix(SSH1_ID)
+        .ok_or_else(|| bad("not an SSH-1 key file; SSH-1 logins need an SSH-1 key"))?;
+    let mut c = Cursor::new(rest);
+    if c.u8()? != 0 {
+        return Err(passphrase());
+    }
+    c.u32()?;
+    c.u32()?;
+    let mp = |c: &mut Cursor| -> Result<rsa::BigUint> {
+        let b = u16::from_be_bytes([c.u8()?, c.u8()?]) as usize;
+        let mut v = Vec::with_capacity(b.div_ceil(8));
+        for _ in 0..b.div_ceil(8) {
+            v.push(c.u8()?);
+        }
+        Ok(rsa::BigUint::from_bytes_be(&v))
+    };
+    let (n, e) = (mp(&mut c)?, mp(&mut c)?);
+    c.bytes()?;
+    let check = [c.u8()?, c.u8()?, c.u8()?, c.u8()?];
+    if check[..2] != check[2..] {
+        return Err(bad("the SSH-1 key file is damaged"));
+    }
+    let (d, _iqmp, q, p) = (mp(&mut c)?, mp(&mut c)?, mp(&mut c)?, mp(&mut c)?);
+    rsa::RsaPrivateKey::from_components(n, e, d, vec![p, q])
+        .map_err(|e| bad(format!("not a valid SSH-1 key: {e}")))
+}
+
 fn rsa_pair(k: rsa::RsaPrivateKey) -> Result<KeyPair> {
     use rsa::pkcs1::EncodeRsaPrivateKey;
     use rsa::traits::PublicKeyParts;

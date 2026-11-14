@@ -75,6 +75,19 @@ def run_case(case, shell, work):
         if why:
             return f"setup: {why}"
 
+    servers = []
+    for srv in case.get("servers", []):
+        exe = os.path.join(ROOT, "target", "debug", "examples", srv["example"] + (".exe" if os.name == "nt" else ""))
+        servers.append(subprocess.Popen([exe] + srv.get("args", []), stdout=subprocess.PIPE, text=True))
+        servers[-1].stdout.readline()
+    try:
+        return drive(case, shell, cfg, secrets, env, work)
+    finally:
+        for p in servers:
+            p.kill()
+
+
+def drive(case, shell, cfg, secrets, env, work):
     s = SHELLS[shell]
     d = subprocess.Popen(s["driver"] + [s["exe"], cfg, secrets], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
     hello = json.loads(d.stdout.readline() or '{"ready": false}')
@@ -99,6 +112,8 @@ def run_case(case, shell, work):
     machines = json.load(open(os.path.join(cfg, "machines.json")))["machines"]
     for path, want in case.get("expect_machines", {}).items():
         got = lookup(machines, path)
+        if want == "__any__" and got is not None:
+            continue
         if got != want:
             return f"machines {path} is {got!r}, expected {want!r}"
     for rel in case.get("expect_files", []):

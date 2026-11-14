@@ -276,8 +276,7 @@ fn open_file_session(
                 .iter()
                 .find(|s| s.kind == ServiceKind::Ssh)
                 .map_or(lc_ssh::PORT, |s| s.port);
-            let session = super::ssh::connect(machine, port, password, note)?;
-            Ok((Box::new(session), None))
+            Ok((super::ssh::open_files(machine, port, password, note)?, None))
         }
         ServiceKind::Nfs => {
             // NFS is found through the portmapper (111); another port names a portmapper there.

@@ -18,7 +18,7 @@ lc = [{ args = ["keys", "show", "sun"], stdout_has = ["ssh-dss ", "dani@sun", "D
 
 [[case]]
 id = "flow.keys.new-ssh1"
-description = "Make an SSH-1 RSA key: it is listed, and offered for other clients rather than logins"
+description = "Make an SSH-1 RSA key: it is listed with its kind"
 ui = [
   { op = "section", id = "tabs", name = "Keys" },
   { op = "activate", id = "keys.new" },
@@ -27,7 +27,7 @@ ui = [
   { op = "choose", id = "key.kind", option = "RSA 1024, SSH-1 (SSH 1.2.x, OpenSSH with Protocol 1)" },
   { op = "activate", id = "keys.new.ok" },
   { op = "expect_row", id = "keys.list", name = "ssh1", timeout = 30 },
-  { op = "expect_text", text = "(SSH-1 key)" },
+  { op = "expect_text", text = "SSH-1 RSA 1024" },
 ]
 lc = [{ args = ["keys", "list"], stdout_has = ["SSH-1 RSA 1024"] }]
 
