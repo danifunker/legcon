@@ -62,6 +62,12 @@ enum MachinesCommand {
         /// Save this password in machines.json (Base64-encoded, not encrypted).
         #[arg(long)]
         password: Option<String>,
+        /// The uid NFS sends (the server trusts it; nobody when not given).
+        #[arg(long)]
+        uid: Option<u32>,
+        /// The gid NFS sends.
+        #[arg(long)]
+        gid: Option<u32>,
     },
     Remove {
         name: String,
@@ -109,19 +115,25 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
                     services,
                     user,
                     password,
+                    uid,
+                    gid,
                 },
         } => {
             let services = services
                 .iter()
                 .map(|s| ServiceKind::from_key(s).ok_or_else(|| format!("unknown service {s:?}")))
                 .collect::<Result<Vec<_>, _>>()?;
-            open()?.add(NewMachine {
+            let mut machines = open()?;
+            machines.add(NewMachine {
                 id: name.clone(),
                 address,
                 services,
                 user,
                 password,
             })?;
+            if uid.is_some() || gid.is_some() {
+                machines.set_unix_ids(&name, uid, gid)?;
+            }
             println!("Added {name}.");
             Ok(())
         }

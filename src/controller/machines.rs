@@ -100,6 +100,21 @@ impl MachinesController {
         self.save()
     }
 
+    /// The uid and gid NFS sends for this machine.
+    pub fn set_unix_ids(
+        &mut self,
+        id: &str,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    ) -> Result<(), String> {
+        let Some(m) = self.store.get_mut(id) else {
+            return Err(format!("No machine called {id}."));
+        };
+        m.uid = uid;
+        m.gid = gid;
+        self.save()
+    }
+
     /// Give a machine's tab another colour.
     pub fn set_color(&mut self, id: &str, color: TabColor) -> Result<(), String> {
         match self.store.get_mut(id) {

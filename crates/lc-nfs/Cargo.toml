@@ -1,0 +1,11 @@
+[package]
+name = "lc-nfs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "NFS v2 and v3 for legcon: ONC RPC over UDP and TCP, portmapper, MOUNT"
+publish = false
+
+[dependencies]
+lc-core = { path = "../lc-core" }
+socket2 = "0.5"

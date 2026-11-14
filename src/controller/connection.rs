@@ -590,7 +590,11 @@ impl ConnectionController {
             matches!(
                 k,
                 Some(
-                    ServiceKind::Ftp | ServiceKind::Telnet | ServiceKind::Rexec | ServiceKind::Smb
+                    ServiceKind::Ftp
+                        | ServiceKind::Telnet
+                        | ServiceKind::Rexec
+                        | ServiceKind::Smb
+                        | ServiceKind::Nfs
                 )
             )
         };
@@ -766,7 +770,13 @@ impl ConnectionController {
     pub fn plaintext(&self) -> bool {
         matches!(
             self.machine.file_service().map(|s| s.kind),
-            Some(ServiceKind::Ftp | ServiceKind::Telnet | ServiceKind::Rexec | ServiceKind::Smb)
+            Some(
+                ServiceKind::Ftp
+                    | ServiceKind::Telnet
+                    | ServiceKind::Rexec
+                    | ServiceKind::Smb
+                    | ServiceKind::Nfs
+            )
         )
     }
 
@@ -1416,8 +1426,9 @@ impl Controller for ConnectionController {
                     return Vec::new();
                 }
                 let kind = self.machine.file_service().map(|s| s.kind);
-                let needed = kind != Some(ServiceKind::Demo)
-                    && !(kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some());
+                // No password for the demo or NFS, nor for SSH with a login key.
+                let key = kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some();
+                let needed = !(key || matches!(kind, Some(ServiceKind::Demo | ServiceKind::Nfs)));
                 match self.password_for(Login::Files, needed) {
                     Ok(p) => self.connect(p),
                     Err(ask) => return vec![*ask],

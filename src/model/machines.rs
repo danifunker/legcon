@@ -221,6 +221,11 @@ pub struct Machine {
     /// The SSH login key (traditional PEM; its public half is next to it as `.pub`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_file: Option<PathBuf>,
+    /// The uid and gid NFS sends; the server trusts them (nobody, 65534, when unset).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gid: Option<u32>,
 }
 
 fn yes() -> bool {
@@ -312,6 +317,8 @@ impl Machine {
             host_key: None,
             check_host_key: true,
             key_file: None,
+            uid: None,
+            gid: None,
         }
     }
 

@@ -279,7 +279,29 @@ fn open_file_session(
             let session = super::ssh::connect(machine, port, password, note)?;
             Ok((Box::new(session), None))
         }
-        ServiceKind::Nfs => bail!("NFS arrives in phase 5"),
+        ServiceKind::Nfs => {
+            // NFS is found through the portmapper (111); another port names a portmapper there.
+            let port = machine
+                .services
+                .iter()
+                .find(|s| s.kind == ServiceKind::Nfs)
+                .map_or(lc_nfs::PORT, |s| s.port);
+            let opts = lc_nfs::Options {
+                charset: lc_core::Charset::from_label(&machine.charset).unwrap_or_default(),
+                uid: machine.uid.unwrap_or(65534),
+                gid: machine.gid.unwrap_or(65534),
+                portmap_port: if port == lc_nfs::PORT { 111 } else { port },
+                ..lc_nfs::Options::default()
+            };
+            let session = lc_nfs::connect(&machine.address, &opts)?;
+            log::info!(
+                "{}: {}, exports {:?}",
+                machine.name,
+                session.describe(),
+                session.exports()
+            );
+            Ok((Box::new(session), None))
+        }
         ServiceKind::Telnet | ServiceKind::Rexec => {
             bail!("{} is a command service, not a file service", kind.label())
         }
@@ -347,18 +369,18 @@ mod tests {
     }
 
     #[test]
-    fn a_protocol_not_built_yet_fails_and_leaves_it_disconnected() {
+    fn a_machine_without_a_file_service_fails_and_stays_disconnected() {
         let s = Sessions::new();
         let mut m = Machine::new("indy", "192.168.1.42");
         m.services.push(Service {
-            kind: ServiceKind::Nfs,
-            port: 2049,
+            kind: ServiceKind::Telnet,
+            port: 23,
         });
         let job = s.connect(&m, None, Arc::new(NoNotify));
         let snap = job.wait();
         assert!(
-            matches!(snap.status, crate::model::job::Status::Failed(ref e) if e.contains("phase 5"))
+            matches!(snap.status, crate::model::job::Status::Failed(ref e) if e.contains("no file service"))
         );
-        assert_eq!(s.state("win95"), ConnState::Disconnected);
+        assert_eq!(s.state("indy"), ConnState::Disconnected);
     }
 }
