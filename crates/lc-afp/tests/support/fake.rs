@@ -80,6 +80,10 @@ pub fn sample() -> Store {
         b"APPLttxt",
     );
     s.add("Macintosh HD:Caf\u{e9}", true, b"", b"", &[0; 8]);
+    // The Finder's invisible flag: listings leave it out.
+    s.add("Macintosh HD:Desktop DB", false, b"db", b"", b"BTFLDMGR");
+    let key: Key = vec![mac("Macintosh HD"), mac("Desktop DB")];
+    s.items.get_mut(&key).unwrap().finfo[8] = 0x40;
     s
 }
 

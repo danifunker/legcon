@@ -60,6 +60,9 @@ pub mod err {
     pub const OBJECT_NOT_FOUND: i32 = -5018;
     pub const PARAM: i32 = -5019;
     pub const USER_NOT_AUTH: i32 = -5023;
+    pub const CALL_NOT_SUPPORTED: i32 = -5024;
+    pub const CANT_RENAME: i32 = -5028;
+    pub const DIR_NOT_FOUND: i32 = -5029;
     pub const VOL_LOCKED: i32 = -5031;
     pub const OBJECT_LOCKED: i32 = -5032;
 }
@@ -93,7 +96,9 @@ pub fn afp_error(code: i32, what: &str) -> Error {
     let t = |why: &str| format!("{what}: {why}");
     match code {
         err::ACCESS_DENIED => Error::Denied(t("access denied")),
-        err::OBJECT_NOT_FOUND => Error::NotFound(what.to_string()),
+        err::OBJECT_NOT_FOUND | err::DIR_NOT_FOUND => Error::NotFound(what.to_string()),
+        err::CALL_NOT_SUPPORTED => Error::Unsupported(t("the server does not support that")),
+        err::CANT_RENAME => Error::Protocol(t("cannot be renamed")),
         err::OBJECT_EXISTS => Error::Protocol(t("already exists")),
         err::DIR_NOT_EMPTY => Error::Protocol(t("folder is not empty")),
         err::DISK_FULL => Error::Protocol(t("the disk is full")),
@@ -177,6 +182,13 @@ pub struct Node {
     pub data_len: u32,
     pub rsrc_len: u32,
     pub offspring: u16,
+}
+
+impl Node {
+    /// The Finder's invisible flag, in the Finder info's flags word (files and folders alike).
+    pub fn invisible(&self) -> bool {
+        u16::from_be_bytes([self.finder_info[8], self.finder_info[9]]) & 0x4000 != 0
+    }
 }
 
 /// Parse a parameter block for the given bitmap; long names sit at an offset from its start.
@@ -796,7 +808,13 @@ impl FileSession for AfpSession {
                 break;
             }
             start += nodes.len() as u16;
-            out.extend(nodes.iter().map(|n| self.entry(n)));
+            // The Finder hides what has the invisible flag (Desktop DB, Trash, ...); so do we.
+            out.extend(
+                nodes
+                    .iter()
+                    .filter(|n| !n.invisible())
+                    .map(|n| self.entry(n)),
+            );
         }
         Ok(out)
     }

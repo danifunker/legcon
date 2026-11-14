@@ -47,9 +47,18 @@ pub fn list_remote(
     } else {
         path.replace('/', &sep.to_string())
     };
+    // Mac paths read the other way round: `Volume:Folder` is absolute, `:Folder` relative.
+    let absolute = match home.style {
+        PathStyle::Mac => !typed.starts_with(sep),
+        _ => typed.starts_with(sep),
+    };
+    let typed = match home.style {
+        PathStyle::Mac => typed.trim_start_matches(sep).to_string(),
+        _ => typed,
+    };
     let dir = if typed.is_empty() {
         home
-    } else if typed.starts_with(sep) {
+    } else if absolute {
         RemotePath::parse(home.style, &typed)
     } else {
         RemotePath::parse(home.style, &format!("{home}{sep}{typed}"))
