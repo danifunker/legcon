@@ -591,9 +591,10 @@ QUIT on disconnect, protocol trace) wired into the remote pane and the Log tab, 
 shell restyled to the mockup with per-machine tab colours, copying between panes both ways
 (folders included, F6 or the right-click menu, an Overwrite / Skip existing / Cancel question,
 the Transfers tab with Cancel), New folder / Rename / Delete on either side, and the Console tab
-(the protocol's own commands, run in the pane's folder). Not yet: drag and drop, VMS / NetWare /
-MacOS `LIST` parsers, the CP437 / CP850 tables, and trying both protocols against real 1990s
-servers (the lab).
+(the protocol's own commands, run in the pane's folder). Since done: drag and drop, the VMS /
+NetWare / OS/2 `LIST` parsers (classic Mac servers read as Unix; 2026-11-14), the CP437 / CP850
+tables (2026-11-14), and FTP against a real IIS. Not yet: MVS and AS/400 listings, Telnet against a
+real 1990s Unix.
 
 **Phase 3 progress (2026-11-13):** `lc-smb` (own SMB1 client: NetBIOS session with the
 `*SMBSERVER` / real-name retry, LANMAN1.0 to NT LM 0.12, share- and user-level logins with LM /
@@ -602,8 +603,14 @@ delete, TREE_DISCONNECT + LOGOFF) is in the remote pane, tested against pretend 
 Windows 95 servers and shown in the Win32 shell against the Windows 95 one. **Tried on a real
 Windows NT machine** (NT LM 0.12, user-level, NTLM; 2026-11-13): shares, listings, reads, a 100 KB
 write, mkdir, rename, delete and log-off all work, as does browsing it over anonymous FTP (IIS). Not yet: SMB2 (for
-Vista-era and newer Samba setups that turned SMB1 off), workgroup browsing, the CP437 / CP850
-tables that Windows 9x share names really use, and a real Windows 95 / NT 4 / Samba machine.
+Vista-era and newer Samba setups that turned SMB1 off), workgroup browsing, and a real
+Windows 95 / Samba machine. The CP437 / CP850 tables are in (2026-11-14) and the probe suggests
+CP437 for SMB1, as non-Unicode SMB sends OEM names; not yet checked against a real Windows 9x
+share with accented names.
+
+**Also on 2026-11-14:** downloads keep the machine's modification date (and the AppleDouble
+sidecar records it); New folder / Rename on the remote side follow that machine's naming rules
+(a Mac takes `/` and `?` but not `:`, at most 31 characters).
 
 **Phase 4 progress (2026-11-13):** `lc-rcmd` with rexec (stderr port 0, so nothing connects back), and a line-mode terminal in the Shell tab for exec-only services (local line editing, `cd` remembered, `exit`). `lc-ssh`: libssh2 transport with the legacy algorithms, password and keyboard-interactive login, own SFTP v3 (list, read, write, resume, mkdir, rename, delete, links followed), shell with pty and resize, exec with exit status, the Console tab running shell commands in the pane's folder, host-key check with the change dialog. Tested against a pretend OpenSSH 2.9 (paramiko offering only group1-sha1, ssh-dss, 3des-cbc, hmac-md5) from the CLI and the Win32 shell. Not yet: public-key login and the key manager (§5.1), SCP and `ls`-over-exec for servers without SFTP, SSH-1, the weak-algorithm opt-in per machine (old algorithms are always offered after the modern ones; the log says when one was used), and a real pre-2005 SSH server.
 
