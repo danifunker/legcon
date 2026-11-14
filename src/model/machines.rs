@@ -3,8 +3,8 @@
 //! Passwords are saved here by default (PLAN.md D28), the way FileZilla keeps them in
 //! `sitemanager.xml`: Base64-encoded, which hides them from a glance but is **not encryption**.
 //! The field is tagged so other stores fit later without a format change: `b64:...` saved here,
-//! `ask` never saved (asked at connect, kept in memory until the tab closes); `enc:` (a master
-//! password, O10) and `os:` (the OS credential store) are reserved.
+//! `ask` never saved (asked at connect, kept in memory until the tab closes); `os:` (the OS
+//! credential store, a per-machine checkbox) is reserved. No master password (D28).
 
 use std::path::{Path, PathBuf};
 
