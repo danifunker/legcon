@@ -1,0 +1,43 @@
+# The Machines tab: adding and removing machines (FLOWS.md).
+
+[[case]]
+id = "flow.machines.add-by-choosing"
+description = "Add a machine nothing answers for: the probe says so, the service is chosen, the name given"
+machines = []
+ui = [
+  { op = "activate", id = "machines.add" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "192.0.2.1" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "press", name = "Demo", timeout = 15 },
+  { op = "wait_dialog" },
+  { op = "expect_value", id = "prompt.text", value = "192-0-2-1" },
+  { op = "fill", id = "prompt.text", text = "lab" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_no_dialog" },
+  { op = "expect_row", id = "machines.list", name = "lab" },
+]
+
+[case.expect_machines]
+"0.id" = "lab"
+"0.address" = "192.0.2.1"
+"0.services.0.kind" = "demo"
+
+[[case]]
+id = "flow.machines.remove"
+description = "Remove a machine after confirming; its OS-store password goes with it"
+machines = [
+  { id = "old", name = "old", address = "10.0.0.9", services = [{ kind = "ftp", port = 21 }], password = "os" },
+  { id = "keep", name = "keep", address = "10.0.0.10", services = [{ kind = "ftp", port = 21 }] },
+]
+secrets = { old = "pw" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "old" },
+  { op = "activate", id = "machines.remove" },
+  { op = "press", name = "Remove" },
+  { op = "expect_row", id = "machines.list", name = "old", present = false },
+]
+expect_secrets = { old = "__absent__" }
+
+[case.expect_machines]
+"0.id" = "keep"

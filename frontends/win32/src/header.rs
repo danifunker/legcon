@@ -23,6 +23,7 @@ pub struct Header {
     pub commands: HWND,
     pub swap: HWND,
     pub close: HWND,
+    pub settings: HWND,
 }
 
 pub fn create(parent: HWND) -> Header {
@@ -60,6 +61,7 @@ pub fn create(parent: HWND) -> Header {
         commands: ui::button(hwnd, "Connect", ids::CONN_COMMANDS),
         swap: ui::button(hwnd, "Swap", ids::CONN_SWAP),
         close: ui::button(hwnd, "Close tab", ids::CONN_CLOSE),
+        settings: ui::button(hwnd, "Settings...", ids::CONN_SETTINGS),
     }
 }
 
@@ -88,7 +90,7 @@ struct Geometry {
     address: RECT,
     badge: Option<RECT>,
     chips: [RECT; 2],
-    buttons: [RECT; 4],
+    buttons: [RECT; 5],
 }
 
 fn geometry(dc: HDC, hwnd: HWND, h: &HeaderInfo) -> Geometry {
@@ -97,10 +99,10 @@ fn geometry(dc: HDC, hwnd: HWND, h: &HeaderInfo) -> Geometry {
     let s = |v| ui::scale(v, dpi);
     let font = ui::font_for(hwnd);
     let (top, height) = (s(4), r.bottom - s(8));
-    // From the right: Close tab, Swap, then the two service chips.
+    // From the right: Close tab, Swap, Settings, then the two service chips.
     let mut x = r.right - s(8);
-    let mut buttons = [RECT::default(); 4];
-    for (i, w) in [(3, 80), (2, 70)] {
+    let mut buttons = [RECT::default(); 5];
+    for (i, w) in [(3, 80), (2, 70), (4, 85)] {
         x -= s(w);
         buttons[i] = paint::rect(x, top, s(w), height);
         x -= s(6);
@@ -159,7 +161,7 @@ pub fn update(hd: &Header, h: &HeaderInfo) {
                 ConnState::Connected | ConnState::Disconnected | ConnState::Lost
             ),
     );
-    for (b, r) in [hd.files, hd.commands, hd.swap, hd.close]
+    for (b, r) in [hd.files, hd.commands, hd.swap, hd.close, hd.settings]
         .into_iter()
         .zip(g.buttons)
     {

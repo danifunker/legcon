@@ -10,6 +10,8 @@ mod controls;
 #[cfg(windows)]
 mod effects;
 #[cfg(windows)]
+mod form;
+#[cfg(windows)]
 mod header;
 #[cfg(windows)]
 mod icons;

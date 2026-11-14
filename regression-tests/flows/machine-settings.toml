@@ -1,0 +1,98 @@
+# The machine settings form, end to end through a shell (FLOWS.md).
+
+[[case]]
+id = "flow.settings.edit-and-save"
+description = "Open sparc's settings from the Machines tab, change its port, charset and NFS ids, save"
+shells = ["win32"]
+machines = [
+  { id = "sparc", name = "sparc", address = "192.168.99.50", services = [{ kind = "ftp", port = 21 }, { kind = "telnet", port = 23 }], user = "root", password = "b64:cHc=" },
+]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.settings" },
+  { op = "wait_dialog" },
+  { op = "expect_value", id = "machine.address", value = "192.168.99.50" },
+  { op = "fill", id = "machine.files_port", text = "2121" },
+  { op = "section", id = "machines.settings.sections", name = "System" },
+  { op = "choose", id = "machine.charset", option = "MacRoman" },
+  { op = "fill", id = "machine.uid", text = "abc" },
+  { op = "expect_enabled", id = "machines.settings.ok", enabled = false },
+  { op = "expect_text", text = "The uid is a number." },
+  { op = "fill", id = "machine.uid", text = "1001" },
+  { op = "fill", id = "machine.gid", text = "10" },
+  { op = "expect_enabled", id = "machines.settings.ok", enabled = true },
+  { op = "activate", id = "machines.settings.ok" },
+  { op = "expect_no_dialog" },
+]
+lc = [{ args = ["machines", "show", "sparc"], stdout_has = ["files_port       = 2121", "MacRoman"] }]
+
+[case.expect_machines]
+"0.services.0.port" = 2121
+"0.charset" = "MacRoman"
+"0.uid" = 1001
+"0.gid" = 10
+
+[[case]]
+id = "flow.settings.os-store"
+description = "Tick Keep the password in the OS store: the file holds only `os` and the store the password; untick moves it back"
+shells = ["win32"]
+machines = [
+  { id = "nt", name = "nt", address = "192.168.99.78", services = [{ kind = "smb", port = 139 }], user = "mister", password = "b64:cHc=" },
+]
+ui = [
+  { op = "select_row", id = "machines.list", name = "nt" },
+  { op = "activate", id = "machines.settings" },
+  { op = "wait_dialog" },
+  { op = "section", id = "machines.settings.sections", name = "Login" },
+  { op = "check", id = "machine.os_store", on = true },
+  { op = "activate", id = "machines.settings.ok" },
+  { op = "expect_no_dialog" },
+]
+lc = [{ args = ["machines", "show", "nt"], stdout_has = ["password         = (saved)", "os_store         = yes"] }]
+
+[case.expect_machines]
+"0.password" = "os"
+
+[case.expect_secrets]
+nt = "pw"
+
+[[case]]
+id = "flow.settings.cancel-keeps-everything"
+description = "Change fields and Cancel: nothing is saved"
+shells = ["win32"]
+machines = [
+  { id = "mac", name = "mac", address = "192.168.99.198", services = [{ kind = "afp", port = 548 }], charset = "MacRoman" },
+]
+ui = [
+  { op = "select_row", id = "machines.list", name = "mac" },
+  { op = "activate", id = "machines.settings" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "machine.address", text = "10.0.0.1" },
+  { op = "activate", id = "machines.settings.cancel" },
+  { op = "expect_no_dialog" },
+]
+
+[case.expect_machines]
+"0.address" = "192.168.99.198"
+
+[[case]]
+id = "flow.settings.from-the-tab"
+description = "Open a machine's tab, change its name from the header's Settings: the tab title follows"
+shells = ["win32"]
+machines = [
+  { id = "indy", name = "indy", address = "192.168.99.60", services = [{ kind = "ftp", port = 21 }] },
+]
+ui = [
+  { op = "select_row", id = "machines.list", name = "indy" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.settings" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "machine.name", text = "Indy R4400" },
+  { op = "activate", id = "machines.settings.ok" },
+  { op = "expect_no_dialog" },
+  { op = "expect_text", text = "Indy R4400" },
+]
+
+[case.expect_machines]
+"0.name" = "Indy R4400"
+"0.id" = "indy"

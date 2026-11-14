@@ -108,7 +108,7 @@ impl MachinesController {
                     .collect::<Vec<_>>()
                     .join(", "),
                 state: sessions.state(&m.id),
-                password_saved: matches!(m.password, Password::Saved(_)),
+                password_saved: m.password != Password::Ask,
                 color: m.color,
             })
             .collect()
@@ -160,10 +160,31 @@ impl MachinesController {
     }
 
     pub fn remove(&mut self, id: &str) -> Result<(), String> {
+        if self
+            .store
+            .get(id)
+            .is_some_and(|m| m.password == Password::Os)
+        {
+            // A store that cannot be reached must not keep the machine from going.
+            let _ = crate::model::secrets::delete(id);
+        }
         if !self.store.remove(id) {
             return Err(format!("No machine called {id}."));
         }
         self.save()
+    }
+
+    /// Save a machine settings form; the edited machine, or why not.
+    pub fn edit(&mut self, id: &str, v: &super::FormValues) -> Result<Machine, String> {
+        let m = self
+            .store
+            .get_mut(id)
+            .ok_or_else(|| format!("No machine called {id}."))?;
+        let mut edited = m.clone();
+        super::machine_form::apply(&mut edited, v)?;
+        *m = edited.clone();
+        self.save()?;
+        Ok(edited)
     }
 
     /// The uid and gid NFS sends for this machine.
@@ -227,7 +248,10 @@ impl MachinesController {
         };
         m.key_file = Some(key);
         if forget_password {
-            m.password = crate::model::machines::Password::Ask;
+            if m.password == Password::Os {
+                crate::model::secrets::delete(id)?;
+            }
+            m.password = Password::Ask;
         }
         self.save()
     }

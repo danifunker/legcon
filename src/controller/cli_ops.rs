@@ -10,7 +10,6 @@ use lc_core::{PathStyle, RemotePath};
 use super::connection::Row;
 use super::machines::MachinesController;
 use crate::model::job::{Job, NoNotify, Notify, Status};
-use crate::model::machines::Password;
 use crate::model::session::Sessions;
 
 fn finish<R: Send + 'static>(job: Job<R>) -> Result<R, String> {
@@ -33,10 +32,10 @@ pub fn list_remote(
         .get(machine)
         .ok_or_else(|| format!("No machine called {machine}."))?
         .clone();
-    let password = password.or(match &m.password {
-        Password::Saved(p) => Some(p.clone()),
-        Password::Ask => None,
-    });
+    let password = match password {
+        Some(p) => Some(p),
+        None => m.password.resolve(&m.id)?,
+    };
     let sessions = Sessions::new();
     let quiet: Arc<dyn Notify> = Arc::new(NoNotify);
     let home = finish(sessions.connect(&m, password, Arc::clone(&quiet)))?;
@@ -95,10 +94,10 @@ pub fn set_up_key_login(
         .get(machine)
         .ok_or_else(|| format!("No machine called {machine}."))?
         .clone();
-    let password = password.or(match &m.password {
-        Password::Saved(p) => Some(p.clone()),
-        Password::Ask => None,
-    });
+    let password = match password {
+        Some(p) => Some(p),
+        None => m.password.resolve(&m.id)?,
+    };
     let job = crate::model::ssh::set_up_key_login(
         &m,
         password,
@@ -133,4 +132,37 @@ pub fn set_home(dir: &Path, home: Option<&Path>) -> Result<(), String> {
 pub fn home(dir: &Path) -> Result<Option<String>, String> {
     let s = crate::model::settings::Settings::load(dir).map_err(|e| format!("{e:#}"))?;
     Ok(s.home_folder.map(|p| p.display().to_string()))
+}
+
+/// A machine's settings form, as `lc machines show` prints it.
+pub fn machine_form(machines: &MachinesController, id: &str) -> Result<super::FormSpec, String> {
+    machines
+        .get(id)
+        .map(super::machine_form::form)
+        .ok_or_else(|| format!("No machine called {id}."))
+}
+
+/// Change settings by `key=value` (keys as `lc machines show` prints them) and save.
+pub fn set_machine(
+    machines: &mut MachinesController,
+    id: &str,
+    pairs: &[String],
+) -> Result<(), String> {
+    let spec = machine_form(machines, id)?;
+    let mut values = spec.initial();
+    for p in pairs {
+        let (key, value) = p
+            .split_once('=')
+            .ok_or_else(|| format!("{p:?} is not key=value."))?;
+        let key = key.trim();
+        let full = spec
+            .fields
+            .iter()
+            .map(|f| f.id)
+            .find(|f| *f == key || f.strip_prefix("machine.") == Some(key))
+            .ok_or_else(|| format!("No setting called {key}."))?;
+        super::machine_form::set_from_text(&spec, &mut values, full, value)?;
+    }
+    spec.validate(&values)?;
+    machines.edit(id, &values).map(|_| ())
 }

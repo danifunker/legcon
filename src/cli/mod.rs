@@ -75,6 +75,17 @@ enum MachinesCommand {
     Remove {
         name: String,
     },
+    /// Print a machine's settings, as `key = value` lines that `set` takes.
+    Show {
+        name: String,
+    },
+    /// Change settings: `lc machines set sparc charset=MacRoman password=secret os_store=yes`.
+    Set {
+        name: String,
+        /// `key=value` pairs; keys as `lc machines show` prints them.
+        #[arg(required = true)]
+        settings: Vec<String>,
+    },
 }
 
 /// Run the CLI; the process exit code.
@@ -162,6 +173,19 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             println!("Removed {name}.");
             Ok(())
         }
+        Command::Machines {
+            command: MachinesCommand::Show { name },
+        } => {
+            print!("{}", show_form(&cli_ops::machine_form(&open()?, &name)?));
+            Ok(())
+        }
+        Command::Machines {
+            command: MachinesCommand::Set { name, settings },
+        } => {
+            cli_ops::set_machine(&mut open()?, &name, &settings)?;
+            println!("Saved {name}.");
+            Ok(())
+        }
         Command::Home { path: None } => {
             match cli_ops::home(dir)? {
                 Some(h) => println!("{h}"),
@@ -203,4 +227,46 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// A form as text: `key = value` lines under section titles; passwords are never printed.
+fn show_form(spec: &crate::controller::FormSpec) -> String {
+    use crate::controller::FieldKind;
+    let mut out = String::new();
+    for f in &spec.fields {
+        let key = f.id.strip_prefix("machine.").unwrap_or(f.id);
+        let value = match &f.kind {
+            FieldKind::Heading => {
+                out.push_str(&format!(
+                    "
+[{}]
+",
+                    f.label
+                ));
+                continue;
+            }
+            FieldKind::Text(t) | FieldKind::Folder(t) => t.clone(),
+            FieldKind::Secret(t) if t.is_empty() => "(none: asks every time)".into(),
+            FieldKind::Secret(_) => "(saved)".into(),
+            FieldKind::Check(b) => if *b { "yes" } else { "no" }.into(),
+            FieldKind::Choice { options, selected } => format!(
+                "{}    one of: {}",
+                options.get(*selected).map_or("", String::as_str),
+                options.join(", ")
+            ),
+            FieldKind::Info(t) => format!("{t}    (read-only)"),
+        };
+        out.push_str(&format!(
+            "{key:<16} = {value}
+"
+        ));
+        if !f.hint.is_empty() {
+            out.push_str(&format!(
+                "{:<16}   {}
+",
+                "", f.hint
+            ));
+        }
+    }
+    out
 }

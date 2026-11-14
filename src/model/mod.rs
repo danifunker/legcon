@@ -9,6 +9,7 @@ pub mod machines;
 pub mod names;
 pub mod probe;
 pub mod rate_tracker;
+pub mod secrets;
 pub mod session;
 pub mod settings;
 pub mod ssh;

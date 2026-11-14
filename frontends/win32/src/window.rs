@@ -41,6 +41,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::controls;
 use crate::effects::{self, Ask};
+use crate::form;
 use crate::header::{self, Header};
 use crate::icons;
 use crate::paint;
@@ -69,6 +70,7 @@ pub struct Widgets {
     m_add: HWND,
     m_open: HWND,
     m_remove: HWND,
+    m_settings: HWND,
     m_disconnect_all: HWND,
     m_list: HWND,
     header: Header,
@@ -308,6 +310,7 @@ fn build(window: HWND) -> Widgets {
         m_add: ui::button(window, "Add machine...", ids::MACHINES_ADD),
         m_open: ui::button(window, "Open", ids::MACHINES_OPEN),
         m_remove: ui::button(window, "Remove", ids::MACHINES_REMOVE),
+        m_settings: ui::button(window, "Settings...", ids::MACHINES_SETTINGS),
         m_disconnect_all: ui::button(window, "Disconnect all", ids::MACHINES_DISCONNECT_ALL),
         m_list: controls::list(
             window,
@@ -352,6 +355,12 @@ pub fn dispatch(action: app::Action) {
     refresh();
 }
 
+/// The machine of the active connection tab.
+fn active_machine() -> Option<String> {
+    let i = active_conn()?;
+    with(|s| s.app.tab(i).map(|t| t.machine_id().to_string())).flatten()
+}
+
 fn active_conn() -> Option<usize> {
     with(|s| match s.app.active() {
         Tab::Connection(i) => Some(i),
@@ -390,14 +399,14 @@ pub fn header_button(from: HWND) {
         let info = s.drawn.header.clone();
         let live = |st: ConnState| matches!(st, ConnState::Connected | ConnState::Busy);
         (
-            [h.files, h.commands, h.swap, h.close],
+            [h.files, h.commands, h.swap, h.close, h.settings],
             info.as_ref().is_some_and(|i| live(i.files_state)),
             info.as_ref().is_some_and(|i| live(i.commands_state)),
         )
     }) else {
         return;
     };
-    let [files, commands, swap, close] = buttons;
+    let [files, commands, swap, close, settings] = buttons;
     match from {
         h if h == files => conn_action(if files_on {
             conn::Action::Disconnect
@@ -410,6 +419,11 @@ pub fn header_button(from: HWND) {
             conn::Action::ShellConnect
         }),
         h if h == swap => conn_action(conn::Action::Swap),
+        h if h == settings => {
+            if let Some(id) = active_machine() {
+                dispatch(app::Action::EditMachine(id));
+            }
+        }
         h if h == close => {
             if let Some(i) = active_conn() {
                 dispatch(app::Action::CloseTab(i));
@@ -542,6 +556,12 @@ fn run(effects: Vec<Effect>) {
                     _ => {}
                 }
             }
+            Effect::Form(spec) => {
+                let answer = form::show(owner, &spec);
+                if spec.purpose == legcon::controller::machine_form::PURPOSE {
+                    dispatch(app::Action::MachineFormAnswered(answer));
+                }
+            }
             Effect::Message(text) => {
                 set_status(&text);
                 effects::note(owner, "legcon", &text);
@@ -639,6 +659,7 @@ fn refresh() {
             s.w.m_add,
             s.w.m_open,
             s.w.m_remove,
+            s.w.m_settings,
             s.w.m_disconnect_all,
             s.w.m_list,
         ] {
@@ -870,6 +891,7 @@ fn layout() {
                 (s.w.m_add, 110),
                 (s.w.m_open, 80),
                 (s.w.m_remove, 80),
+                (s.w.m_settings, 90),
                 (s.w.m_disconnect_all, 110),
             ] {
                 ui::place(b, (x, top + m, sc(bw), btn));
@@ -1121,8 +1143,19 @@ fn tab_menu(tab: usize) {
         }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let key_label = ui::wide("Set up key login...");
-        let flags = if keys { MF_STRING } else { MF_STRING | MF_GRAYED };
+        let flags = if keys {
+            MF_STRING
+        } else {
+            MF_STRING | MF_GRAYED
+        };
         let _ = AppendMenuW(menu, flags, 98, windows::core::PCWSTR(key_label.as_ptr()));
+        let settings = ui::wide("Settings...");
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            97,
+            windows::core::PCWSTR(settings.as_ptr()),
+        );
         let close = ui::wide("Close tab (logs off)");
         let _ = AppendMenuW(menu, MF_STRING, 99, windows::core::PCWSTR(close.as_ptr()));
         let cmd = TrackPopupMenu(
@@ -1141,6 +1174,7 @@ fn tab_menu(tab: usize) {
     match cmd {
         99 => dispatch(app::Action::CloseTab(tab - 1)),
         98 => dispatch(app::Action::Conn(tab - 1, conn::Action::SetUpKeyLogin)),
+        97 => dispatch(app::Action::EditMachine(id)),
         c if (100..100 + TabColor::ALL.len()).contains(&c) => {
             dispatch(app::Action::SetColor(id, TabColor::ALL[c - 100]))
         }
@@ -1431,6 +1465,7 @@ fn command(from: HWND, code: u32) {
             s.w.m_add,
             s.w.m_open,
             s.w.m_remove,
+            s.w.m_settings,
             s.w.m_disconnect_all,
             s.w.local.toggle,
             s.w.local.home,
@@ -1442,7 +1477,7 @@ fn command(from: HWND, code: u32) {
     }) else {
         return;
     };
-    let [add, open, remove, all, l_toggle, l_home, l_leave, r_toggle, r_home, r_up] = b;
+    let [add, open, remove, settings, all, l_toggle, l_home, l_leave, r_toggle, r_home, r_up] = b;
     match from {
         h if h == add => dispatch(app::Action::AddMachine),
         h if h == open => {
@@ -1453,6 +1488,11 @@ fn command(from: HWND, code: u32) {
         h if h == remove => {
             if let Some(id) = selected_machine() {
                 dispatch(app::Action::RemoveMachine(id));
+            }
+        }
+        h if h == settings => {
+            if let Some(id) = selected_machine() {
+                dispatch(app::Action::EditMachine(id));
             }
         }
         h if h == all => dispatch(app::Action::DisconnectAll),

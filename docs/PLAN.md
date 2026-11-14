@@ -166,8 +166,8 @@ command on the machine through its command service (rsh, rexec, SSH exec, or the
   archive actions run **on this computer instead**: legcon reads the remote folder over the file
   connection and writes the `.tar.gz` locally itself (Rust `tar` + `flate2`), streaming, without
   any tool installed anywhere. The menu says where it runs ("on sparc" or "here").
-- **No AI at run time.** Commands come only from these templates. Suggesting commands with a
-  model is a possible later extra, off by default and never needed (§11 O9).
+- **No AI at run time.** Commands come only from these templates. Commands are never suggested by an AI model
+  (O9 dropped, 2026-11-14).
 
 #### Remote management
 
@@ -334,7 +334,7 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D22 | **No mounts or shell integration**; legcon itself is the way in (replaces the shim layer of earlier drafts). **External programs only when configured or detected**, the same way on every platform, and never required (§1.3). |
 | D23 | **In-app text editor and New file**, saving back to wherever the file lives (§1.1). |
 | D24 | **Remote actions as data**: right-click commands from templates (Archive as .tar.gz and others), offered only when the machine has the tools, always showing the exact command first, run locally in Rust when the machine has no command service (§1.1). |
-| D25 | **No AI at run time.** Everything works from code and templates; model-suggested commands are at most a later, optional extra. |
+| D25 | **No AI at run time.** Everything works from code and templates; model-suggested commands were considered and dropped (O9, 2026-11-14). |
 | D26 | **No inbound connections to the client, ever.** legcon only makes outgoing connections, so nothing has to be open or forwarded on the user's computer: FTP uses passive mode only (`PASV`, `EPSV` where offered; no `PORT`), rsh is asked for no stderr channel, NFS works without the lock manager's callbacks (no NLM), and no protocol is used in a mode where the server connects back. |
 | D27 | **rsh, rlogin and rcp come later** (phase 8). rexec, Telnet, FTP and SSH cover commands and files until then (§4.2). |
 | D28 | **Passwords are saved in legcon's own machines file by default** (encoded, not encrypted, as FileZilla does), with "Ask every time" and the OS credential store as per-machine choices (§5). Revised 2026-11-14: **no master password** (O10 dropped); these machines mostly have throw-away passwords, so the file keeps them readable. The OS store is a per-machine checkbox, "Keep the password in Windows Credential Manager" (Keychain / Secret Service on later shells). |
@@ -626,6 +626,23 @@ sidecar records it); New folder / Rename on the remote side follow that machine'
 
 **Phase 2 progress (2026-11-14):** the probe (`src/model/probe.rs`): every usual port is tried at once (FTP, SSH, Telnet, Gopher, HTTP, SMB 139 / 445, the portmapper, rexec, rlogin, rsh, AFP), then each service that answered is asked about itself without a login: FTP and SSH banners, the web server's name, SMB dialect and security mode (`lc_smb::probe`), the AFP server's name and versions (`lc_afp::server_info`), NFS versions and exports. From that: the services to use (best file service first), a character set, and a guess at the system. A service that answers but cannot be used (a modern Windows refusing SMB1) is listed with the reason and not suggested. Add machine in the Win32 shell probes after the address and offers Add with these / Choose a service / Cancel; `lc probe ADDRESS`, and `lc machines add` without `-s`, do the same from the CLI. An unreachable machine costs about two seconds. Not yet: the quirk database, Telnet / rlogin banners (they need negotiation first), a probe of an existing machine from its tab.
 
+**Phase 6 progress (2026-11-14):** controllers can now ask for a **form** (`Effect::Form`: fields of
+text, secret, folder, check, choice and read-only info, grouped by section headings, one validator
+over the whole form), so a settings screen is written once in the controller and every shell
+draws it with one generic renderer (Win32: a dialog with a tab per section; GTK and AppKit will do
+the same). The first form is **machine settings** (`controller::machine_form`, mockup 5): name,
+address, file and command service with ports, user, password with the "Keep the password in Windows
+Credential Manager" box (D28; `model::secrets` over the `keyring` crate, so Keychain and Secret Service
+on the other shells), the login and host keys, host-key checking and forgetting, character set,
+home folder, logout command, NFS uid / gid and the rsh local user. It opens from the Machines tab,
+the machine header and the tab menu; the CLI has the same form as `lc machines show` / `lc machines
+set NAME key=value`. **UI flows** (`regression-tests/`, FLOWS.md): TOML flows naming controls by
+controller id, a runner, and a Win32 UI Automation driver speaking a line protocol later shells'
+drivers will speak too; 11 flows cover the machine settings, adding and removing machines, and
+connecting, browsing, copying, folder operations and the layout on the demo machine. Not yet: the
+app-wide Settings, the Media list, full folder trees, probing an existing machine again, flows for
+the Shell / Console / Log / Transfers tabs and the host-key and key-login dialogs.
+
 ## 10. Risks
 
 | Risk | Mitigation |
@@ -640,7 +657,6 @@ sidecar records it); New folder / Rename on the remote side follow that machine'
 
 | # | Question | Recommendation |
 |---|---|---|
-| O9 | Model-suggested commands (a later extra): wanted at all, and if so local-only or a service? | Not before 1.0; decide then |
 | O6 | Name | `legcon` / `lc` as a working name |
 
 ## 12. Next: GUI mockups and layouts
@@ -660,7 +676,7 @@ Mockups to make, in this order (done ones link to their file):
 3. The Machines tab (cards and rows), with every connection state.
 4. Add machine: address, probe progress, the result and its suggested settings.
 5. Machine settings: services, home folder, layout, charset and translation, legacy-crypto opt-in,
-   host-key checking, logout command, idle disconnect, credentials.
+   host-key checking, logout command, idle disconnect, credentials (built as a form, phase 6).
 6. Key manager and the "Set up key login" walkthrough; the changed-host-key dialog.
 7. Disconnect with work in progress (transfers, an unsaved edit, a shell), and Disconnect all.
 8. Get Info for a remote file with legacy metadata, and the permissions / attributes editor.

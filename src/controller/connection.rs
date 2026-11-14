@@ -476,9 +476,9 @@ impl ConnectionController {
         if choice == 0 {
             self.host_key_changed = true;
         }
-        let password = match &self.machine.password {
-            Password::Saved(p) => Some(p.clone()),
-            Password::Ask => self.session_password.clone(),
+        let password = match self.machine.password.resolve(&self.machine.id) {
+            Ok(Some(p)) => Some(p),
+            _ => self.session_password.clone(),
         };
         self.log_in(login, password);
         if choice == 1 {
@@ -505,13 +505,17 @@ impl ConnectionController {
 
     /// The password to log in with, or the question for it; `None` when there is nothing to ask.
     fn password_for(&mut self, login: Login, needed: bool) -> Result<Option<String>, Box<Effect>> {
-        match (&self.machine.password, &self.session_password) {
-            (Password::Saved(p), _) | (Password::Ask, Some(p)) => Ok(Some(p.clone())),
-            (Password::Ask, None) if needed => {
+        // The OS store may have lost it; then the password typed this session, then ask.
+        if let Ok(Some(p)) = self.machine.password.resolve(&self.machine.id) {
+            return Ok(Some(p));
+        }
+        match &self.session_password {
+            Some(p) => Ok(Some(p.clone())),
+            None if needed => {
                 self.asking_for = login;
                 Err(Box::new(self.ask_password()))
             }
-            (Password::Ask, None) => Ok(None),
+            None => Ok(None),
         }
     }
 
@@ -563,7 +567,7 @@ impl ConnectionController {
             s.key_file.display(),
             s.installed_in
         );
-        if matches!(self.machine.password, Password::Saved(_)) {
+        if self.machine.password != Password::Ask {
             vec![Effect::Choose(super::ChoiceSpec {
                 purpose: "conn.keylogin.password",
                 title: "Key login".into(),
@@ -597,6 +601,22 @@ impl ConnectionController {
 
     pub(crate) fn set_color(&mut self, color: TabColor) {
         self.machine.color = color;
+    }
+
+    /// Take the machine's edited settings; true when a live connection still uses the old ones.
+    pub(crate) fn machine_edited(&mut self, m: Machine) -> bool {
+        let old = std::mem::replace(&mut self.machine, m);
+        let m = &self.machine;
+        let changed = (
+            &old.address,
+            &old.services,
+            &old.user,
+            &old.charset,
+            old.uid,
+            old.gid,
+        ) != (&m.address, &m.services, &m.user, &m.charset, m.uid, m.gid)
+            || old.local_user != m.local_user;
+        changed && self.tab_state() != ConnState::Disconnected
     }
 
     /// The tab's state light: connected if either service is.

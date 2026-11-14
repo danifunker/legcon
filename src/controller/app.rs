@@ -11,7 +11,10 @@ use super::connection::{self, ConnectionController};
 use super::log::LogStore;
 use super::machines::ProbeSummary;
 use super::machines::{suggest_id, validate_id, MachineRow, MachinesController, NewMachine};
-use super::{not_empty, ChoiceSpec, Controller, Effect, PickSpec, ServiceKind, TabColor, TextSpec};
+use super::{
+    not_empty, ChoiceSpec, Controller, Effect, FormValues, PickSpec, ServiceKind, TabColor,
+    TextSpec,
+};
 use crate::model::config;
 use crate::model::job::{Job, Notify};
 use crate::model::probe::probe_job;
@@ -44,6 +47,9 @@ pub enum Action {
     AddNameAnswered(Option<String>),
     RemoveMachine(String),
     RemoveConfirmed(bool),
+    /// Open a machine's settings form (Machines tab, or the machine's header).
+    EditMachine(String),
+    MachineFormAnswered(Option<FormValues>),
     DisconnectAll,
     /// Give a machine's tab another colour (from its tab's context menu).
     SetColor(String, TabColor),
@@ -89,6 +95,7 @@ pub struct AppController {
     quitting: bool,
     adding: Option<Adding>,
     removing: Option<String>,
+    editing: Option<String>,
 }
 
 impl AppController {
@@ -107,6 +114,7 @@ impl AppController {
             quitting: false,
             adding: None,
             removing: None,
+            editing: None,
         })
     }
 
@@ -230,6 +238,36 @@ impl AppController {
             out.extend(self.save_settings());
         }
         out
+    }
+}
+
+impl AppController {
+    fn save_machine_form(&mut self, id: String, values: FormValues) -> Vec<Effect> {
+        match self.machines.edit(&id, &values) {
+            Ok(m) => {
+                let name = m.name.clone();
+                let mut live = false;
+                for t in self.tabs.iter_mut().filter(|t| t.machine_id() == id) {
+                    live |= t.machine_edited(m.clone());
+                }
+                self.log.info(format!("Saved the settings for {name}."));
+                if live {
+                    return vec![Effect::Message(format!(
+                        "Saved. {name} is connected with the old settings; they apply when you connect again."
+                    ))];
+                }
+                Vec::new()
+            }
+            Err(e) => {
+                // Show the form again with what the user typed, and say why.
+                let Some(m) = self.machines.get(&id) else {
+                    return vec![Effect::Message(e)];
+                };
+                let spec = super::machine_form::refill(super::machine_form::form(m), &values);
+                self.editing = Some(id);
+                vec![Effect::Message(e), Effect::Form(spec)]
+            }
+        }
     }
 }
 
@@ -386,6 +424,21 @@ impl Controller for AppController {
                 if let Err(e) = self.machines.remove(&id) {
                     return vec![Effect::Message(e)];
                 }
+            }
+            Action::EditMachine(id) => {
+                let Some(m) = self.machines.get(&id) else {
+                    return vec![Effect::Message(format!("No machine called {id}."))];
+                };
+                let spec = super::machine_form::form(m);
+                self.editing = Some(id);
+                return vec![Effect::Form(spec)];
+            }
+            Action::MachineFormAnswered(None) => self.editing = None,
+            Action::MachineFormAnswered(Some(values)) => {
+                let Some(id) = self.editing.take() else {
+                    return Vec::new();
+                };
+                return self.save_machine_form(id, values);
             }
             Action::DisconnectAll => self.disconnect_all(),
             Action::SetColor(id, color) => {

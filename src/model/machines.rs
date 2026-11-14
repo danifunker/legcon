@@ -3,8 +3,8 @@
 //! Passwords are saved here by default (PLAN.md D28), the way FileZilla keeps them in
 //! `sitemanager.xml`: Base64-encoded, which hides them from a glance but is **not encryption**.
 //! The field is tagged so other stores fit later without a format change: `b64:...` saved here,
-//! `ask` never saved (asked at connect, kept in memory until the tab closes); `os:` (the OS
-//! credential store, a per-machine checkbox) is reserved. No master password (D28).
+//! `ask` never saved (asked at connect, kept in memory until the tab closes); `os` the OS
+//! credential store (a per-machine checkbox, `model::secrets`). No master password (D28).
 
 use std::path::{Path, PathBuf};
 
@@ -194,6 +194,8 @@ pub enum Password {
     /// Never written; asked at connect.
     #[default]
     Ask,
+    /// In the OS credential store under the machine's id (`model::secrets`).
+    Os,
 }
 
 impl Password {
@@ -206,12 +208,25 @@ impl Password {
                 )
             }
             Password::Ask => "ask".to_string(),
+            Password::Os => "os".to_string(),
+        }
+    }
+
+    /// The password to log in with: `None` to ask, an error when the OS store has none.
+    pub fn resolve(&self, machine_id: &str) -> Result<Option<String>, String> {
+        match self {
+            Password::Saved(p) => Ok(Some(p.clone())),
+            Password::Ask => Ok(None),
+            Password::Os => super::secrets::get(machine_id).map(Some),
         }
     }
 
     fn from_tagged(s: &str) -> Result<Password, String> {
         if s == "ask" || s.is_empty() {
             return Ok(Password::Ask);
+        }
+        if s == "os" {
+            return Ok(Password::Os);
         }
         if let Some(b) = s.strip_prefix("b64:") {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -506,7 +521,10 @@ mod tests {
 
     #[test]
     fn an_unknown_password_store_is_an_error_not_a_silent_ask() {
-        let r: Result<Password, _> = serde_json::from_str("\"os:legcon/sparc\"");
+        let r: Result<Password, _> = serde_json::from_str("\"enc:abc\"");
         assert!(r.is_err());
+        let os: Password = serde_json::from_str("\"os\"").unwrap();
+        assert_eq!(os, Password::Os);
+        assert_eq!(serde_json::to_string(&Password::Os).unwrap(), "\"os\"");
     }
 }

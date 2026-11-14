@@ -1,0 +1,89 @@
+# The connection view against the built-in demo machine (FLOWS.md): no network needed.
+
+[[case]]
+id = "flow.conn.connect-and-browse"
+description = "Open the demo machine, connect, go into a folder and back up"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "select_row", id = "remote.list", name = "src" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "Makefile.local" },
+  { op = "key", id = "remote.list", key = "backspace" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "activate", id = "conn.close_tab" },
+  { op = "expect_row", id = "machines.list", name = "sparc" },
+]
+
+[[case]]
+id = "flow.conn.copy-to-home"
+description = "Copy a remote file to the home folder with F6"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = ".profile" },
+]
+expect_files = [".profile"]
+
+[[case]]
+id = "flow.conn.remote-folder-ops"
+description = "New folder, rename and delete on the remote side"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "docs" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "remote.list", name = "docs" },
+  { op = "select_row", id = "remote.list", name = "docs" },
+  { op = "key", id = "remote.list", key = "f2" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "papers" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "remote.list", name = "papers" },
+  { op = "select_row", id = "remote.list", name = "papers" },
+  { op = "key", id = "remote.list", key = "delete" },
+  { op = "press", name = "Delete" },
+  { op = "expect_row", id = "remote.list", name = "papers", present = false },
+]
+
+[[case]]
+id = "flow.conn.local-new-folder"
+description = "New folder in the home folder"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "incoming" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "local.list", name = "incoming" },
+]
+expect_files = ["incoming"]
+
+[[case]]
+id = "flow.conn.layout-is-remembered"
+description = "Swap the areas and hide the local tree: the machine remembers both"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.swap" },
+  { op = "activate", id = "local.tree_toggle" },
+]
+
+[case.expect_machines]
+"0.layout.swapped" = true
+"0.layout.local_tree" = false
