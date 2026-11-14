@@ -35,7 +35,6 @@ fn main() {
         InitCommonControlsEx, ICC_BAR_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES,
         ICC_TAB_CLASSES, ICC_TREEVIEW_CLASSES, INITCOMMONCONTROLSEX,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_KEYDOWN,
     };
@@ -59,7 +58,8 @@ fn main() {
     // SAFETY: the standard message loop; the key map sees key presses before the controls do.
     unsafe {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            if msg.message == WM_KEYDOWN && window::key(msg.wParam.0 as u16, GetFocus()) {
+            // The key's own target, not GetFocus(): the two differ for keys posted to a control.
+            if msg.message == WM_KEYDOWN && window::key(msg.wParam.0 as u16, msg.hwnd) {
                 continue;
             }
             let _ = TranslateMessage(&msg);
