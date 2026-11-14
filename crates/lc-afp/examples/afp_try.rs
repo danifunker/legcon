@@ -1,6 +1,7 @@
 //! Try AFP against a real server, cleaning up after itself:
 //! `cargo run -p lc-afp --example afp_try -- HOST USER PASSWORD [VOLUME]`.
 //! It lists the volume, then writes, renames, reads back and deletes `legcon-try` at its top.
+//! `... HOST USER PASSWORD --rm Volume:Path` only deletes that one item.
 
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
@@ -24,6 +25,13 @@ fn main() {
     );
     println!("using {} with {} ({:?})", s.version, s.uam, t.elapsed());
     println!("volumes: {:?}", s.volumes());
+    if a.get(3).map(String::as_str) == Some("--rm") {
+        let p = RemotePath::parse(PathStyle::Mac, &a[4]);
+        s.remove(&p).expect("delete");
+        println!("deleted {p}");
+        s.disconnect(Duration::from_secs(5)).expect("log out");
+        return;
+    }
     let vol = a
         .get(3)
         .cloned()
@@ -47,6 +55,9 @@ fn main() {
                 .unwrap_or_default(),
             if e.has_resource_fork { " +rsrc" } else { "" }
         );
+        if let Some(m) = e.modified {
+            println!("      modified {} (unix seconds)", m.unix);
+        }
     }
     if let Some(f) = list.iter().find(|e| e.has_resource_fork) {
         let x = s.mac_extras(&root.join(&f.name)).expect("forks");

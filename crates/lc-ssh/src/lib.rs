@@ -586,6 +586,9 @@ impl Connection for SshSession {
 }
 
 impl FileSession for SshSession {
+    fn charset(&self) -> lc_core::Charset {
+        self.opts.charset
+    }
     fn caps(&self) -> FileCaps {
         let sftp = !self.shell_files;
         FileCaps {

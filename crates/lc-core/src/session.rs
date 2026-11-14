@@ -99,6 +99,16 @@ pub trait FileSession: Connection {
     fn remove(&mut self, path: &RemotePath) -> Result<()>;
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()>;
 
+    /// The character set names are in on the machine (UTF-8 unless the protocol says otherwise).
+    fn charset(&self) -> crate::Charset {
+        crate::Charset::Utf8
+    }
+
+    /// The longest name the machine takes, in bytes of its character set (31 for classic Mac OS).
+    fn max_name_len(&self) -> Option<usize> {
+        None
+    }
+
     /// Whether the protocol keeps Finder info and resource forks (AFP), so they can travel.
     fn keeps_mac_extras(&self) -> bool {
         false

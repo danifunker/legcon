@@ -20,6 +20,7 @@ use crate::model::transfer::{self, Direction, Pick, Summary};
 
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
+use crate::model::names;
 use crate::model::session::Sessions;
 use crate::model::ssh::{set_up_key_login, take_note, KeyNote, KeySetup, KeySlot};
 
@@ -1034,8 +1035,11 @@ impl ConnectionController {
         let clashes: Vec<&str> = picks
             .iter()
             .filter(|p| match dir {
-                Direction::Download => self.local_dir.join(&p.name).exists(),
-                Direction::Upload => self.remote_rows.iter().any(|e| e.name == p.name),
+                Direction::Download => self.local_dir.join(names::to_local(&p.name)).exists(),
+                Direction::Upload => {
+                    let target = names::to_remote(&p.name, self.charset(), self.remote_style());
+                    self.remote_rows.iter().any(|e| e.name == target)
+                }
             })
             .map(|p| p.name.as_str())
             .collect();
@@ -1050,6 +1054,16 @@ impl ConnectionController {
         }
         self.pending = Some(Pending::Copy(dir, vec![group]));
         conflict_question(&clashes)
+    }
+
+    fn charset(&self) -> lc_core::Charset {
+        lc_core::Charset::from_label(&self.machine.charset).unwrap_or_default()
+    }
+
+    fn remote_style(&self) -> lc_core::PathStyle {
+        self.remote_dir
+            .as_ref()
+            .map_or(lc_core::PathStyle::Unix, |d| d.style)
     }
 
     /// Files dropped onto a pane: uploaded to the machine, or copied into the local folder.

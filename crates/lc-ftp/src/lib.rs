@@ -408,6 +408,9 @@ impl Connection for FtpSession {
 }
 
 impl FileSession for FtpSession {
+    fn charset(&self) -> lc_core::Charset {
+        self.opts.charset
+    }
     fn caps(&self) -> FileCaps {
         FileCaps {
             random_read: true,

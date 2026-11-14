@@ -61,7 +61,10 @@ fn walk_remote(
         folder: true,
     });
     for e in fs.list(&remote)? {
-        let (r, l) = (remote.join(&e.name), local.join(&e.name));
+        let (r, l) = (
+            remote.join(&e.name),
+            local.join(super::names::to_local(&e.name)),
+        );
         if e.is_folder() {
             walk_remote(fs, r, l, out, ctx)?;
         } else if e.kind == lc_core::EntryKind::File || e.kind == lc_core::EntryKind::Other {
@@ -80,6 +83,7 @@ fn walk_local(
     local: PathBuf,
     remote: RemotePath,
     out: &mut Vec<Step>,
+    names: &dyn Fn(&str) -> String,
     ctx: &JobCtx,
 ) -> anyhow::Result<()> {
     ctx.check_cancel()?;
@@ -91,10 +95,10 @@ fn walk_local(
     });
     for item in std::fs::read_dir(&local).with_context(|| format!("reading {}", local.display()))? {
         let item = item?;
-        let name = item.file_name().to_string_lossy().into_owned();
+        let name = names(&item.file_name().to_string_lossy());
         let meta = item.metadata()?;
         if meta.is_dir() {
-            walk_local(item.path(), remote.join(&name), out, ctx)?;
+            walk_local(item.path(), remote.join(&name), out, names, ctx)?;
         } else {
             out.push(Step {
                 remote: remote.join(&name),
@@ -204,12 +208,24 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
         b.overwrite,
     );
     ctx.set_phase("Looking at what to copy");
+    let (charset, style) = (fs.charset(), remote_dir.style);
+    let to_remote = move |n: &str| super::names::to_remote(n, charset, style);
     let mut steps = Vec::new();
     for (p, size) in picks.iter().zip(sizes) {
-        let (r, l) = (remote_dir.join(&p.name), local_dir.join(&p.name));
+        // A pick is named as its own side shows it; the other side gets the mapped name.
+        let (r, l) = match dir {
+            Direction::Download => (
+                remote_dir.join(&p.name),
+                local_dir.join(super::names::to_local(&p.name)),
+            ),
+            Direction::Upload => (
+                remote_dir.join(&to_remote(&p.name)),
+                local_dir.join(&p.name),
+            ),
+        };
         match (dir, p.is_dir) {
             (Direction::Download, true) => walk_remote(fs, r, l, &mut steps, ctx)?,
-            (Direction::Upload, true) => walk_local(l, r, &mut steps, ctx)?,
+            (Direction::Upload, true) => walk_local(l, r, &mut steps, &to_remote, ctx)?,
             _ => steps.push(Step {
                 remote: r,
                 local: l,
@@ -269,6 +285,12 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             sum.skipped.push(name);
             done += s.size.unwrap_or(0);
             continue;
+        }
+        if dir == Direction::Upload {
+            if let Some(why) = super::names::remote_problem(&name, charset, fs.max_name_len()) {
+                sum.failed.push((name, why));
+                continue;
+            }
         }
         let r: anyhow::Result<u64> = (|| match dir {
             Direction::Download => {

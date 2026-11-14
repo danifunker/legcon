@@ -790,6 +790,9 @@ impl Connection for NfsSession {
 }
 
 impl FileSession for NfsSession {
+    fn charset(&self) -> lc_core::Charset {
+        self.opts.charset
+    }
     fn caps(&self) -> FileCaps {
         FileCaps {
             random_read: true,

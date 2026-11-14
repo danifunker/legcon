@@ -825,6 +825,9 @@ impl Connection for SmbSession {
 }
 
 impl FileSession for SmbSession {
+    fn charset(&self) -> lc_core::Charset {
+        self.opts.charset
+    }
     fn caps(&self) -> FileCaps {
         FileCaps {
             random_read: true,

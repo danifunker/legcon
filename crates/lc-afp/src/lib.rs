@@ -756,6 +756,14 @@ impl Connection for AfpSession {
 }
 
 impl FileSession for AfpSession {
+    fn charset(&self) -> lc_core::Charset {
+        self.opts.charset
+    }
+
+    /// AFP 2.x long names are at most 31 bytes.
+    fn max_name_len(&self) -> Option<usize> {
+        Some(31)
+    }
     fn caps(&self) -> FileCaps {
         FileCaps {
             random_read: true,

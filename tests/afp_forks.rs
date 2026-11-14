@@ -18,6 +18,17 @@ fn run(
     local: PathBuf,
     name: &str,
 ) -> Summary {
+    try_run(s, dir, remote, local, name).expect("the copy finished")
+}
+
+/// A batch where every file failed comes back as its error.
+fn try_run(
+    s: &Arc<Mutex<lc_afp::AfpSession>>,
+    dir: Direction,
+    remote: &str,
+    local: PathBuf,
+    name: &str,
+) -> Result<Summary, String> {
     let s = Arc::clone(s);
     let (remote, name) = (RemotePath::parse(PathStyle::Mac, remote), name.to_string());
     let job = Job::spawn("copy", Arc::new(NoNotify), move |ctx| {
@@ -35,8 +46,10 @@ fn run(
         };
         copy(&mut *s.lock().unwrap(), &b, ctx)
     });
-    job.wait();
-    job.take_result().expect("the copy finished")
+    match job.wait().status {
+        legcon::model::job::Status::Failed(e) => Err(e),
+        _ => job.take_result().ok_or_else(|| "no result".into()),
+    }
 }
 
 #[test]
@@ -105,4 +118,82 @@ fn forks_travel_as_appledouble_both_ways() {
         .map(|e| e.name)
         .collect();
     assert_eq!(names, ["Navigator"]);
+}
+
+#[test]
+fn names_windows_refuses_round_trip_and_bad_ones_are_explained() {
+    let mut store = fake::sample();
+    store.add("Macintosh HD:What?", false, b"q", b"", b"TEXTttxt");
+    store.add("Macintosh HD:Q1/Q2", false, b"slash", b"", &[0; 8]);
+    let f = fake::start(store);
+    let s = lc_afp::connect(
+        "127.0.0.1",
+        f.port,
+        "dani",
+        "pw",
+        &lc_afp::Options::default(),
+    )
+    .unwrap();
+    let s = Arc::new(Mutex::new(s));
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["What?", "Q1/Q2"] {
+        let sum = run(
+            &s,
+            Direction::Download,
+            "Macintosh HD",
+            dir.path().into(),
+            name,
+        );
+        assert_eq!(sum.files, 1, "{name}: {sum:?}");
+    }
+    assert_eq!(
+        std::fs::read(dir.path().join("What\u{ff1f}")).unwrap(),
+        b"q"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("Q1\u{ff0f}Q2")).unwrap(),
+        b"slash"
+    );
+    assert!(dir.path().join("._What\u{ff1f}").is_file());
+
+    // Back up under its own name, into another folder.
+    let sum = run(
+        &s,
+        Direction::Upload,
+        "Macintosh HD:System Folder",
+        dir.path().into(),
+        "Q1\u{ff0f}Q2",
+    );
+    assert_eq!(sum.files, 1, "{sum:?}");
+    let names: Vec<String> = s
+        .lock()
+        .unwrap()
+        .list(&RemotePath::parse(
+            PathStyle::Mac,
+            "Macintosh HD:System Folder",
+        ))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert_eq!(names, ["Q1/Q2"]);
+
+    let long = "A name much longer than classic Mac OS allows.txt";
+    std::fs::write(dir.path().join(long), b"x").unwrap();
+    std::fs::write(dir.path().join("\u{4e2d}\u{6587}.txt"), b"x").unwrap();
+    for (name, why) in [
+        (long, "allows 31"),
+        ("\u{4e2d}\u{6587}.txt", "MacRoman cannot hold"),
+    ] {
+        // Every file in the batch failed, so the batch fails with the reason.
+        let e = try_run(
+            &s,
+            Direction::Upload,
+            "Macintosh HD",
+            dir.path().into(),
+            name,
+        )
+        .unwrap_err();
+        assert!(e.contains(why), "{name}: {e}");
+    }
 }

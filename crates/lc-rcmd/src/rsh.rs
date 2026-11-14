@@ -303,6 +303,9 @@ impl ShellSession for Rsh {
 }
 
 impl FileSession for Rsh {
+    fn charset(&self) -> lc_core::Charset {
+        self.charset
+    }
     fn caps(&self) -> FileCaps {
         FileCaps {
             random_read: false,
