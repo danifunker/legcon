@@ -1,11 +1,11 @@
-//! Parsers for `LIST` output, which RFC 959 never specified: each server family has its own.
+//! Parsers for directory listings: FTP `LIST` (which RFC 959 never specified) and `ls -l` over a shell.
 //!
 //! Lines arrive as bytes; the fixed fields are ASCII and the name is decoded with the machine's
 //! character set, keeping the raw bytes for addressing the file again. Recognised so far: Unix
 //! `ls -l` (with or without a group column, device files, symlinks) and DOS / IIS. A line no
 //! parser takes is returned as a name-only entry rather than dropped.
 
-use lc_core::{Charset, Entry, EntryKind, TimePrecision, Timestamp};
+use crate::{Charset, Entry, EntryKind, TimePrecision, Timestamp};
 
 const MONTHS: [&str; 12] = [
     "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",

@@ -218,6 +218,9 @@ pub struct Machine {
     /// Check the SSH host key; off for lab machines that are reinstalled all the time.
     #[serde(default = "yes")]
     pub check_host_key: bool,
+    /// The SSH login key (traditional PEM; its public half is next to it as `.pub`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_file: Option<PathBuf>,
 }
 
 fn yes() -> bool {
@@ -308,6 +311,7 @@ impl Machine {
             logout_command: String::new(),
             host_key: None,
             check_host_key: true,
+            key_file: None,
         }
     }
 

@@ -75,6 +75,33 @@ pub fn list_remote(
     Ok((dir.to_string(), rows))
 }
 
+/// Set up key login on `machine` and remember the key for it; host keys are not checked here.
+pub fn set_up_key_login(
+    machines: &mut MachinesController,
+    dir: &Path,
+    machine: &str,
+    password: Option<String>,
+) -> Result<crate::model::ssh::KeySetup, String> {
+    let m = machines
+        .get(machine)
+        .ok_or_else(|| format!("No machine called {machine}."))?
+        .clone();
+    let password = password.or(match &m.password {
+        Password::Saved(p) => Some(p.clone()),
+        Password::Ask => None,
+    });
+    let job = crate::model::ssh::set_up_key_login(
+        &m,
+        password,
+        dir.join("keys"),
+        Default::default(),
+        Arc::new(NoNotify),
+    );
+    let s = finish(job)?;
+    machines.set_key_login(&m.id, s.key_file.clone(), false)?;
+    Ok(s)
+}
+
 /// Set (or with `None` clear) the app's home folder.
 pub fn set_home(dir: &Path, home: Option<&Path>) -> Result<(), String> {
     let mut s = crate::model::settings::Settings::load(dir).map_err(|e| format!("{e:#}"))?;

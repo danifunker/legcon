@@ -63,6 +63,16 @@ pub trait FileSession: Connection {
         path: &RemotePath,
         mode: WriteMode,
     ) -> Result<Box<dyn Write + Send + '_>>;
+    /// Open to write a file whose size is known up front; SCP must announce it before the data.
+    fn open_write_sized(
+        &mut self,
+        path: &RemotePath,
+        mode: WriteMode,
+        size: u64,
+    ) -> Result<Box<dyn Write + Send + '_>> {
+        let _ = size;
+        self.open_write(path, mode)
+    }
     fn mkdir(&mut self, path: &RemotePath) -> Result<()>;
     fn remove(&mut self, path: &RemotePath) -> Result<()>;
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()>;

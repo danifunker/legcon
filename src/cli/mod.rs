@@ -38,6 +38,13 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Make a login key for a machine, install it over SSH, and check that it works.
+    KeyLogin {
+        machine: String,
+        /// Use this password instead of the saved one (not stored).
+        #[arg(long)]
+        password: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -133,6 +140,18 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
         Command::Home { path: Some(p) } => cli_ops::set_home(dir, Some(&p)),
+        Command::KeyLogin { machine, password } => {
+            let mut machines = open()?;
+            let s = cli_ops::set_up_key_login(&mut machines, dir, &machine, password)?;
+            println!(
+                "Key login works on {machine}: {} key {} ({}), installed in {}.",
+                s.algorithm,
+                s.key_file.display(),
+                if s.new_key { "new" } else { "reused" },
+                s.installed_in
+            );
+            Ok(())
+        }
         Command::Ls { target, password } => {
             let (machine, path) = target.split_once(':').unwrap_or((target.as_str(), ""));
             let (shown, rows) = cli_ops::list_remote(&open()?, machine, path, password)?;

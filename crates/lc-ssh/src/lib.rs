@@ -6,10 +6,13 @@
 //! only used when the server offers nothing newer; [`SshSession::negotiated`] says which won.
 //! SFTP is our own code ([`sftp`]) so file names stay bytes in the machine's character set.
 
+pub mod keys;
+mod scp;
 pub mod sftp;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -34,6 +37,22 @@ pub struct Options {
     pub timeout: Duration,
     /// How long a terminal read waits before returning `TimedOut`, so a reader can check for cancel.
     pub poll: Duration,
+    /// Use SFTP when the server has it; off, files always go through SCP and shell commands.
+    pub sftp: bool,
+}
+
+/// A key pair on disk: traditional PEM private key, and its OpenSSH `.pub` line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyFiles {
+    pub private: PathBuf,
+    pub public: PathBuf,
+}
+
+/// How to log in: a key is tried first when the server takes keys, then the password.
+#[derive(Debug, Clone, Default)]
+pub struct Auth {
+    pub password: Option<String>,
+    pub key: Option<KeyFiles>,
 }
 
 impl Default for Options {
@@ -43,6 +62,7 @@ impl Default for Options {
             connect_timeout: Duration::from_secs(10),
             timeout: Duration::from_secs(60),
             poll: Duration::from_millis(250),
+            sftp: true,
         }
     }
 }
@@ -150,19 +170,21 @@ pub struct SshSession {
     session: Session,
     tcp: TcpStream,
     sftp: Option<Sftp<Channel>>,
+    /// The server has no SFTP (or it is turned off): files go through SCP and the shell.
+    shell_files: bool,
     opts: Options,
     negotiated: Negotiated,
     closed: bool,
 }
 
-/// Connect, check the host key with `verify`, and log in with `password`.
+/// Connect, check the host key with `verify`, and log in with `auth`.
 ///
 /// `verify` sees the key before any password is sent; an error from it ends the connection.
 pub fn connect(
     host: &str,
     port: u16,
     user: &str,
-    password: &str,
+    auth: &Auth,
     opts: &Options,
     verify: &mut dyn FnMut(&HostKey) -> Result<()>,
 ) -> Result<SshSession> {
@@ -223,17 +245,35 @@ pub fn connect(
         return Err(e);
     }
     let methods = session.auth_methods(user).unwrap_or("").to_string();
-    if !session.authenticated() {
-        let mut result = session.userauth_password(user, password);
-        if result.is_err() && methods.contains("keyboard-interactive") {
-            result = session.userauth_keyboard_interactive(user, &mut Answer(password.into()));
+    let mut key_error = None;
+    if let (Some(k), true) = (&auth.key, methods.contains("publickey")) {
+        if let Err(e) = session.userauth_pubkey_file(user, Some(&k.public), &k.private, None) {
+            key_error = Some(e.message().to_string());
         }
+    }
+    if !session.authenticated() {
+        let result = match &auth.password {
+            Some(password) => {
+                let mut r = session.userauth_password(user, password);
+                if r.is_err() && methods.contains("keyboard-interactive") {
+                    r = session.userauth_keyboard_interactive(user, &mut Answer(password.clone()));
+                }
+                r.map_err(|e| e.message().to_string())
+            }
+            None => Err(key_error
+                .clone()
+                .unwrap_or_else(|| "no password and no key to log in with".into())),
+        };
         if let Err(e) = result {
+            let e = match key_error {
+                Some(k) if auth.password.is_some() => format!("{e}; the key was refused too ({k})"),
+                _ => e,
+            };
             bye(&session);
             return Err(Error::Auth(if methods.is_empty() {
-                e.message().to_string()
+                e
             } else {
-                format!("{} (the server offers: {methods})", e.message())
+                format!("{e} (the server offers: {methods})")
             }));
         }
     }
@@ -241,6 +281,7 @@ pub fn connect(
         session,
         tcp,
         sftp: None,
+        shell_files: !opts.sftp,
         opts: opts.clone(),
         negotiated,
         closed: false,
@@ -263,18 +304,31 @@ impl SshSession {
         self.enc(&p.to_string())
     }
 
-    fn sftp(&mut self) -> Result<&mut Sftp<Channel>> {
+    /// Whether files go through SFTP; the first call finds out, falling back to SCP and the shell.
+    fn use_sftp(&mut self) -> Result<bool> {
         if self.closed {
             return Err(Error::NotConnected);
         }
-        if self.sftp.is_none() {
+        if self.sftp.is_none() && !self.shell_files {
             let mut ch = self.session.channel_session().map_err(ssh_err)?;
-            ch.subsystem("sftp").map_err(|e| {
-                Error::Unsupported(format!("this server has no SFTP ({})", e.message()))
-            })?;
-            self.sftp = Some(Sftp::start(ch)?);
+            match ch.subsystem("sftp") {
+                Ok(()) => self.sftp = Some(Sftp::start(ch)?),
+                Err(_) => {
+                    let _ = ch.close();
+                    self.shell_files = true;
+                }
+            }
         }
-        Ok(self.sftp.as_mut().unwrap())
+        Ok(!self.shell_files)
+    }
+
+    /// Whether files go through SCP and shell commands because the server has no SFTP.
+    pub fn uses_scp(&self) -> bool {
+        self.shell_files
+    }
+
+    fn sftp(&mut self) -> Result<&mut Sftp<Channel>> {
+        self.sftp.as_mut().ok_or(Error::NotConnected)
     }
 
     fn entry(&self, name: &[u8], long: &[u8], a: &Attrs) -> Entry {
@@ -533,10 +587,11 @@ impl Connection for SshSession {
 
 impl FileSession for SshSession {
     fn caps(&self) -> FileCaps {
+        let sftp = !self.shell_files;
         FileCaps {
-            random_read: true,
-            random_write: true,
-            resume_upload: true,
+            random_read: sftp,
+            random_write: sftp,
+            resume_upload: sftp,
             rename: true,
             delete: true,
             mkdir: true,
@@ -546,6 +601,9 @@ impl FileSession for SshSession {
     }
 
     fn home(&mut self) -> Result<RemotePath> {
+        if !self.use_sftp()? {
+            return self.sh_home();
+        }
         let raw = self.sftp()?.realpath(b".")?;
         Ok(RemotePath::parse(
             PathStyle::Unix,
@@ -554,6 +612,9 @@ impl FileSession for SshSession {
     }
 
     fn list(&mut self, dir: &RemotePath) -> Result<Vec<Entry>> {
+        if !self.use_sftp()? {
+            return self.sh_list(dir);
+        }
         let raw = self.path(dir);
         let names = self.sftp()?.list(&raw)?;
         let mut out = Vec::with_capacity(names.len());
@@ -580,6 +641,9 @@ impl FileSession for SshSession {
     }
 
     fn stat(&mut self, path: &RemotePath) -> Result<Entry> {
+        if !self.use_sftp()? {
+            return self.sh_stat(path);
+        }
         let raw = self.path(path);
         let a = self.sftp()?.stat(&raw)?;
         let name = self.enc(path.name());
@@ -587,6 +651,9 @@ impl FileSession for SshSession {
     }
 
     fn open_read(&mut self, path: &RemotePath, at: u64) -> Result<Box<dyn Read + Send + '_>> {
+        if !self.use_sftp()? {
+            return Ok(Box::new(self.scp_read(path, at)?));
+        }
         let raw = self.path(path);
         let sftp = self.sftp()?;
         let handle = sftp.open(&raw, flag::READ)?;
@@ -598,6 +665,11 @@ impl FileSession for SshSession {
         path: &RemotePath,
         mode: WriteMode,
     ) -> Result<Box<dyn Write + Send + '_>> {
+        if !self.use_sftp()? {
+            return Err(Error::Unsupported(
+                "this server has no SFTP, and SCP needs the size before the data".into(),
+            ));
+        }
         let raw = self.path(path);
         let (flags, at) = match mode {
             WriteMode::Create => (flag::WRITE | flag::CREAT | flag::EXCL, 0),
@@ -609,12 +681,33 @@ impl FileSession for SshSession {
         Ok(Box::new(FileWriter { sftp, handle, at }))
     }
 
+    fn open_write_sized(
+        &mut self,
+        path: &RemotePath,
+        mode: WriteMode,
+        size: u64,
+    ) -> Result<Box<dyn Write + Send + '_>> {
+        if self.use_sftp()? {
+            return self.open_write(path, mode);
+        }
+        if matches!(mode, WriteMode::Resume(n) if n > 0) {
+            return Err(Error::Unsupported("SCP cannot continue an upload".into()));
+        }
+        Ok(Box::new(self.scp_write(path, size)?))
+    }
+
     fn mkdir(&mut self, path: &RemotePath) -> Result<()> {
+        if !self.use_sftp()? {
+            return self.sh_simple(&path.to_string(), b"mkdir", &[path]);
+        }
         let raw = self.path(path);
         self.sftp()?.mkdir(&raw)
     }
 
     fn remove(&mut self, path: &RemotePath) -> Result<()> {
+        if !self.use_sftp()? {
+            return self.sh_remove(path);
+        }
         let raw = self.path(path);
         let sftp = self.sftp()?;
         if sftp.lstat(&raw)?.is_dir() {
@@ -625,6 +718,9 @@ impl FileSession for SshSession {
     }
 
     fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<()> {
+        if !self.use_sftp()? {
+            return self.sh_simple(&from.to_string(), b"mv", &[from, to]);
+        }
         let (f, t) = (self.path(from), self.path(to));
         self.sftp()?.rename(&f, &t)
     }

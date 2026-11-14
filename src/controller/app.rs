@@ -150,7 +150,8 @@ impl AppController {
             self.settings.recent_places.clone(),
             self.sessions.clone(),
             Arc::clone(&self.notify),
-        );
+        )
+        .with_keys_dir(self.dir.join("keys"));
         self.tabs.push(tab);
         self.active = Tab::Connection(self.tabs.len() - 1);
         Vec::new()
@@ -192,6 +193,11 @@ impl AppController {
         let id = tab.machine_id().to_string();
         let layout = tab.take_layout_change();
         let left = tab.take_left_home();
+        if let Some((key, forget)) = tab.take_key_login_change() {
+            if let Err(e) = self.machines.set_key_login(&id, key, forget) {
+                out.push(Effect::Message(e));
+            }
+        }
         if let Some(k) = tab.take_host_key_change() {
             if let Err(e) = self.machines.set_host_key(&id, k) {
                 out.push(Effect::Message(e));

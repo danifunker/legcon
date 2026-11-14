@@ -9,7 +9,7 @@
 //! one in the `227` reply, which old servers behind NAT get wrong. Listings are taken with
 //! `CWD` + bare `LIST`, the form DOS, VMS and NetWare servers all accept.
 
-pub mod list;
+pub use lc_core::listing as list;
 
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs};

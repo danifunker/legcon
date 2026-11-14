@@ -11,6 +11,7 @@
 pub mod charset;
 pub mod entry;
 pub mod error;
+pub mod listing;
 pub mod memory;
 pub mod path;
 pub mod session;

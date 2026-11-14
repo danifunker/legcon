@@ -236,7 +236,8 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             Direction::Upload => {
                 let mut src = File::open(&s.local)
                     .with_context(|| format!("opening {}", s.local.display()))?;
-                let mut dst = fs.open_write(&s.remote, WriteMode::Overwrite)?;
+                let size = src.metadata()?.len();
+                let mut dst = fs.open_write_sized(&s.remote, WriteMode::Overwrite, size)?;
                 pump(&mut src, &mut dst, &mut done, total, ctx)
             }
         })();

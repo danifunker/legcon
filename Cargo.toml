@@ -38,3 +38,11 @@ exclude = ["frontends/win32"]
 
 [profile.dev]
 debug = "line-tables-only"
+
+# Key generation is unbearably slow unoptimised.
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+[profile.dev.package.rsa]
+opt-level = 3
+[profile.dev.package.dsa]
+opt-level = 3

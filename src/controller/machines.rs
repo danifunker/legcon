@@ -134,6 +134,23 @@ impl MachinesController {
         }
     }
 
+    /// Log in to this machine with `key` from now on; `forget_password` stops saving the password.
+    pub fn set_key_login(
+        &mut self,
+        id: &str,
+        key: std::path::PathBuf,
+        forget_password: bool,
+    ) -> Result<(), String> {
+        let Some(m) = self.store.get_mut(id) else {
+            return Ok(());
+        };
+        m.key_file = Some(key);
+        if forget_password {
+            m.password = crate::model::machines::Password::Ask;
+        }
+        self.save()
+    }
+
     fn save(&self) -> Result<(), String> {
         self.store
             .save(&self.dir)

@@ -21,7 +21,15 @@ use crate::model::transfer::{self, Direction, Pick, Summary};
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
 use crate::model::session::Sessions;
-use crate::model::ssh::{take_note, KeyNote, KeySlot};
+use crate::model::ssh::{set_up_key_login, take_note, KeyNote, KeySetup, KeySlot};
+
+/// What a password or an accepted host key is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Login {
+    Files,
+    Shell,
+    Setup,
+}
 pub use crate::model::term::{TermRun, TermScreen, DEFAULT_BG, DEFAULT_FG};
 
 /// The smallest share either area can be dragged down to.
@@ -122,6 +130,10 @@ pub enum Action {
     CopyConflict(usize),
     /// The answer to "host key changed": accept for good, accept once, cancel.
     HostKeyAnswered(usize),
+    /// Make (or reuse) a key for this machine, install it over SSH and test it (PLAN.md 5.1).
+    SetUpKeyLogin,
+    /// After key login works: stop saving the password (0) or keep it.
+    KeyLoginPasswordAnswered(usize),
     CancelTransfers,
     NewFolder(Side),
     NewFolderAnswered(Option<String>),
@@ -272,12 +284,18 @@ pub struct ConnectionController {
     disconnect_job: Option<Job<()>>,
     session_password: Option<String>,
     /// The password being asked for is for the shell, not the file connection.
-    asking_for_shell: bool,
+    asking_for: Login,
     /// What the shell's SSH connect found out about the host key.
     shell_key_note: KeySlot,
     /// A changed host key waiting for the user: the new key, and whether the shell met it.
-    key_question: Option<(String, bool)>,
+    key_question: Option<(String, Login)>,
     host_key_changed: bool,
+    key_setup: Option<Job<KeySetup>>,
+    key_setup_note: KeySlot,
+    /// A login key set up here, and whether to stop saving the password, for the machine store.
+    key_login_changed: Option<(PathBuf, bool)>,
+    /// Where login keys are made (`keys` in the config folder).
+    keys_dir: PathBuf,
     shell: Option<TermSession>,
     shell_open: Option<Job<TermSession>>,
     shell_close: Option<Job<()>>,
@@ -325,10 +343,14 @@ impl ConnectionController {
             list_job: None,
             disconnect_job: None,
             session_password: None,
-            asking_for_shell: false,
+            asking_for: Login::Files,
             shell_key_note: KeySlot::default(),
             key_question: None,
             host_key_changed: false,
+            key_setup: None,
+            key_setup_note: KeySlot::default(),
+            key_login_changed: None,
+            keys_dir: crate::model::config::dir().join("keys"),
             shell: None,
             shell_open: None,
             shell_close: None,
@@ -373,7 +395,7 @@ impl ConnectionController {
     }
 
     /// Act on what an SSH connect found out about the host key; a question if it changed.
-    fn key_note(&mut self, note: Option<KeyNote>, for_shell: bool) -> Option<Effect> {
+    fn key_note(&mut self, note: Option<KeyNote>, login: Login) -> Option<Effect> {
         match note? {
             KeyNote::Learned(line) => {
                 self.machine.host_key = Some(line);
@@ -382,7 +404,7 @@ impl ConnectionController {
             }
             KeyNote::Changed { line, md5, sha256 } => {
                 let algorithm = line.split(' ').next().unwrap_or("").to_string();
-                self.key_question = Some((line, for_shell));
+                self.key_question = Some((line, login));
                 Some(Effect::Choose(super::ChoiceSpec {
                     purpose: "conn.hostkey",
                     title: "Host key changed".into(),
@@ -408,7 +430,7 @@ impl ConnectionController {
 
     /// Reconnect after a changed host key was accepted, for good or for this connection only.
     fn host_key_answered(&mut self, choice: usize) {
-        let Some((line, for_shell)) = self.key_question.take() else {
+        let Some((line, login)) = self.key_question.take() else {
             return;
         };
         if choice > 1 {
@@ -422,15 +444,106 @@ impl ConnectionController {
             Password::Saved(p) => Some(p.clone()),
             Password::Ask => self.session_password.clone(),
         };
-        if for_shell {
-            self.open_shell(password);
-        } else {
-            self.connect(password);
-        }
+        self.log_in(login, password);
         if choice == 1 {
             // The job took its own copy of the machine; the stored key stays as it was.
             self.machine.host_key = old;
         }
+    }
+
+    fn log_in(&mut self, login: Login, password: Option<String>) {
+        match login {
+            Login::Files => self.connect(password),
+            Login::Shell => self.open_shell(password),
+            Login::Setup => {
+                self.key_setup = Some(set_up_key_login(
+                    &self.machine,
+                    password,
+                    self.keys_dir.clone(),
+                    Arc::clone(&self.key_setup_note),
+                    Arc::clone(&self.notify),
+                ))
+            }
+        }
+    }
+
+    /// The password to log in with, or the question for it; `None` when there is nothing to ask.
+    fn password_for(&mut self, login: Login, needed: bool) -> Result<Option<String>, Box<Effect>> {
+        match (&self.machine.password, &self.session_password) {
+            (Password::Saved(p), _) | (Password::Ask, Some(p)) => Ok(Some(p.clone())),
+            (Password::Ask, None) if needed => {
+                self.asking_for = login;
+                Err(Box::new(self.ask_password()))
+            }
+            (Password::Ask, None) => Ok(None),
+        }
+    }
+
+    /// The machine has SSH, so a login key can be set up for it.
+    pub fn can_set_up_key_login(&self) -> bool {
+        self.machine
+            .services
+            .iter()
+            .any(|s| s.kind == ServiceKind::Ssh)
+            && self.key_setup.is_none()
+    }
+
+    fn start_key_setup(&mut self) -> Vec<Effect> {
+        if !self.can_set_up_key_login() {
+            return Vec::new();
+        }
+        match self.password_for(Login::Setup, true) {
+            Ok(p) => self.log_in(Login::Setup, p),
+            Err(ask) => return vec![*ask],
+        }
+        Vec::new()
+    }
+
+    /// The key set up for this machine, and whether to stop saving its password, once.
+    pub(crate) fn take_key_login_change(&mut self) -> Option<(PathBuf, bool)> {
+        self.key_login_changed.take()
+    }
+
+    fn key_setup_done(&mut self, r: Result<KeySetup, String>) -> Vec<Effect> {
+        let s = match r {
+            Ok(s) => s,
+            Err(e) => {
+                return vec![Effect::Message(format!(
+                    "{}: could not set up key login: {e}",
+                    self.machine.name
+                ))]
+            }
+        };
+        self.machine.key_file = Some(s.key_file.clone());
+        self.key_login_changed = Some((s.key_file.clone(), false));
+        let made = if s.new_key {
+            format!("legcon made a new {} key", s.algorithm)
+        } else {
+            format!("legcon reused its {} key", s.algorithm)
+        };
+        let what = format!(
+            "Key login works on {}. {made} ({}) and installed it in {} there.",
+            self.machine.name,
+            s.key_file.display(),
+            s.installed_in
+        );
+        if matches!(self.machine.password, Password::Saved(_)) {
+            vec![Effect::Choose(super::ChoiceSpec {
+                purpose: "conn.keylogin.password",
+                title: "Key login".into(),
+                message: format!("{what}\n\nThe password is still saved. Stop saving it?"),
+                choices: vec!["Stop saving the password".into(), "Keep it".into()],
+                dismiss: 1,
+            })]
+        } else {
+            vec![Effect::Message(what)]
+        }
+    }
+
+    /// Make login keys in `dir` instead of the default config folder's `keys`.
+    pub(crate) fn with_keys_dir(mut self, dir: PathBuf) -> Self {
+        self.keys_dir = dir;
+        self
     }
 
     /// A place the user left home to, once, for the app's recent list.
@@ -562,18 +675,14 @@ impl ConnectionController {
         if !self.can_shell_connect() {
             return Vec::new();
         }
-        // Telnet logs in on the screen; the others need the password up front.
-        let needs_password =
-            self.machine.command_service().map(|s| s.kind) != Some(ServiceKind::Telnet);
-        let password = match (&self.machine.password, &self.session_password) {
-            (Password::Saved(p), _) | (Password::Ask, Some(p)) => Some(p.clone()),
-            (Password::Ask, None) if needs_password => {
-                self.asking_for_shell = true;
-                return vec![self.ask_password()];
-            }
-            (Password::Ask, None) => None,
-        };
-        self.open_shell(password);
+        // Telnet logs in on the screen, SSH may have a key; the others need the password up front.
+        let kind = self.machine.command_service().map(|s| s.kind);
+        let needed = kind != Some(ServiceKind::Telnet)
+            && !(kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some());
+        match self.password_for(Login::Shell, needed) {
+            Ok(p) => self.open_shell(p),
+            Err(ask) => return vec![*ask],
+        }
         Vec::new()
     }
 
@@ -1306,27 +1415,19 @@ impl Controller for ConnectionController {
                 if !self.can_connect() {
                     return Vec::new();
                 }
-                let needs_password =
-                    self.machine.file_service().map(|s| s.kind) != Some(ServiceKind::Demo);
-                match (&self.machine.password, &self.session_password) {
-                    (Password::Saved(p), _) => self.connect(Some(p.clone())),
-                    (Password::Ask, Some(p)) => self.connect(Some(p.clone())),
-                    (Password::Ask, None) if needs_password => {
-                        self.asking_for_shell = false;
-                        return vec![self.ask_password()];
-                    }
-                    (Password::Ask, None) => self.connect(None),
+                let kind = self.machine.file_service().map(|s| s.kind);
+                let needed = kind != Some(ServiceKind::Demo)
+                    && !(kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some());
+                match self.password_for(Login::Files, needed) {
+                    Ok(p) => self.connect(p),
+                    Err(ask) => return vec![*ask],
                 }
             }
             Action::PasswordAnswered(None) => {}
             Action::PasswordAnswered(Some(p)) => {
                 // Kept for this tab only, so a reconnect does not ask again.
                 self.session_password = Some(p.clone());
-                if std::mem::take(&mut self.asking_for_shell) {
-                    self.open_shell(Some(p));
-                } else {
-                    self.connect(Some(p));
-                }
+                self.log_in(self.asking_for, Some(p));
             }
             Action::Disconnect => {
                 self.begin_disconnect();
@@ -1387,6 +1488,14 @@ impl Controller for ConnectionController {
             }
             Action::Copy(from, names) => return self.copy(from, names),
             Action::HostKeyAnswered(choice) => self.host_key_answered(choice),
+            Action::SetUpKeyLogin => return self.start_key_setup(),
+            Action::KeyLoginPasswordAnswered(choice) => {
+                // The key itself was stored when the setup finished; this only drops the password.
+                if let (0, Some(key)) = (choice, self.machine.key_file.clone()) {
+                    self.key_login_changed = Some((key, true));
+                    self.machine.password = Password::Ask;
+                }
+            }
             Action::CopyConflict(choice) => match self.pending.take() {
                 Some(Pending::Copy(dir, groups)) if choice < 2 => {
                     for g in groups {
@@ -1531,7 +1640,7 @@ impl Controller for ConnectionController {
         if let Some(r) = self.connect_job.as_ref().and_then(job_outcome) {
             self.connect_job = None;
             let note = self.sessions.take_key_note(&self.machine.id);
-            let asked = self.key_note(note, false);
+            let asked = self.key_note(note, Login::Files);
             let changed = asked.is_some();
             out.extend(asked);
             match r {
@@ -1612,10 +1721,18 @@ impl Controller for ConnectionController {
         if refresh.1 && self.list_job.is_none() {
             self.list_remote();
         }
+        if let Some(r) = self.key_setup.as_ref().and_then(job_outcome) {
+            self.key_setup = None;
+            let note = take_note(&self.key_setup_note);
+            match self.key_note(note, Login::Setup) {
+                Some(ask) => out.push(ask),
+                None => out.extend(self.key_setup_done(r)),
+            }
+        }
         if let Some(r) = self.shell_open.as_ref().and_then(job_outcome) {
             self.shell_open = None;
             let note = take_note(&self.shell_key_note);
-            out.extend(self.key_note(note, true));
+            out.extend(self.key_note(note, Login::Shell));
             match r {
                 Ok(s) => self.shell = Some(s),
                 Err(e) => self.shell_error = Some(format!("Could not open a shell: {e}")),
@@ -1702,7 +1819,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut c = tab(home.path());
         assert!(c
-            .key_note(Some(KeyNote::Learned("ssh-dss AAAA".into())), false)
+            .key_note(Some(KeyNote::Learned("ssh-dss AAAA".into())), Login::Files)
             .is_none());
         assert_eq!(c.take_host_key_change().as_deref(), Some("ssh-dss AAAA"));
         let changed = || KeyNote::Changed {
@@ -1710,7 +1827,7 @@ mod tests {
             md5: "ab:cd".into(),
             sha256: "SHA256:xyz".into(),
         };
-        let e = c.key_note(Some(changed()), false).unwrap();
+        let e = c.key_note(Some(changed()), Login::Files).unwrap();
         assert!(
             matches!(&e, Effect::Choose(s) if s.purpose == "conn.hostkey" && s.message.contains("xyz"))
         );
@@ -1718,10 +1835,29 @@ mod tests {
         assert_eq!(c.machine.host_key.as_deref(), Some("ssh-dss AAAA"));
         assert_eq!(c.take_host_key_change(), None);
         settle(&mut c);
-        c.key_note(Some(changed()), false);
+        c.key_note(Some(changed()), Login::Files);
         c.apply(Action::HostKeyAnswered(0));
         assert_eq!(c.take_host_key_change().as_deref(), Some("ssh-dss BBBB"));
         settle(&mut c);
+    }
+
+    #[test]
+    fn key_login_offers_to_stop_saving_the_password() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.machine.password = Password::Saved("pw".into());
+        let e = c.key_setup_done(Ok(KeySetup {
+            key_file: PathBuf::from("keys/sparc_rsa"),
+            algorithm: "ssh-rsa".into(),
+            installed_in: "~/.ssh/authorized_keys".into(),
+            new_key: true,
+        }));
+        assert!(matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.keylogin.password"));
+        let key = PathBuf::from("keys/sparc_rsa");
+        assert_eq!(c.take_key_login_change(), Some((key.clone(), false)));
+        c.apply(Action::KeyLoginPasswordAnswered(0));
+        assert_eq!(c.take_key_login_change(), Some((key, true)));
+        assert_eq!(c.machine.password, Password::Ask);
     }
 
     fn settle(c: &mut ConnectionController) {

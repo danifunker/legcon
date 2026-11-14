@@ -535,6 +535,9 @@ fn run(effects: Vec<Effect>) {
                     "machines.add.service" => dispatch(app::Action::AddServiceChosen(i)),
                     "conn.copy.conflict" => conn_action(conn::Action::CopyConflict(i)),
                     "conn.hostkey" => conn_action(conn::Action::HostKeyAnswered(i)),
+                    "conn.keylogin.password" => {
+                        conn_action(conn::Action::KeyLoginPasswordAnswered(i))
+                    }
                     _ => {}
                 }
             }
@@ -1087,9 +1090,14 @@ fn draw_tab(d: &DRAWITEMSTRUCT) {
 }
 
 fn tab_menu(tab: usize) {
-    let Some((hwnd, id, current)) = with(|s| {
+    let Some((hwnd, id, current, keys)) = with(|s| {
         let t = s.app.tab(tab.checked_sub(1)?)?;
-        Some((s.window, t.machine_id().to_string(), t.color()))
+        Some((
+            s.window,
+            t.machine_id().to_string(),
+            t.color(),
+            t.can_set_up_key_login(),
+        ))
     })
     .flatten() else {
         return;
@@ -1111,6 +1119,9 @@ fn tab_menu(tab: usize) {
             let _ = AppendMenuW(menu, flags, 100 + k, windows::core::PCWSTR(label.as_ptr()));
         }
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+        let key_label = ui::wide("Set up key login...");
+        let flags = if keys { MF_STRING } else { MF_STRING | MF_GRAYED };
+        let _ = AppendMenuW(menu, flags, 98, windows::core::PCWSTR(key_label.as_ptr()));
         let close = ui::wide("Close tab (logs off)");
         let _ = AppendMenuW(menu, MF_STRING, 99, windows::core::PCWSTR(close.as_ptr()));
         let cmd = TrackPopupMenu(
@@ -1128,6 +1139,7 @@ fn tab_menu(tab: usize) {
     };
     match cmd {
         99 => dispatch(app::Action::CloseTab(tab - 1)),
+        98 => dispatch(app::Action::Conn(tab - 1, conn::Action::SetUpKeyLogin)),
         c if (100..100 + TabColor::ALL.len()).contains(&c) => {
             dispatch(app::Action::SetColor(id, TabColor::ALL[c - 100]))
         }
