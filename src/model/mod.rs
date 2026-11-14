@@ -7,6 +7,7 @@ pub mod line_term;
 pub mod local;
 pub mod machines;
 pub mod names;
+pub mod probe;
 pub mod rate_tracker;
 pub mod session;
 pub mod settings;

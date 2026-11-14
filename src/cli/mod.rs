@@ -38,6 +38,8 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
     },
+    /// What a machine offers (FTP, SMB, SSH, NFS, AFP ...), found without logging in.
+    Probe { address: String },
     /// Make a login key for a machine, install it over SSH, and check that it works.
     KeyLogin {
         machine: String,
@@ -54,8 +56,9 @@ enum MachinesCommand {
         /// The machine's name, used as `name:path` elsewhere.
         name: String,
         address: String,
-        /// Services it offers: ftp, telnet, smb, nfs, ssh, rexec, demo (repeatable).
-        #[arg(long = "service", short = 's', required = true)]
+        /// Services it offers: ftp, telnet, smb, nfs, ssh, rexec, rsh, rlogin, afp, http, gopher,
+        /// demo (repeatable). Without any, the machine is probed and what answers is used.
+        #[arg(long = "service", short = 's')]
         services: Vec<String>,
         #[arg(long, default_value = "")]
         user: String,
@@ -119,10 +122,22 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
                     gid,
                 },
         } => {
-            let services = services
+            let mut services = services
                 .iter()
                 .map(|s| ServiceKind::from_key(s).ok_or_else(|| format!("unknown service {s:?}")))
                 .collect::<Result<Vec<_>, _>>()?;
+            let probed = if services.is_empty() {
+                let p = cli_ops::probe(&address)?;
+                print!("{}", p.message());
+                println!();
+                if p.services.is_empty() {
+                    return Err("Nothing answered; name its services with -s.".into());
+                }
+                services = p.services.iter().map(|(k, _)| *k).collect();
+                Some(p)
+            } else {
+                None
+            };
             let mut machines = open()?;
             machines.add(NewMachine {
                 id: name.clone(),
@@ -131,6 +146,9 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
                 user,
                 password,
             })?;
+            if let Some(p) = &probed {
+                machines.apply_probe(&name, p)?;
+            }
             if uid.is_some() || gid.is_some() {
                 machines.set_unix_ids(&name, uid, gid)?;
             }
@@ -152,6 +170,12 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             Ok(())
         }
         Command::Home { path: Some(p) } => cli_ops::set_home(dir, Some(&p)),
+        Command::Probe { address } => {
+            let p = cli_ops::probe(&address)?;
+            print!("{}", p.message());
+            println!();
+            Ok(())
+        }
         Command::KeyLogin { machine, password } => {
             let mut machines = open()?;
             let s = cli_ops::set_up_key_login(&mut machines, dir, &machine, password)?;

@@ -533,6 +533,7 @@ fn run(effects: Vec<Effect>) {
                 );
                 match spec.purpose {
                     "machines.add.service" => dispatch(app::Action::AddServiceChosen(i)),
+                    "machines.add.found" => dispatch(app::Action::AddFoundAnswered(i)),
                     "conn.copy.conflict" => conn_action(conn::Action::CopyConflict(i)),
                     "conn.hostkey" => conn_action(conn::Action::HostKeyAnswered(i)),
                     "conn.keylogin.password" => {

@@ -115,6 +115,19 @@ pub fn connect(
     password: &str,
     opts: &Options,
 ) -> Result<SmbSession> {
+    let mut s = start(host, port, password, opts)?;
+    s.login(user, password)?;
+    s.state = ConnState::Connected;
+    Ok(s)
+}
+
+/// Connect and negotiate only, without logging in: the server's name and what it offers.
+pub fn probe(host: &str, port: u16, opts: &Options) -> Result<(String, Negotiated)> {
+    let s = start(host, port, "", opts)?;
+    Ok((s.server.clone(), s.neg.clone()))
+}
+
+fn start(host: &str, port: u16, password: &str, opts: &Options) -> Result<SmbSession> {
     let addr: SocketAddr = (host, port)
         .to_socket_addrs()?
         .next()
@@ -163,8 +176,6 @@ pub fn connect(
         guest: false,
     };
     s.negotiate()?;
-    s.login(user, password)?;
-    s.state = ConnState::Connected;
     Ok(s)
 }
 

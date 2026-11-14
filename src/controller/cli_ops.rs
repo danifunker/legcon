@@ -111,6 +111,12 @@ pub fn set_up_key_login(
     Ok(s)
 }
 
+/// What `address` offers, found without logging in.
+pub fn probe(address: &str) -> Result<super::machines::ProbeSummary, String> {
+    let r = crate::model::probe::probe(address, None).map_err(|e| format!("{e:#}"))?;
+    Ok((&r).into())
+}
+
 /// Set (or with `None` clear) the app's home folder.
 pub fn set_home(dir: &Path, home: Option<&Path>) -> Result<(), String> {
     let mut s = crate::model::settings::Settings::load(dir).map_err(|e| format!("{e:#}"))?;

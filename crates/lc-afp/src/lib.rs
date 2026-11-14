@@ -320,6 +320,18 @@ pub struct AfpSession {
     closed: bool,
 }
 
+/// The server's info (`DSIGetStatus`), without a session or a login.
+pub fn server_info(host: &str, port: u16, opts: &Options) -> Result<ServerInfo> {
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| Error::NotFound(format!("no address for {host}")))?;
+    let tcp = TcpStream::connect_timeout(&addr, opts.connect_timeout)?;
+    let mut probe = Dsi::new(tcp, opts.timeout)?;
+    let (_, status) = probe.request(dsi::GET_STATUS, &[], 0)?;
+    parse_server_info(&status)
+}
+
 /// Connect, read the server's info, open a DSI session and log in.
 ///
 /// An empty `user` logs in as guest.

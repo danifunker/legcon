@@ -32,6 +32,52 @@ pub struct NewMachine {
     pub password: Option<String>,
 }
 
+/// What a probe found, as the views show it and Add machine uses it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProbeSummary {
+    pub address: String,
+    /// One line per service that answered.
+    pub lines: Vec<String>,
+    /// A guess such as `Windows NT (IIS)`.
+    pub system: Option<String>,
+    /// The services to set up, best file service first, with their ports.
+    pub services: Vec<(ServiceKind, u16)>,
+    pub charset: String,
+}
+
+impl From<&crate::model::probe::Report> for ProbeSummary {
+    fn from(r: &crate::model::probe::Report) -> Self {
+        ProbeSummary {
+            address: r.address.clone(),
+            lines: r.lines(),
+            system: r.system.clone(),
+            services: r.services(),
+            charset: r.charset.clone(),
+        }
+    }
+}
+
+impl ProbeSummary {
+    /// The message Add machine shows.
+    pub fn message(&self) -> String {
+        if self.lines.is_empty() {
+            return format!(
+                "Nothing on {} answered on the usual ports. It may be switched off, behind a \
+                 firewall, or offer only what legcon cannot see without a login.",
+                self.address
+            );
+        }
+        let mut m = format!("Found on {}:\n", self.address);
+        for l in &self.lines {
+            m.push_str(&format!("  {l}\n"));
+        }
+        if let Some(s) = &self.system {
+            m.push_str(&format!("\nLooks like {s}; names in {}.", self.charset));
+        }
+        m
+    }
+}
+
 /// The machine store and its file.
 pub struct MachinesController {
     dir: PathBuf,
@@ -94,6 +140,22 @@ impl MachinesController {
             m.charset = lc_core::Charset::MacRoman.label().to_string();
         }
         self.store.add(m)?;
+        self.save()
+    }
+
+    /// Use the probe's ports and character set for a machine just added.
+    pub fn apply_probe(&mut self, id: &str, p: &ProbeSummary) -> Result<(), String> {
+        let Some(m) = self.store.get_mut(id) else {
+            return Err(format!("No machine called {id}."));
+        };
+        for s in m.services.iter_mut() {
+            if let Some((_, port)) = p.services.iter().find(|(k, _)| *k == s.kind) {
+                s.port = *port;
+            }
+        }
+        if !p.charset.is_empty() {
+            m.charset = p.charset.clone();
+        }
         self.save()
     }
 

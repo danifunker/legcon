@@ -9,10 +9,12 @@ use std::sync::Arc;
 
 use super::connection::{self, ConnectionController};
 use super::log::LogStore;
+use super::machines::ProbeSummary;
 use super::machines::{suggest_id, validate_id, MachineRow, MachinesController, NewMachine};
 use super::{not_empty, ChoiceSpec, Controller, Effect, PickSpec, ServiceKind, TabColor, TextSpec};
 use crate::model::config;
 use crate::model::job::{Job, Notify};
+use crate::model::probe::probe_job;
 use crate::model::session::Sessions;
 use crate::model::settings::Settings;
 
@@ -37,6 +39,8 @@ pub enum Action {
     AddMachine,
     AddAddressAnswered(Option<String>),
     AddServiceChosen(usize),
+    /// The answer to what the probe found: add with those services, choose one, cancel.
+    AddFoundAnswered(usize),
     AddNameAnswered(Option<String>),
     RemoveMachine(String),
     RemoveConfirmed(bool),
@@ -64,6 +68,14 @@ const ADD_SERVICES: [ServiceKind; 12] = [
     ServiceKind::Demo,
 ];
 
+/// A machine being added: its address, then what the probe found or the service chosen.
+struct Adding {
+    address: String,
+    kind: Option<ServiceKind>,
+    probe: Option<Job<crate::model::probe::Report>>,
+    found: Option<ProbeSummary>,
+}
+
 pub struct AppController {
     dir: PathBuf,
     settings: Settings,
@@ -75,7 +87,7 @@ pub struct AppController {
     log: LogStore,
     closing: Vec<Job<()>>,
     quitting: bool,
-    adding: Option<(String, Option<ServiceKind>)>,
+    adding: Option<Adding>,
     removing: Option<String>,
 }
 
@@ -221,13 +233,11 @@ impl AppController {
     }
 }
 
-fn service_choice() -> Effect {
+fn service_choice(why: &str) -> Effect {
     Effect::Choose(ChoiceSpec {
         purpose: "machines.add.service",
         title: "Add machine".into(),
-        message:
-            "Which service does it offer for files? (The probe will find them for you in phase 2.)"
-                .into(),
+        message: format!("{why}Which service does it offer for files?"),
         choices: ADD_SERVICES
             .iter()
             .map(|k| k.label().to_string())
@@ -278,41 +288,74 @@ impl Controller for AppController {
             }
             Action::AddAddressAnswered(None) => {}
             Action::AddAddressAnswered(Some(addr)) => {
-                self.adding = Some((addr.trim().to_string(), None));
-                return vec![service_choice()];
+                // Nothing is asked until the probe has looked at what the machine offers.
+                let address = addr.trim().to_string();
+                self.log
+                    .info(format!("Looking at what {address} offers..."));
+                self.adding = Some(Adding {
+                    probe: Some(probe_job(&address, Arc::clone(&self.notify))),
+                    address,
+                    kind: None,
+                    found: None,
+                });
+            }
+            Action::AddFoundAnswered(choice) => {
+                let Some(a) = self.adding.as_mut() else {
+                    return Vec::new();
+                };
+                match (choice, &a.found) {
+                    (0, Some(f)) if !f.services.is_empty() => {
+                        a.kind = Some(f.services[0].0);
+                        return vec![name_prompt(&a.address)];
+                    }
+                    (1, _) => {
+                        a.found = None;
+                        return vec![service_choice("")];
+                    }
+                    _ => self.adding = None,
+                }
             }
             Action::AddServiceChosen(i) => {
-                let Some((addr, _)) = self.adding.take() else {
+                let Some(a) = self.adding.as_mut() else {
                     return Vec::new();
                 };
                 let Some(&kind) = ADD_SERVICES.get(i) else {
+                    self.adding = None;
                     return Vec::new();
                 };
-                let initial = suggest_id(&addr);
-                self.adding = Some((addr, Some(kind)));
-                return vec![Effect::AskText(TextSpec {
-                    purpose: "machines.add.name",
-                    title: "Add machine".into(),
-                    prompt: "Name for this machine:".into(),
-                    initial,
-                    ok_label: "Add".into(),
-                    validator: validate_id,
-                })];
+                a.kind = Some(kind);
+                return vec![name_prompt(&a.address)];
             }
             Action::AddNameAnswered(None) => self.adding = None,
             Action::AddNameAnswered(Some(name)) => {
-                let Some((address, Some(kind))) = self.adding.take() else {
+                let Some(Adding {
+                    address,
+                    kind: Some(kind),
+                    found,
+                    ..
+                }) = self.adding.take()
+                else {
                     return Vec::new();
+                };
+                let services = match &found {
+                    Some(f) if f.services.first().map(|s| s.0) == Some(kind) => {
+                        f.services.iter().map(|s| s.0).collect()
+                    }
+                    _ => vec![kind],
                 };
                 let new = NewMachine {
                     id: name.trim().to_string(),
                     address,
-                    services: vec![kind],
+                    services,
                     user: String::new(),
                     password: None,
                 };
                 let id = new.id.clone();
-                return match self.machines.add(new) {
+                let added = self.machines.add(new).and_then(|()| match &found {
+                    Some(f) => self.machines.apply_probe(&id, f),
+                    None => Ok(()),
+                });
+                return match added {
                     Ok(()) => {
                         self.log.info(format!("Added {id}."));
                         Vec::new()
@@ -380,6 +423,7 @@ impl Controller for AppController {
             out.extend(self.absorb(i));
         }
         self.closing.retain(|j| j.is_running());
+        out.extend(self.probe_done());
         self.log.extend_from_capture(super::log::capture::drain());
         if self.quitting {
             // Nothing may stop the app closing: problems while logging off go to the log.
@@ -398,6 +442,55 @@ impl Controller for AppController {
         }
         out
     }
+}
+
+impl AppController {
+    /// When Add machine's probe finishes: what it found, or the plain service question.
+    fn probe_done(&mut self) -> Vec<Effect> {
+        let Some(a) = self.adding.as_mut() else {
+            return Vec::new();
+        };
+        let Some(r) = a.probe.as_ref().and_then(super::job_outcome) else {
+            return Vec::new();
+        };
+        a.probe = None;
+        match r {
+            Ok(report) => {
+                let f = ProbeSummary::from(&report);
+                if f.services.is_empty() {
+                    return vec![service_choice(&format!("{}\n\n", f.message()))];
+                }
+                let msg = f.message();
+                a.found = Some(f);
+                vec![Effect::Choose(ChoiceSpec {
+                    purpose: "machines.add.found",
+                    title: "Add machine".into(),
+                    message: msg,
+                    choices: vec![
+                        "Add with these".into(),
+                        "Choose a service".into(),
+                        "Cancel".into(),
+                    ],
+                    dismiss: 2,
+                })]
+            }
+            Err(e) => vec![service_choice(&format!(
+                "Could not look at {}: {e}\n\n",
+                a.address
+            ))],
+        }
+    }
+}
+
+fn name_prompt(address: &str) -> Effect {
+    Effect::AskText(TextSpec {
+        purpose: "machines.add.name",
+        title: "Add machine".into(),
+        prompt: "Name for this machine:".into(),
+        initial: suggest_id(address),
+        ok_label: "Add".into(),
+        validator: validate_id,
+    })
 }
 
 /// The config folder the app uses (`LEGCON_CONFIG_DIR` overrides it).
@@ -432,10 +525,22 @@ mod tests {
         let mut a = app(dir.path());
         a.apply(Action::HomePicked(Some(home.path().to_path_buf())));
         a.apply(Action::AddMachine);
-        assert!(matches!(
-            a.apply(Action::AddAddressAnswered(Some("demo.lan".into())))[0],
-            Effect::Choose(_)
-        ));
+        // The probe runs first; `.invalid` never resolves, so the plain question follows.
+        assert!(a
+            .apply(Action::AddAddressAnswered(Some("demo.invalid".into())))
+            .is_empty());
+        let mut asked = Vec::new();
+        for _ in 0..600 {
+            asked = a.tick();
+            if !asked.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            matches!(&asked[..], [Effect::Choose(c)] if c.purpose == "machines.add.service" && c.message.contains("Could not look at demo.invalid")),
+            "{asked:?}"
+        );
         let demo = ADD_SERVICES
             .iter()
             .position(|k| *k == ServiceKind::Demo)
