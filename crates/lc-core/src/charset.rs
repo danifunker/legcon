@@ -1,7 +1,6 @@
 //! Character sets old machines use for names and text, decoded and encoded both ways.
 //!
-//! The DOS code pages (CP437, CP850) are not in `encoding_rs` and arrive with their tables in
-//! phase 1; until then a DOS machine uses Windows-1252, which agrees on ASCII.
+//! The DOS code pages (CP437, CP850) are not in `encoding_rs`; their tables are in [`crate::dos`].
 
 /// A machine's character set; chosen per machine, guessed by the probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -14,15 +13,21 @@ pub enum Charset {
     MacRoman,
     ShiftJis,
     Utf8,
+    /// IBM PC code page 437: DOS and Windows 9x names in the US.
+    Cp437,
+    /// IBM PC code page 850: DOS and Windows 9x names in Western Europe.
+    Cp850,
 }
 
 impl Charset {
-    pub const ALL: [Charset; 5] = [
+    pub const ALL: [Charset; 7] = [
         Charset::Latin1,
         Charset::Windows1252,
         Charset::MacRoman,
         Charset::ShiftJis,
         Charset::Utf8,
+        Charset::Cp437,
+        Charset::Cp850,
     ];
 
     pub fn label(self) -> &'static str {
@@ -32,6 +37,8 @@ impl Charset {
             Charset::MacRoman => "MacRoman",
             Charset::ShiftJis => "Shift-JIS",
             Charset::Utf8 => "UTF-8",
+            Charset::Cp437 => "CP437",
+            Charset::Cp850 => "CP850",
         }
     }
 
@@ -43,7 +50,7 @@ impl Charset {
 
     fn encoding(self) -> Option<&'static encoding_rs::Encoding> {
         match self {
-            Charset::Latin1 => None,
+            Charset::Latin1 | Charset::Cp437 | Charset::Cp850 => None,
             Charset::Windows1252 => Some(encoding_rs::WINDOWS_1252),
             Charset::MacRoman => Some(encoding_rs::MACINTOSH),
             Charset::ShiftJis => Some(encoding_rs::SHIFT_JIS),
@@ -53,6 +60,11 @@ impl Charset {
 
     /// Bytes from the machine as text; bytes with no mapping become U+FFFD.
     pub fn decode(self, bytes: &[u8]) -> String {
+        match self {
+            Charset::Cp437 => return crate::dos::decode(&crate::dos::CP437, bytes),
+            Charset::Cp850 => return crate::dos::decode(&crate::dos::CP850, bytes),
+            _ => {}
+        }
         match self.encoding() {
             None => bytes.iter().map(|&b| b as char).collect(),
             Some(enc) => enc.decode_without_bom_handling(bytes).0.into_owned(),
@@ -61,6 +73,11 @@ impl Charset {
 
     /// Text as bytes for the machine; `None` when a character has no mapping in this set.
     pub fn encode(self, text: &str) -> Option<Vec<u8>> {
+        match self {
+            Charset::Cp437 => return crate::dos::encode(&crate::dos::CP437, text),
+            Charset::Cp850 => return crate::dos::encode(&crate::dos::CP850, text),
+            _ => {}
+        }
         match self.encoding() {
             None => text
                 .chars()
@@ -83,6 +100,19 @@ mod tests {
         let all: Vec<u8> = (0..=255).collect();
         let text = Charset::Latin1.decode(&all);
         assert_eq!(Charset::Latin1.encode(&text).unwrap(), all);
+    }
+
+    #[test]
+    fn dos_code_pages_round_trip_and_differ() {
+        let all: Vec<u8> = (0..=255).collect();
+        for cs in [Charset::Cp437, Charset::Cp850] {
+            assert_eq!(cs.encode(&cs.decode(&all)).unwrap(), all, "{cs:?}");
+        }
+        assert_eq!(Charset::Cp437.decode(&[0x81, 0xE1]), "\u{fc}\u{df}");
+        assert_eq!(Charset::Cp437.decode(&[0x9B]), "\u{a2}");
+        assert_eq!(Charset::Cp850.decode(&[0x9B]), "\u{f8}");
+        assert_eq!(Charset::Cp437.encode("\u{20ac}"), None);
+        assert_eq!(Charset::from_label("cp850"), Some(Charset::Cp850));
     }
 
     #[test]

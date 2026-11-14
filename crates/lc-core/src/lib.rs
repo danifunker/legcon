@@ -9,6 +9,7 @@
 //! a closed socket (PLAN.md §1.4).
 
 pub mod charset;
+pub mod dos;
 pub mod entry;
 pub mod error;
 pub mod listing;

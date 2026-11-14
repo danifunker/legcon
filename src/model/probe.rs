@@ -325,11 +325,15 @@ pub fn probe_ports(address: &str, ports: &Ports, ctx: Option<&JobCtx>) -> anyhow
     }
 
     let system = guess(&found);
+    let smb1 = found
+        .iter()
+        .any(|f| f.kind == ServiceKind::Smb && !f.detail.starts_with(UNUSABLE));
     let charset = if found.iter().any(|f| f.kind == ServiceKind::Afp) {
         lc_core::Charset::MacRoman
-    } else if system.as_deref().is_some_and(|s| s.starts_with("Windows"))
-        || found.iter().any(|f| f.kind == ServiceKind::Smb)
-    {
+    } else if smb1 && !system.as_deref().is_some_and(|s| s.contains("Samba")) {
+        // SMB without Unicode names files in the OEM code page: 437 on US systems.
+        lc_core::Charset::Cp437
+    } else if system.as_deref().is_some_and(|s| s.starts_with("Windows")) {
         lc_core::Charset::Windows1252
     } else {
         lc_core::Charset::Latin1
