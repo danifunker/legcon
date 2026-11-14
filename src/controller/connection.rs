@@ -165,6 +165,41 @@ pub fn valid_name(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn not_dots(t: &str) -> Result<&str, String> {
+    let t = t.trim();
+    if t.is_empty() {
+        return Err(String::new());
+    }
+    if t == "." || t == ".." {
+        return Err("That name is taken by the folder itself.".into());
+    }
+    Ok(t)
+}
+
+/// A name on a Unix machine: anything but `/` (and NUL).
+pub fn valid_unix_name(text: &str) -> Result<(), String> {
+    let t = not_dots(text)?;
+    match t.chars().find(|&c| c == '/' || c == '\0') {
+        Some(c) => Err(format!("A Unix name cannot contain {c:?}.")),
+        None => Ok(()),
+    }
+}
+
+/// A name on a classic Mac: no `:`, at most 31 characters.
+pub fn valid_mac_name(text: &str) -> Result<(), String> {
+    let t = not_dots(text)?;
+    if t.contains(':') {
+        return Err("A Mac name cannot contain ':'.".into());
+    }
+    let n = t.chars().count();
+    if n > 31 {
+        return Err(format!(
+            "A Mac name has at most 31 characters (this has {n})."
+        ));
+    }
+    Ok(())
+}
+
 /// One copy batch as the Transfers tab lists it.
 struct Batch {
     label: String,
@@ -1220,12 +1255,33 @@ impl ConnectionController {
         }
     }
 
+    /// The rule a new name follows on this side: Windows' here, the machine's own over there.
+    fn name_rule(&self, side: Side) -> fn(&str) -> Result<(), String> {
+        match (side, self.remote_style()) {
+            (Side::Local, _) | (Side::Remote, lc_core::PathStyle::Dos) => valid_name,
+            (Side::Remote, lc_core::PathStyle::Unix) => valid_unix_name,
+            (Side::Remote, lc_core::PathStyle::Mac) => valid_mac_name,
+        }
+    }
+
     fn answer_pending(&mut self, answer: Option<String>) -> Vec<Effect> {
         let Some(name) = answer.map(|a| a.trim().to_string()) else {
             self.pending = None;
             return Vec::new();
         };
-        if let Err(e) = valid_name(&name) {
+        let side = match &self.pending {
+            Some(Pending::NewFolder(s)) | Some(Pending::Rename(s, _)) => *s,
+            _ => Side::Local,
+        };
+        let mut checked = (self.name_rule(side))(&name);
+        if checked.is_ok() && side == Side::Remote {
+            let max = (self.machine.file_service().map(|s| s.kind) == Some(ServiceKind::Afp))
+                .then_some(31);
+            if let Some(why) = names::remote_problem(&name, self.charset(), max) {
+                checked = Err(format!("{name}: {why}."));
+            }
+        }
+        if let Err(e) = checked {
             self.pending = None;
             return vec![Effect::Message(e)];
         }
@@ -1535,7 +1591,7 @@ impl Controller for ConnectionController {
                     ),
                     initial: String::new(),
                     ok_label: "Create".into(),
-                    validator: valid_name,
+                    validator: self.name_rule(side),
                 })];
             }
             Action::NewFolderAnswered(a) | Action::RenameAnswered(a) => {
@@ -1543,13 +1599,14 @@ impl Controller for ConnectionController {
             }
             Action::Rename(side, old) => {
                 self.pending = Some(Pending::Rename(side, old.clone()));
+                let validator = self.name_rule(side);
                 return vec![Effect::AskText(super::TextSpec {
                     purpose: "conn.name",
                     title: "Rename".into(),
                     prompt: format!("New name for {old}:"),
                     initial: old,
                     ok_label: "Rename".into(),
-                    validator: valid_name,
+                    validator,
                 })];
             }
             Action::Delete(side, names) => {
@@ -2017,6 +2074,11 @@ mod tests {
         settle(&mut c);
         assert!(c.console.last().unwrap().contains("no command console"));
         assert_eq!(valid_name("a/b"), Err("A name cannot contain '/'.".into()));
+        assert_eq!(valid_unix_name("What?"), Ok(()));
+        assert!(valid_unix_name("a/b").is_err());
+        assert_eq!(valid_mac_name("Q1/Q2 notes?"), Ok(()));
+        assert!(valid_mac_name("a:b").is_err());
+        assert!(valid_mac_name(&"x".repeat(32)).unwrap_err().contains("31"));
     }
 
     #[test]
