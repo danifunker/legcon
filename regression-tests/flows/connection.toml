@@ -109,12 +109,12 @@ ui = [
   { op = "activate", id = "local.home" },
   { op = "expect_row", id = "local.list", name = "retro" },
   { op = "activate", id = "local.places" },
-  { op = "menu", name = '{work}\retro' },
+  { op = "menu", name = '{work}{sep}retro' },
   { op = "expect_row", id = "local.list", name = "inside" },
 ]
 
 [case.expect_settings]
-"pinned_places.0" = '{work}\retro'
+"pinned_places.0" = '{work}{sep}retro'
 
 [[case]]
 id = "flow.conn.remote-places"

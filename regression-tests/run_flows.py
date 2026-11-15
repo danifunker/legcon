@@ -1,4 +1,4 @@
-"""Run the UI flows (FLOWS.md) against a shell: `python regression-tests/run_flows.py [--shell win32] [name ...]`.
+"""Run the UI flows (FLOWS.md) against a shell: `python regression-tests/run_flows.py [--shell win32|appkit] [name ...]`.
 
 Each flow starts the shell with a scratch config, drives it by controller ids through the shell's
 driver, then checks what it saved, through `lc` and the machines file, never the screen alone.
@@ -23,7 +23,12 @@ SHELLS = {
         "driver": [sys.executable, os.path.join(HERE, "drivers", "uia_driver.py")],
         "exe": os.path.join(ROOT, "frontends", "win32", "target", "debug", "legcon.exe"),
     },
+    "appkit": {
+        "driver": [sys.executable, os.path.join(HERE, "drivers", "ax_driver.py")],
+        "exe": os.path.join(ROOT, "frontends", "appkit", "target", "debug", "legcon"),
+    },
 }
+DEFAULT_SHELL = "appkit" if sys.platform == "darwin" else "win32"
 LC = os.path.join(ROOT, "target", "debug", "lc.exe" if os.name == "nt" else "lc")
 # Where a failed flow's screen is saved (the CI uploads it).
 SHOTS = os.environ.get("LEGCON_FLOW_SHOTS", os.path.join(HERE, "failures"))
@@ -40,9 +45,9 @@ def lookup(obj, dotted):
 
 
 def fill(value, work, run):
-    """Replace {work} (the flow's scratch folder) and {run} (unique per run) everywhere in a case."""
+    """Replace {work} (the flow's scratch folder), {sep} (the path separator) and {run} (unique per run)."""
     if isinstance(value, str):
-        return value.replace("{work}", work).replace("{run}", run)
+        return value.replace("{work}", work).replace("{sep}", os.sep).replace("{run}", run)
     if isinstance(value, list):
         return [fill(v, work, run) for v in value]
     if isinstance(value, dict):
@@ -153,7 +158,7 @@ def drive(case, shell, cfg, secrets, env, work):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--shell", default="win32", choices=sorted(SHELLS))
+    ap.add_argument("--shell", default=DEFAULT_SHELL, choices=sorted(SHELLS))
     ap.add_argument("--lab", action="store_true", help="also run lab = true cases (needs lab/lab.sh up)")
     ap.add_argument("names", nargs="*", help="flow ids or files to run (all when none)")
     a = ap.parse_args()
@@ -162,13 +167,14 @@ def main():
         for c in tomli.load(open(path, "rb"))["case"]:
             if c.get("lab") and not a.lab:
                 continue
-            if a.shell in c.get("shells", ["win32"]):
+            if a.shell in c.get("shells", sorted(SHELLS)):
                 if not a.names or c["id"] in a.names or os.path.basename(path) in a.names:
                     cases.append(c)
     failed = 0
     for c in cases:
         with tempfile.TemporaryDirectory(prefix="lcflow-") as work:
-            why = run_case(c, a.shell, work)
+            # The path the shell sees: macOS temp folders sit behind a /var -> /private/var link.
+            why = run_case(c, a.shell, os.path.realpath(work))
         print(f"{'ok  ' if why is None else 'FAIL'} {c['id']}.{a.shell}" + ("" if why is None else f": {why}"))
         failed += why is not None
     print(f"{len(cases) - failed} passed, {failed} failed")

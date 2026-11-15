@@ -2,3 +2,4 @@ target/
 *.tmp
 frontends/*/target/
 regression-tests/failures/
+regression-tests/.venv/

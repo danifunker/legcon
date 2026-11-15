@@ -1,0 +1,28 @@
+# The AppKit shell (docs/PLAN.md D44): its own workspace and lockfile, like frontends/win32.
+[package]
+name = "legcon-appkit"
+version = "0.1.0"
+description = "legcon, the AppKit front end"
+edition = "2021"
+license = "AGPL-3.0"
+publish = false
+
+[[bin]]
+name = "legcon"
+path = "src/main.rs"
+
+[dependencies]
+legcon = { path = "../.." }
+log = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
+
+[workspace]
+
+[profile.dev]
+debug = "line-tables-only"

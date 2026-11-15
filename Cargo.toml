@@ -37,8 +37,8 @@ tempfile = "3"
 
 [workspace]
 members = ["crates/*"]
-# The Win32 shell is its own workspace with its own lockfile, as in rusty-backup.
-exclude = ["frontends/win32"]
+# The Win32 and AppKit shells are their own workspaces with their own lockfiles, as in rusty-backup.
+exclude = ["frontends/win32", "frontends/appkit"]
 
 [profile.dev]
 debug = "line-tables-only"
