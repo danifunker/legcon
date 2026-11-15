@@ -11,7 +11,12 @@ python regression-tests/run_flows.py connection.toml    # one file
 python regression-tests/run_flows.py flow.settings.os-store
 ```
 
-Needs Python 3.9+ with `comtypes`, `tomli` and (for failure screenshots) `Pillow`.
+Needs Python 3.9+ with `comtypes`, `tomli` and (for failure screenshots) `Pillow`. A failed flow
+leaves a picture of the screen in `regression-tests/failures/` (or `LEGCON_FLOW_SHOTS`).
+
+The pipeline (`.github/workflows/ci.yml`, job `windows`) runs every flow except the lab ones on
+GitHub's Windows runner, and keeps the pictures of failed ones as the `flow-failures` artifact.
+The lab flows (`--lab`) run where the lab container is reachable from Windows, so locally.
 
 ## Writing one
 

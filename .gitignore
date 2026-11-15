@@ -1,3 +1,4 @@
 target/
 *.tmp
 frontends/*/target/
+regression-tests/failures/

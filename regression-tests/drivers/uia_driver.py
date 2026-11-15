@@ -304,7 +304,17 @@ def op_menu(o):
     raise Fail(f"no menu item {o['name']} in {seen}")
 
 
+def op_screenshot(o):
+    """The whole screen to `path`, for a failed step; Pillow is optional."""
+    try:
+        from PIL import ImageGrab
+    except ImportError:
+        raise Fail("no Pillow for screenshots")
+    ImageGrab.grab(all_screens=True).save(o["path"])
+
+
 OPS = {
+    "screenshot": op_screenshot,
     "menu": op_menu,
     "key": op_key,
     "expect_row": op_expect_row,

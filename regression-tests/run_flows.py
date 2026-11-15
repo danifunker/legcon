@@ -25,6 +25,8 @@ SHELLS = {
     },
 }
 LC = os.path.join(ROOT, "target", "debug", "lc.exe" if os.name == "nt" else "lc")
+# Where a failed flow's screen is saved (the CI uploads it).
+SHOTS = os.environ.get("LEGCON_FLOW_SHOTS", os.path.join(HERE, "failures"))
 # The lab container's machines (`lab/lab.sh machines`), for cases with machines = "lab".
 LAB_MACHINES = os.path.join(HERE, "lab-machines.json")
 
@@ -110,6 +112,11 @@ def drive(case, shell, cfg, secrets, env, work):
         if not r.get("ok"):
             failure = f"ui step {i + 1} {op}: {r.get('error')}"
             if op["op"] != "quit":
+                os.makedirs(SHOTS, exist_ok=True)
+                shot = os.path.join(SHOTS, case["id"] + ".png")
+                d.stdin.write(json.dumps({"op": "screenshot", "path": shot}) + "\n")
+                d.stdin.flush()
+                d.stdout.readline()
                 d.stdin.write(json.dumps({"op": "quit"}) + "\n")
                 d.stdin.flush()
                 d.stdout.readline()

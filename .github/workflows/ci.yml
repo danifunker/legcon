@@ -1,0 +1,167 @@
+# legcon's pipeline: the lab (Linux), Windows (checks, tests, the Win32 window driven by its UI
+# flows), then release builds once both pass.
+name: ci
+
+on:
+  push:
+    branches: [main, phase-0]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The lab (lab/README.md): build the unix90s container, run legcon's lab tests against it, and on
+  # main publish the image to the GitHub Container Registry so other jobs and machines can pull it.
+  unix90s:
+    name: lab (unix90s)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Image name
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "LAB_IMAGE=ghcr.io/$owner/legcon-lab-unix90s:${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+          echo "LAB_LATEST=ghcr.io/$owner/legcon-lab-unix90s:latest" >> "$GITHUB_ENV"
+
+      - name: Build the lab image
+        run: bash lab/lab.sh build
+
+      - name: Start the lab
+        run: bash lab/lab.sh up
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Lab tests
+        run: cargo test --test lab_unix90s -- --ignored --test-threads=1
+
+      # rsh needs the client's reserved source port, which Docker's published ports rewrite; so the
+      # rsh tests also run as root in a container sharing the lab container's network.
+      - name: rsh lab tests, inside the lab's network
+        run: |
+          bin=$(cargo test --test lab_unix90s --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.name == "lab_unix90s") | .executable')
+          # The runner's own Ubuntu, so the binary built here finds the C library it was built against.
+          runner_ubuntu="ubuntu:$(. /etc/os-release && echo "$VERSION_ID")"
+          docker run --rm --network container:legcon-lab-unix90s -v "$bin":/lab_tests:ro \
+            -e LEGCON_LAB_HOST=127.0.0.1 -e LEGCON_LAB_NATIVE=1 -e LEGCON_LAB_RSH=1 "$runner_ubuntu" \
+            /lab_tests --ignored --test-threads=1 rsh the_machine_says resume
+
+      - name: Server logs on failure
+        if: failure()
+        run: bash lab/lab.sh logs
+
+      - name: Publish the image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$LAB_IMAGE" "$LAB_LATEST"
+          docker push "$LAB_IMAGE"
+          docker push "$LAB_LATEST"
+
+      - name: Stop the lab
+        if: always()
+        run: bash lab/lab.sh down || true
+
+  # Windows: formatting, clippy, the MVC boundaries, every test, and the UI flows driving the real
+  # Win32 window through UI Automation (the demo machine and pretend servers; lab flows stay local).
+  windows:
+    name: windows (checks, tests, UI flows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            frontends/win32 -> target
+
+      - name: Formatting
+        shell: bash
+        run: cargo fmt --all --check && (cd frontends/win32 && cargo fmt --check)
+
+      - name: Clippy
+        shell: bash
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cd frontends/win32 && cargo clippy -- -D warnings
+
+      - name: MVC boundaries
+        shell: bash
+        run: sh scripts/check-boundaries.sh
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build the Win32 window, lc and the pretend servers the flows start
+        shell: bash
+        run: |
+          cargo build --workspace --bins --examples
+          cd frontends/win32 && cargo build
+
+      - name: Python for the UI flows
+        run: python -m pip install comtypes tomli Pillow
+
+      - name: UI flows
+        env:
+          LEGCON_FLOW_SHOTS: ${{ runner.temp }}/flow-failures
+        run: python regression-tests/run_flows.py
+
+      - name: Screens of failed flows
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-failures
+          path: ${{ runner.temp }}/flow-failures
+          if-no-files-found: ignore
+
+  # Release builds, once the lab and Windows both pass: the Win32 window and lc for Windows, lc for
+  # Linux. Each is kept as a workflow artifact.
+  build:
+    name: build (${{ matrix.target }})
+    needs: [unix90s, windows]
+    strategy:
+      matrix:
+        include:
+          - target: windows-x64
+            os: windows-latest
+          - target: linux-x64
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+          workspaces: |
+            . -> target
+            frontends/win32 -> target
+
+      - name: Release build
+        shell: bash
+        run: |
+          mkdir -p dist
+          cargo build --release --bin lc
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd frontends/win32 && cargo build --release)
+            cp target/release/lc.exe frontends/win32/target/release/legcon.exe dist/
+          else
+            cp target/release/lc dist/
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: legcon-${{ matrix.target }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
