@@ -404,9 +404,21 @@ pub fn pop(mtm: MainThreadMarker, anchor: Option<&NSView>, entries: &[Entry]) ->
             };
             menu.popUpMenuPositioningItem_atLocation_inView(None, NSPoint::new(0.0, y), Some(a));
         }
-        None => {
-            menu.popUpMenuPositioningItem_atLocation_inView(None, NSEvent::mouseLocation(), None);
-        }
+        None => match crate::window::main_window().and_then(|w| w.contentView().map(|v| (w, v))) {
+            // At the mouse, but in the window's content view, so accessibility lists the menu.
+            Some((w, v)) => {
+                let at = w.convertPointFromScreen(NSEvent::mouseLocation());
+                let at = v.convertPoint_fromView(at, None);
+                menu.popUpMenuPositioningItem_atLocation_inView(None, at, Some(&v));
+            }
+            None => {
+                menu.popUpMenuPositioningItem_atLocation_inView(
+                    None,
+                    NSEvent::mouseLocation(),
+                    None,
+                );
+            }
+        },
     }
     drop(target);
     PICKED.with(std::cell::Cell::take).map(|p| p as usize)

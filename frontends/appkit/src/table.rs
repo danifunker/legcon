@@ -101,8 +101,8 @@ define_class!(
             if state.on_drop.is_none() {
                 return NSDragOperation::None;
             }
-            let ok = match rows_from(info) {
-                Some(from) => Some(from.as_str()) != state.side,
+            let ok = match from_side(info) {
+                Some(from) => Some(from) != state.side,
                 None => !dropped_paths(info).is_empty(),
             };
             if !ok {
@@ -161,29 +161,38 @@ define_class!(
 );
 
 /// A row as it leaves by drag: the side it left, and a file URL for local rows.
+/// A row as it leaves by drag: a local row is its file's URL (Finder takes it), a remote row
+/// carries its side; our own panes know each other by the drag's source.
 fn writer(state: &State, row: isize) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
     let side = state.side?;
-    let item = NSPasteboardItem::new();
-    item.setString_forType(&ns(side), &ns(ROWS));
     let name = state.rows.get(row as usize)?.cells.first()?.clone();
     if let Some(dir) = &state.dir {
         let url = NSURL::fileURLWithPath(&ns(&dir.join(&name).to_string_lossy()));
-        if let Some(s) = url.absoluteString() {
-            // SAFETY: AppKit's own pasteboard type constant.
-            item.setString_forType(&s, unsafe { NSPasteboardTypeFileURL });
-        }
+        return Some(ProtocolObject::from_retained(url));
     }
+    let item = NSPasteboardItem::new();
+    item.setString_forType(&ns(side), &ns(ROWS));
     Some(ProtocolObject::from_retained(item))
+}
+
+/// The side of the legcon pane a drag comes from, if it does.
+fn from_side(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<&'static str> {
+    let source = info.draggingSource()?;
+    let list = source.downcast_ref::<ListView>()?;
+    let side = list.ivars().borrow().side;
+    side.or_else(|| match rows_from(info)?.as_str() {
+        "local" => Some("local"),
+        "remote" => Some("remote"),
+        _ => None,
+    })
 }
 
 fn accept(state: &State, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
     let Some(f) = state.on_drop.clone() else {
         return false;
     };
-    let what = match rows_from(info) {
-        Some(s) if s == "local" => Dropped::Rows("local"),
-        Some(s) if s == "remote" => Dropped::Rows("remote"),
-        Some(_) => return false,
+    let what = match from_side(info) {
+        Some(side) => Dropped::Rows(side),
         None => Dropped::Files(dropped_paths(info)),
     };
     // The drop may ask a question: let the drag finish first.
@@ -287,6 +296,8 @@ fn cell_view(mtm: MainThreadMarker, line: &Line, col: usize, width: f64) -> Reta
 pub struct Hooks {
     activate: Handler,
     menu: Handler,
+    /// The side its rows drag out as, so a drop knows which pane they left.
+    side: Option<&'static str>,
 }
 
 define_class!(
@@ -419,6 +430,7 @@ impl Table {
             s.side = Some(side);
             s.on_drop = Some(f);
         }
+        self.view.ivars().borrow_mut().side = Some(side);
         // SAFETY: AppKit's own pasteboard type constant.
         let kinds = [unsafe { NSPasteboardTypeFileURL }.to_owned(), ns(ROWS)];
         let kinds: Vec<&NSString> = kinds.iter().map(|k| &**k).collect();
