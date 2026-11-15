@@ -187,6 +187,9 @@ pub enum Action {
     ConsoleSend(String),
     /// Files or folders dropped from the OS (or another program) onto a pane.
     Drop(Side, Vec<PathBuf>),
+    /// Download these remote names into a folder other than the local pane's (rows dragged
+    /// out to the Finder or Explorer, which names the folder).
+    CopyOut(Vec<String>, PathBuf),
 }
 
 /// A name for a new or renamed file or folder: not empty, no path separators, nothing Windows refuses.
@@ -1261,6 +1264,18 @@ impl ConnectionController {
 
     /// Walk the picks into the queue; `start` runs the queue (Copy), otherwise it only fills.
     fn copy(&mut self, from: Side, names: Vec<String>, start: bool) -> Vec<Effect> {
+        let dir = self.local_dir.clone();
+        self.copy_into(from, names, dir, start)
+    }
+
+    /// As [`Self::copy`], with `local_dir` as the folder on this computer.
+    fn copy_into(
+        &mut self,
+        from: Side,
+        names: Vec<String>,
+        local_dir: PathBuf,
+        start: bool,
+    ) -> Vec<Effect> {
         if !self.can_disconnect() || self.remote_dir.is_none() {
             return vec![Effect::Message(format!(
                 "Connect to {} first.",
@@ -1272,7 +1287,7 @@ impl ConnectionController {
             return Vec::new();
         }
         let group = Group {
-            local_dir: self.local_dir.clone(),
+            local_dir,
             picks,
             sizes,
         };
@@ -1955,6 +1970,7 @@ impl Controller for ConnectionController {
             },
             Action::Drop(side, paths) => return self.drop_files(side, paths),
             Action::AddToQueue(side, names) => return self.copy(side, names, false),
+            Action::CopyOut(names, dir) => return self.copy_into(Side::Remote, names, dir, true),
             Action::Queue(op, ids) => {
                 let out = self.queue_op(op, &ids);
                 return self.nudge_queue(out);
@@ -2675,6 +2691,30 @@ mod tests {
         settle(&mut c);
         assert_eq!(c.state(), ConnState::Disconnected);
         assert!(c.remote_rows().is_empty());
+    }
+
+    #[test]
+    fn rows_dragged_out_download_into_the_folder_they_land_in() {
+        let home = tempfile::tempdir().unwrap();
+        let away = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        let to = away.path().to_path_buf();
+        assert!(c
+            .apply(Action::CopyOut(vec!["src".into(), ".profile".into()], to))
+            .is_empty());
+        settle(&mut c);
+        assert!(away.path().join(".profile").is_file());
+        assert!(away.path().join("src/Makefile.local").is_file());
+        assert!(
+            !home.path().join(".profile").exists(),
+            "not into the local pane"
+        );
+        // The local pane's own copy still lands in the local folder.
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        assert!(home.path().join(".profile").is_file());
     }
 
     #[test]
