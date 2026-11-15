@@ -13,7 +13,7 @@ PORTS=(
   10021:21 10121:2121 30000-30009:30000-30009
   10023:23 10512:512 10513:513 10514:514
   10139:139 10445:445
-  10022:22 10222:2222 10200:2200
+  10022:22 10222:2222 10200:2200 10202:2202
   10111:111 10111:111/udp 12049:12049 12049:12049/udp 12048:12048 12048:12048/udp
   12149:12149 12149:12149/udp 12148:12148 12148:12148/udp
   10548:548 10080:80 10070:70
@@ -23,7 +23,7 @@ PORTS=(
 SERVICES=(
   "vsftpd ftp 10021" "proftpd ftp 10121" "telnet telnet 10023" "rexec rexec 10512"
   "rlogin rlogin 10513" "rsh rsh 10514" "samba smb 10139" "openssh ssh 10022"
-  "dropbear ssh 10222" "ssh1 ssh 10200" "nfs nfs 10111" "nfs2 nfs 10111" "netatalk afp 10548"
+  "dropbear ssh 10222" "ssh1 ssh 10200" "openssh3 ssh 10202" "nfs nfs 10111" "nfs2 nfs 10111" "netatalk afp 10548"
   "apache http 10080" "gophernicus gopher 10070"
 )
 # Checked by `status` only: the NFSv2 server itself (lab-nfs2 reaches it through the portmapper).

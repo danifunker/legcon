@@ -14,6 +14,12 @@ RUN cd openssh-7.3p1 && ./configure --prefix=/opt/ssh1 --sysconfdir=/opt/ssh1/et
         --with-ssl-dir=/opt/ssl1 --with-ssh1 --without-pam --with-privsep-path=/var/empty \
  && make -j"$(nproc)" && make install-nokeys
 
+# --- Vintage SSH-2: OpenSSH 3.4p1 (2002) against the same OpenSSL; the current one is Debian's ---
+# Modern glibc has arc4random but not arc4random_stir, and modern Perl rejects defined(@x).
+FROM ssh1 AS vssh
+RUN curl -fsSLO https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-3.4p1.tar.gz  && tar xzf openssh-3.4p1.tar.gz
+RUN cd openssh-3.4p1 && perl -pi -e 's/defined\s*\(([\@%][\w:]+)\)/$1/g' fixpaths  && ac_cv_func_arc4random=no CFLAGS="-O2 -fcommon" ./configure --prefix=/opt/vssh         --sysconfdir=/opt/vssh/etc --with-ssl-dir=/opt/ssl1 --without-pam         --with-privsep-path=/var/empty  && make -j"$(nproc)" && make install-nokeys
+
 # --- NFS v3 in user space: unfs3 ---
 FROM debian:bookworm-slim AS unfs3
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -76,6 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libwolfssl35 libbsd0 procps iproute2 net-tools csh netbase \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ssh1 /opt/ssh1 /opt/ssh1
+COPY --from=vssh /opt/vssh /opt/vssh
 COPY --from=unfs3 /opt/unfs3 /opt/unfs3
 COPY --from=nfs2 /opt/nfs2 /opt/nfs2
 COPY --from=proftpd /opt/proftpd /opt/proftpd
@@ -83,7 +90,7 @@ COPY --from=netatalk /opt/netatalk /opt/netatalk
 COPY rootfs/ /
 RUN sh /lab/setup.sh
 # FTP 21 / 2121 (+ passive 30000-30009), Telnet 23, rexec 512, rlogin 513, rsh 514, SMB 139 / 445,
-# SSH 22, Dropbear 2222, SSH-1 2200, portmapper 111, NFSv3 12049 / mountd 12048,
+# SSH 22, Dropbear 2222, SSH-1 2200, vintage SSH-2 2202, portmapper 111, NFSv3 12049 / mountd 12048,
 # NFSv2 12149 / mountd v1 12148, AFP 548, HTTP 80, Gopher 70.
-EXPOSE 21 2121 23 512 513 514 139 445 22 2222 2200 111 12049 12048 12149 12148 548 80 70
+EXPOSE 21 2121 23 512 513 514 139 445 22 2222 2200 2202 111 12049 12048 12149 12148 548 80 70
 CMD ["/lab/start.sh"]

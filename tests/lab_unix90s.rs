@@ -347,6 +347,33 @@ fn password_auth() -> lc_ssh::Auth {
     }
 }
 
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn sftp_openssh_vintage() {
+    exercise(
+        Box::new(ssh(10202)),
+        PathStyle::Unix,
+        &["home", "lab", "upload"],
+        "openssh3",
+    );
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn shell_commands_on_vintage_openssh() {
+    // OpenSSH 3.4 without SFTP: SCP, dd and cat for resume, cksum for the check.
+    let opts = lc_ssh::Options {
+        sftp: false,
+        ..Default::default()
+    };
+    let mut s = lc_ssh::connect(&host(), 10202, USER, &password_auth(), &opts, &mut |_| {
+        Ok(())
+    })
+    .unwrap();
+    resume_round_trip(&mut s, "openssh3-shell", true);
+    s.disconnect(Duration::from_secs(5)).unwrap();
+}
+
 fn ssh(port: u16) -> lc_ssh::SshSession {
     lc_ssh::connect(
         &host(),
@@ -409,7 +436,7 @@ fn rexec_command() {
 #[test]
 #[ignore = "needs the lab container (lab/lab.sh up)"]
 fn ssh_exec_and_terminal() {
-    for port in [10022, 10222] {
+    for port in [10022, 10222, 10202] {
         let mut s = ssh(port);
         let r = s.run(b"echo ssh-$((6*7))").unwrap();
         assert_eq!(

@@ -10,6 +10,9 @@ log() { echo "lab: $*"; }
 [ -f /etc/ssh/ssh_host_rsa_key ] || ssh-keygen -A >/dev/null
 [ -f /etc/dropbear/dropbear_rsa_host_key ] || dropbearkey -t rsa -s 2048 -f /etc/dropbear/dropbear_rsa_host_key >/dev/null 2>&1
 [ -f /opt/ssh1/etc/ssh_host_key ] || /opt/ssh1/bin/ssh-keygen -t rsa1 -b 1024 -N '' -f /opt/ssh1/etc/ssh_host_key >/dev/null
+for t in rsa dsa; do
+  [ -f /opt/vssh/etc/ssh_host_${t}_key ] || /opt/vssh/bin/ssh-keygen -q -t $t -N '' -f /opt/vssh/etc/ssh_host_${t}_key
+done
 
 # rexecd and rshd refuse clients whose address has no name; name every address on our /24.
 net=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d. -f1-3)
@@ -37,10 +40,11 @@ sed -e "s/@HOST@/$HOST/" -e "s/@GOPHER_PORT@/$GOPHER_PORT/" /etc/inetd.lab.conf.
 log "SMB (Samba, SMB1 dialects allowed)"
 smbd --foreground --no-process-group &
 
-log "SSH: OpenSSH on 22, Dropbear on 2222, SSH-1 (OpenSSH 7.3) on 2200"
+log "SSH: OpenSSH on 22, Dropbear on 2222, SSH-1 (OpenSSH 7.3) on 2200, OpenSSH 3.4 on 2202"
 /usr/sbin/sshd -f /etc/ssh/sshd_config.lab
 dropbear -R -E -p 2222
 /opt/ssh1/sbin/sshd -f /opt/ssh1/etc/sshd_config.lab
+/opt/vssh/sbin/sshd -f /opt/vssh/etc/sshd_config.lab
 
 log "AFP (Netatalk)"
 /opt/netatalk/sbin/netatalk -F /etc/afp.lab.conf

@@ -1,0 +1,12 @@
+# OpenSSH 3.4p1 (2002, as Debian 3.0 and Red Hat 8/9 shipped it): era-correct SSH-2 for the legcon lab.
+Port 2202
+Protocol 2
+HostKey /opt/vssh/etc/ssh_host_rsa_key
+HostKey /opt/vssh/etc/ssh_host_dsa_key
+UsePrivilegeSeparation yes
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+Subsystem sftp /opt/vssh/libexec/sftp-server
+PidFile /run/sshd-vintage.pid

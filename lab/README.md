@@ -17,8 +17,9 @@ Dockerfile.
 | Telnet | inetutils telnetd | 10023 |
 | rexec, rlogin, rsh | netkit rsh-server (`.rhosts` trusts everyone: lab only) | 10512, 10513, 10514 |
 | SMB | Samba 4.17 with SMB1 (NT1) and LM / NTLMv1 logins allowed | 10139 (NetBIOS session), 10445 |
-| SSH-2 | OpenSSH 9.2 with the old algorithms added back | 10022 |
+| SSH-2, current | OpenSSH 9.2 with the old algorithms added back | 10022 |
 | SSH-2 | Dropbear 2022.83 | 10222 |
+| SSH-2, vintage | OpenSSH 3.4p1 (2002), built from source against OpenSSL 1.0.2u | 10202 |
 | **SSH-1** | OpenSSH 7.3p1 built with SSH-1 against OpenSSL 1.0.2u, `Protocol 1` only | 10200 |
 | NFS v3 | unfs3 0.11 (portmapper on 10111; NFS 12049, mountd v3 12048) | 10111 |
 | NFS v2 | nfs-user-server 2.2beta47, the old Linux user-space server, built against libtirpc (NFS 12149, mountd v1 12148) | 10111 |
