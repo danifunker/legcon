@@ -113,7 +113,7 @@ impl Des3 {
     }
 
     pub fn encrypt(&mut self, data: &mut [u8]) {
-        for b in data.chunks_exact_mut(8) {
+        for b in data.as_chunks_mut::<8>().0 {
             self.enc(0, b);
             self.dec(1, b);
             self.enc(2, b);
@@ -121,7 +121,7 @@ impl Des3 {
     }
 
     pub fn decrypt(&mut self, data: &mut [u8]) {
-        for b in data.chunks_exact_mut(8) {
+        for b in data.as_chunks_mut::<8>().0 {
             self.dec(2, b);
             self.enc(1, b);
             self.dec(0, b);
