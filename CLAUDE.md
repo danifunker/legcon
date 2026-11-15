@@ -19,7 +19,7 @@ in full, every session.** It is binding. In short:
 - **Model**: `crates/lc-*` (protocol crates and `lc-core` only) and `src/model/`. No UI.
 - **Controller**: `src/controller/`, one per task, `Action`s in, `Effect`s out, exhaustive enums,
   widget ids, key map as data. No toolkit, no raw threads.
-- **View**: `src/cli/` and `frontends/win32/`. Renders and fulfils effects only; never imports
+- **View**: `src/cli/`, `frontends/win32/` and `frontends/appkit/`. Renders and fulfils effects only; never imports
   `model` or a protocol crate.
 - Slow work is a `model::job::Job`.
 - Disconnect is a clean server-side log-off; no inbound connections to the client.
@@ -31,6 +31,7 @@ cargo build
 cargo test --workspace
 cargo clippy --workspace --all-targets
 cd frontends/win32 && cargo build   # separate workspace
+cd frontends/appkit && cargo build  # separate workspace (macOS); bundle/build-app.sh makes legcon.app
 ```
 
 Never run two cargo builds at once.

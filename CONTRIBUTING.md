@@ -13,6 +13,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets
 cargo run --bin lc -- machines list
 cd frontends/win32 && cargo run     # the Win32 shell (its own workspace and lockfile)
+cd frontends/appkit && cargo run    # the AppKit shell on macOS (likewise); bundle/build-app.sh makes legcon.app
 ```
 
 ## Architecture policy (MVC) - read before adding any code
@@ -23,7 +24,7 @@ adapted. If a change seems to need an exception, stop and raise it instead of wo
 ### The three layers
 
 ```
-VIEW        src/cli/ (lc verbs)   frontends/win32/ (later frontends/appkit, frontends/gtk4)
+VIEW        src/cli/ (lc verbs)   frontends/win32/   frontends/appkit/ (later frontends/gtk4)
             renders state, maps input to Actions, fulfils Effects
 CONTROLLER  src/controller/  one controller per task, screen or dialog
             state, Actions in / Effects out, validation, key map, widget ids, jobs

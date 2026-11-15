@@ -1,5 +1,5 @@
 # legcon's pipeline: the lab (Linux), Windows (checks, tests, the Win32 window driven by its UI
-# flows), then release builds once both pass.
+# flows), macOS (the same for the AppKit window), then release builds once all three pass.
 name: ci
 
 on:
@@ -110,11 +110,79 @@ jobs:
           path: ${{ runner.temp }}/flow-failures
           if-no-files-found: ignore
 
-  # Release builds, once the lab and Windows both pass: the Win32 window and lc for Windows, lc for
-  # Linux. Each is kept as a workflow artifact.
+  # macOS: the AppKit window's formatting and clippy, the MVC boundaries, every test, and the UI
+  # flows driving the real window through Accessibility (the demo machine and pretend servers).
+  macos:
+    name: macos (checks, tests, UI flows)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            frontends/appkit -> target
+
+      - name: Formatting
+        run: cargo fmt --all --check && (cd frontends/appkit && cargo fmt --check)
+
+      - name: Clippy
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cd frontends/appkit && cargo clippy -- -D warnings
+
+      - name: MVC boundaries
+        run: sh scripts/check-boundaries.sh
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build the AppKit window, lc and the pretend servers the flows start
+        run: |
+          cargo build --workspace --bins --examples
+          frontends/appkit/bundle/build-app.sh --debug
+
+      - name: Python for the UI flows
+        run: |
+          python3 -m venv regression-tests/.venv
+          regression-tests/.venv/bin/pip install pyobjc-framework-ApplicationServices pyobjc-framework-Quartz tomli
+
+      # The flows need the Accessibility permission, which hosted runners grant to the steps'
+      # shell; when they do not, the job says so instead of failing on it.
+      - name: Accessibility permission
+        id: ax
+        run: |
+          if regression-tests/.venv/bin/python -c "import ApplicationServices as A, sys; sys.exit(0 if A.AXIsProcessTrusted() else 1)"; then
+            echo "trusted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No Accessibility permission on this runner: the AppKit UI flows were not run."
+            echo "trusted=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: UI flows
+        if: steps.ax.outputs.trusted == 'true'
+        env:
+          LEGCON_FLOW_SHOTS: ${{ runner.temp }}/flow-failures
+        run: regression-tests/.venv/bin/python regression-tests/run_flows.py --shell appkit
+
+      - name: Screens of failed flows
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: flow-failures-macos
+          path: ${{ runner.temp }}/flow-failures
+          if-no-files-found: ignore
+
+  # Release builds, once the lab, Windows and macOS pass: the Win32 window and lc for Windows, the
+  # AppKit legcon.app and lc for macOS, lc for Linux. Each is kept as a workflow artifact.
   build:
     name: build (${{ matrix.target }})
-    needs: [unix90s, windows]
+    needs: [unix90s, windows, macos]
     strategy:
       matrix:
         include:
@@ -122,6 +190,8 @@ jobs:
             os: windows-latest
           - target: linux-x64
             os: ubuntu-latest
+          - target: macos-arm64
+            os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
@@ -134,6 +204,7 @@ jobs:
           workspaces: |
             . -> target
             frontends/win32 -> target
+            frontends/appkit -> target
 
       - name: Release build
         shell: bash
@@ -143,6 +214,11 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             (cd frontends/win32 && cargo build --release)
             cp target/release/lc.exe frontends/win32/target/release/legcon.exe dist/
+          elif [ "$RUNNER_OS" = macOS ]; then
+            frontends/appkit/bundle/build-app.sh "$PWD/dist"
+            # Zipped with ditto: an artifact would drop the bundle's executable bit.
+            (cd dist && ditto -c -k --keepParent legcon.app legcon-macos.zip && rm -rf legcon.app)
+            cp target/release/lc dist/
           else
             cp target/release/lc dist/
           fi

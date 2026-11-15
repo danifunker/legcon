@@ -11,8 +11,19 @@ python regression-tests/run_flows.py connection.toml    # one file (flow.conn.qu
 python regression-tests/run_flows.py flow.settings.os-store
 ```
 
-Needs Python 3.9+ with `comtypes`, `tomli` and (for failure screenshots) `Pillow`. A failed flow
-leaves a picture of the screen in `regression-tests/failures/` (or `LEGCON_FLOW_SHOTS`).
+On macOS the AppKit shell is the default (`--shell appkit`):
+
+```bash
+cargo build --workspace --bins --examples && (cd frontends/appkit && cargo build)
+python3 -m venv regression-tests/.venv
+regression-tests/.venv/bin/pip install pyobjc-framework-ApplicationServices pyobjc-framework-Quartz tomli
+regression-tests/.venv/bin/python regression-tests/run_flows.py
+```
+
+Win32 needs Python 3.9+ with `comtypes`, `tomli` and (for failure screenshots) `Pillow`; AppKit
+needs `pyobjc` and `tomli`, and the Accessibility permission for whatever starts the driver (System
+Settings > Privacy & Security > Accessibility). A failed flow leaves a picture of the shell's own
+windows (never the rest of the screen) in `regression-tests/failures/` (or `LEGCON_FLOW_SHOTS`).
 
 The pipeline (`.github/workflows/ci.yml`, job `windows`) runs every flow except the lab ones on
 GitHub's Windows runner, and keeps the pictures of failed ones as the `flow-failures` artifact.
@@ -26,7 +37,7 @@ what must be true afterwards:
 ```toml
 [[case]]
 id = "flow.settings.edit-and-save"
-shells = ["win32"]                       # default: win32
+shells = ["win32"]                       # default: every shell
 machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
 secrets = { sparc = "pw" }               # the OS store's contents (a file stands in for it)
 ui = [
@@ -53,7 +64,7 @@ from `lab/lab.sh machines`). `local_files = { "name" = "text" }` puts files in t
 first, and `{run}` is unique per run, so repeated runs do not collide on the lab server.
 
 `{work}` anywhere in a case is the flow's scratch folder (the home folder; the config is in
-`{work}/config`).
+`{work}/config`), and `{sep}` is the path separator (`'{work}{sep}retro'`).
 
 Controls are named by their **controller widget id** (`src/controller/ids.rs`), never by what one
 shell calls them, so a flow runs unchanged on every shell that has a driver. Form fields use their
@@ -71,7 +82,7 @@ field id (`machine.uid`); a form's sections, OK and Cancel are `<purpose>.sectio
 | `check` | `id`, `on` | Set a check box |
 | `choose` | `id`, `option` | Pick a drop-down entry by its text |
 | `section` | `id`, `name` | Show a form section (tab) |
-| `key` | `id`, `key` | Focus a control and type a chord (`ctrl+n`, `f6`, `enter`) |
+| `key` | `id`, `key` | Focus a control and type a chord (`ctrl+n`, `f6`, `enter`); `ctrl` is Primary, so Cmd on macOS |
 | `press` | `name` | Press a message-box button by its label (they have no ids) |
 | `menu` | `name` | Choose an item of the open popup menu (Places) by its text |
 | `wait_dialog`, `expect_no_dialog` | `timeout` | A dialog opened / every dialog closed |
@@ -84,6 +95,7 @@ field id (`machine.uid`); a form's sections, OK and Cancel are `<purpose>.sectio
 A driver starts the shell with the flow's config folder (`LEGCON_CONFIG_DIR`) and OS-store file
 (`LEGCON_TEST_SECRETS`), prints `{"ready": true}`, then reads one JSON op per line and answers
 `{"ok": true}` or `{"ok": false, "error": ...}`; `{"op": "quit"}` closes the shell, which must exit
-cleanly. `drivers/uia_driver.py` is the Win32 one (UI Automation by AutomationId). The GTK and
-AppKit shells get drivers speaking the same protocol (AT-SPI, the macOS accessibility API), and
-their entry in `run_flows.py`'s `SHELLS`.
+cleanly. `drivers/uia_driver.py` is the Win32 one (UI Automation by AutomationId) and
+`drivers/ax_driver.py` the AppKit one (Accessibility by AXIdentifier; text is typed as key presses,
+so live validation sees it). The GTK shell will get an AT-SPI driver and its entry in
+`run_flows.py`'s `SHELLS`.
