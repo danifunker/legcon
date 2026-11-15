@@ -15,8 +15,13 @@ use super::{
     PathSpec, ServiceKind, TabColor, TextSpec,
 };
 use crate::model::job::{Job, Notify};
+use crate::model::queue::{Id, OnExisting};
 use crate::model::term::TermSession;
-use crate::model::transfer::{self, Direction, Pick, Summary};
+use crate::model::transfer::{self, Direction, Pick, Plan};
+
+mod transfers;
+use transfers::{direction_from, ItemAnswer, Transfers};
+pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS};
 
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password, Service};
@@ -160,7 +165,18 @@ pub enum Action {
     CheckRsh,
     /// The answer to "rsh refused": an index into the buttons it showed.
     RshRefusedAnswered(usize),
-    CancelTransfers,
+    /// Walk these names into the transfer queue without starting it.
+    AddToQueue(Side, Vec<String>),
+    /// A Transfers button, on the selected rows.
+    Queue(QueueOp, Vec<u64>),
+    /// "Adding N files to the queue": Add them, Cancel.
+    QueueManyAnswered(usize),
+    /// "Already there" for a batch: an index into the buttons it showed.
+    QueueExistsAnswered(usize),
+    /// "Already there" for one queued file: an index into the buttons it showed.
+    QueueItemAnswered(usize),
+    /// "Transfers are not finished": Finish first, Pause them, Cancel them, Stay connected.
+    DisconnectAnswered(usize),
     NewFolder(Side),
     NewFolderAnswered(Option<String>),
     Rename(Side, String),
@@ -243,15 +259,6 @@ pub(crate) enum PlaceEvent {
     Pinned(PathBuf, bool),
 }
 
-/// One copy batch as the Transfers tab lists it.
-struct Batch {
-    label: String,
-    job: Job<Summary>,
-    /// The finished line, once it ended.
-    result: Option<String>,
-    to: Side,
-}
-
 /// Picks that share one local folder (a pane's, or the folder files were dropped from).
 struct Group {
     local_dir: PathBuf,
@@ -261,7 +268,14 @@ struct Group {
 
 /// What a pending question is about.
 enum Pending {
-    Copy(Direction, Vec<Group>),
+    /// A planned batch over the size that asks first; whether to start the queue.
+    QueueMany(Plan, bool),
+    /// A planned batch with targets already there, and what each button means (`None`: cancel).
+    QueueExists(Plan, bool, Vec<Option<OnExisting>>),
+    /// One queued file whose target is there.
+    QueueItem(Id, Vec<ItemAnswer>),
+    /// Disconnect with transfers unfinished.
+    QueueDisconnect,
     /// Files dropped from the OS onto the local pane, to copy into its folder.
     Import(Vec<PathBuf>),
     NewFolder(Side),
@@ -392,7 +406,7 @@ pub struct ConnectionController {
     shell_close: Option<Job<()>>,
     shell_error: Option<String>,
     shell_size: (u16, u16),
-    batches: Vec<Batch>,
+    xfer: Transfers,
     pending: Option<Pending>,
     ops: Vec<(Side, Job<()>)>,
     console: Vec<String>,
@@ -513,7 +527,7 @@ impl ConnectionController {
             shell_close: None,
             shell_error: None,
             shell_size: (80, 24),
-            batches: Vec::new(),
+            xfer: Transfers::default(),
             pending: None,
             ops: Vec::new(),
             console: Vec::new(),
@@ -1213,31 +1227,6 @@ impl ConnectionController {
         }
     }
 
-    /// The Transfers tab: every batch of this session, newest first.
-    pub fn transfers_text(&self) -> String {
-        if self.batches.is_empty() {
-            return "No transfers yet. Select files and press F6, or right-click and choose Copy."
-                .into();
-        }
-        self.batches
-            .iter()
-            .rev()
-            .map(|b| match &b.result {
-                Some(r) => format!("{}\n    {r}", b.label),
-                None => {
-                    let s = b.job.snapshot();
-                    format!("{}\n    {}   {}", b.label, s.phase, s.detail())
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    /// Whether a copy is running (its Cancel shows).
-    pub fn copying(&self) -> bool {
-        self.batches.iter().any(|b| b.result.is_none())
-    }
-
     pub fn can_console(&self) -> bool {
         self.can_disconnect() && self.console_job.is_none()
     }
@@ -1270,65 +1259,8 @@ impl ConnectionController {
         (picks, sizes)
     }
 
-    fn start_copy(&mut self, dir: Direction, g: Group, overwrite: bool) {
-        let Group {
-            local_dir,
-            picks,
-            sizes,
-        } = g;
-        let Some(remote_dir) = self.remote_dir.clone() else {
-            return;
-        };
-        self.note_local(local_dir.clone());
-        self.note_remote(&remote_dir);
-        let what = if picks.len() == 1 {
-            picks[0].name.clone()
-        } else {
-            format!("{} items", picks.len())
-        };
-        let label = match dir {
-            Direction::Download => format!(
-                "Download {what} from {} to {}",
-                self.machine.name,
-                local_dir.display()
-            ),
-            Direction::Upload => format!("Upload {what} to {}:{}", self.machine.name, remote_dir),
-        };
-        let job = self.sessions.run(
-            &self.machine.id,
-            label.clone(),
-            Arc::clone(&self.notify),
-            move |fs, ctx| {
-                transfer::copy(
-                    fs,
-                    &transfer::Batch {
-                        dir,
-                        remote_dir: &remote_dir,
-                        local_dir: &local_dir,
-                        picks: &picks,
-                        sizes: &sizes,
-                        overwrite,
-                    },
-                    ctx,
-                )
-            },
-        );
-        let to = match dir {
-            Direction::Download => Side::Local,
-            Direction::Upload => Side::Remote,
-        };
-        self.batches.push(Batch {
-            label,
-            job,
-            result: None,
-            to,
-        });
-        if self.shell_state() != ConnState::Connected {
-            self.term = TermTab::Transfers;
-        }
-    }
-
-    fn copy(&mut self, from: Side, names: Vec<String>) -> Vec<Effect> {
+    /// Walk the picks into the queue; `start` runs the queue (Copy), otherwise it only fills.
+    fn copy(&mut self, from: Side, names: Vec<String>, start: bool) -> Vec<Effect> {
         if !self.can_disconnect() || self.remote_dir.is_none() {
             return vec![Effect::Message(format!(
                 "Connect to {} first.",
@@ -1339,32 +1271,18 @@ impl ConnectionController {
         if picks.is_empty() {
             return Vec::new();
         }
-        let dir = match from {
-            Side::Local => Direction::Upload,
-            Side::Remote => Direction::Download,
-        };
-        let clashes: Vec<&str> = picks
-            .iter()
-            .filter(|p| match dir {
-                Direction::Download => self.local_dir.join(names::to_local(&p.name)).exists(),
-                Direction::Upload => {
-                    let target = names::to_remote(&p.name, self.charset(), self.remote_style());
-                    self.remote_rows.iter().any(|e| e.name == target)
-                }
-            })
-            .map(|p| p.name.as_str())
-            .collect();
         let group = Group {
             local_dir: self.local_dir.clone(),
-            picks: picks.clone(),
+            picks,
             sizes,
         };
-        if clashes.is_empty() {
-            self.start_copy(dir, group, true);
-            return Vec::new();
-        }
-        self.pending = Some(Pending::Copy(dir, vec![group]));
-        conflict_question(&clashes)
+        self.start_plan(direction_from(from), group, start);
+        Vec::new()
+    }
+
+    /// The queue's settings (the app's, and again when they change).
+    pub(crate) fn set_queue_prefs(&mut self, prefs: QueuePrefs) {
+        self.xfer.prefs = prefs;
     }
 
     fn charset(&self) -> lc_core::Charset {
@@ -1437,45 +1355,11 @@ impl ConnectionController {
                         }),
                     }
                 }
-                let clashes: Vec<String> = paths
-                    .iter()
-                    .map(name)
-                    .filter(|n| self.remote_rows.iter().any(|e| &e.name == n))
-                    .collect();
-                if clashes.is_empty() {
-                    for g in groups {
-                        self.start_copy(Direction::Upload, g, true);
-                    }
-                    return Vec::new();
+                for g in groups {
+                    self.start_plan(Direction::Upload, g, true);
                 }
-                self.pending = Some(Pending::Copy(Direction::Upload, groups));
-                conflict_question(&clashes.iter().map(String::as_str).collect::<Vec<_>>())
+                Vec::new()
             }
-        }
-    }
-
-    fn start_import(&mut self, paths: Vec<PathBuf>, overwrite: bool) {
-        let dest = self.local_dir.clone();
-        let what = if paths.len() == 1 {
-            paths[0]
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        } else {
-            format!("{} items", paths.len())
-        };
-        let label = format!("Copy {what} into {}", dest.display());
-        let job = Job::spawn(label.clone(), Arc::clone(&self.notify), move |ctx| {
-            crate::model::local::copy_into(&paths, &dest, overwrite, ctx)
-        });
-        self.batches.push(Batch {
-            label,
-            job,
-            result: None,
-            to: Side::Local,
-        });
-        if self.shell_state() != ConnState::Connected {
-            self.term = TermTab::Transfers;
         }
     }
 }
@@ -1606,9 +1490,13 @@ impl ConnectionController {
         if let Some(e) = self.remote_error.as_ref().or(self.local_error.as_ref()) {
             return e.clone();
         }
-        match self.state() {
+        let state = match self.state() {
             ConnState::Connected => format!("Connected to {}.", self.machine.name),
             _ => "Not connected.".into(),
+        };
+        match self.queue_summary() {
+            q if q.is_empty() => state,
+            q => format!("{state} {q}."),
         }
     }
 
@@ -1810,6 +1698,7 @@ impl ConnectionController {
         if !self.can_disconnect() {
             return None;
         }
+        self.queue_on_disconnect();
         let job = self
             .sessions
             .disconnect(&self.machine.id, Arc::clone(&self.notify));
@@ -1988,6 +1877,9 @@ impl Controller for ConnectionController {
                 self.log_in(self.asking_for, Some(p));
             }
             Action::Disconnect => {
+                if let Some(ask) = self.ask_disconnect() {
+                    return ask;
+                }
                 self.begin_disconnect();
             }
             Action::RemoteHome => {
@@ -2044,7 +1936,7 @@ impl Controller for ConnectionController {
                     let _ = s.resize(cols, rows);
                 }
             }
-            Action::Copy(from, names) => return self.copy(from, names),
+            Action::Copy(from, names) => return self.copy(from, names, true),
             Action::HostKeyAnswered(choice) => self.host_key_answered(choice),
             Action::SetUpKeyLogin => return self.start_key_setup(),
             Action::SetUpRshTrust => return self.start_rsh(true),
@@ -2058,19 +1950,30 @@ impl Controller for ConnectionController {
                 }
             }
             Action::CopyConflict(choice) => match self.pending.take() {
-                Some(Pending::Copy(dir, groups)) if choice < 2 => {
-                    for g in groups {
-                        self.start_copy(dir, g, choice == 0);
-                    }
-                }
                 Some(Pending::Import(paths)) if choice < 2 => self.start_import(paths, choice == 0),
                 _ => {}
             },
             Action::Drop(side, paths) => return self.drop_files(side, paths),
-            Action::CancelTransfers => {
-                for b in self.batches.iter().filter(|b| b.result.is_none()) {
-                    b.job.cancel();
-                }
+            Action::AddToQueue(side, names) => return self.copy(side, names, false),
+            Action::Queue(op, ids) => {
+                let out = self.queue_op(op, &ids);
+                return self.nudge_queue(out);
+            }
+            Action::QueueManyAnswered(choice) => {
+                let out = self.queue_many_answered(choice);
+                return self.nudge_queue(out);
+            }
+            Action::QueueExistsAnswered(choice) => {
+                self.queue_exists_answered(choice);
+                return self.nudge_queue(Vec::new());
+            }
+            Action::QueueItemAnswered(choice) => {
+                self.queue_item_answered(choice);
+                return self.nudge_queue(Vec::new());
+            }
+            Action::DisconnectAnswered(choice) => {
+                self.disconnect_answered(choice);
+                return self.nudge_queue(Vec::new());
             }
             Action::NewFolder(side) => {
                 if side == Side::Remote && !self.can_disconnect() {
@@ -2239,27 +2142,7 @@ impl Controller for ConnectionController {
             }
         }
         let mut refresh = (false, false);
-        for b in self.batches.iter_mut().filter(|b| b.result.is_none()) {
-            if let Some(r) = job_outcome(&b.job) {
-                b.result = Some(match r {
-                    Ok(s) => {
-                        let mut line = format!("Done: {} file(s), {}", s.files, size_text(s.bytes));
-                        if !s.skipped.is_empty() {
-                            line += &format!("; skipped {} that already existed", s.skipped.len());
-                        }
-                        if let Some((name, why)) = s.failed.first() {
-                            line += &format!("; {} failed (first: {name}: {why})", s.failed.len());
-                        }
-                        line
-                    }
-                    Err(e) => format!("Stopped: {e}"),
-                });
-                match b.to {
-                    Side::Local => refresh.0 = true,
-                    Side::Remote => refresh.1 = true,
-                }
-            }
-        }
+        self.tick_transfers(&mut out, &mut refresh);
         let mut finished = Vec::new();
         self.ops.retain(|(side, job)| match job_outcome(job) {
             Some(r) => {
@@ -2516,6 +2399,52 @@ mod tests {
         assert_eq!(c.machine.password, Password::Ask);
     }
 
+    /// Tick until a question with this purpose comes up.
+    fn settle_ask(c: &mut ConnectionController, purpose: &str) -> super::super::ChoiceSpec {
+        for _ in 0..400 {
+            for e in c.tick() {
+                if let Effect::Choose(s) = e {
+                    assert_eq!(s.purpose, purpose, "{}", s.message);
+                    return s;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("no {purpose} question");
+    }
+
+    #[test]
+    fn disconnect_with_transfers_left_asks_and_can_finish_first() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        std::fs::write(home.path().join("a.txt"), b"aaa").unwrap();
+        c.apply(Action::Refresh(Side::Local));
+        settle(&mut c);
+        c.apply(Action::AddToQueue(Side::Local, vec!["a.txt".into()]));
+        settle(&mut c);
+        let e = c.apply(Action::Disconnect);
+        assert!(
+            matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.queue.disconnect"),
+            "{e:?}"
+        );
+        assert_eq!(c.state(), ConnState::Connected);
+        c.apply(Action::DisconnectAnswered(0));
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Disconnected);
+        assert!(c
+            .queue_rows()
+            .iter()
+            .any(|r| r.name == "a.txt" && r.status.starts_with("Done")));
+        // Nothing left: Disconnect just logs off.
+        c.apply(Action::Connect);
+        settle(&mut c);
+        assert!(c.apply(Action::Disconnect).is_empty());
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Disconnected);
+    }
+
     fn settle(c: &mut ConnectionController) {
         for _ in 0..400 {
             c.tick();
@@ -2691,7 +2620,7 @@ mod tests {
         let mut c = tab(home.path());
         c.apply(Action::Connect);
         settle(&mut c);
-        // Download a folder and a file.
+        // Download a folder and a file: one queue entry per file, each checked.
         assert!(c
             .apply(Action::Copy(
                 Side::Remote,
@@ -2700,21 +2629,72 @@ mod tests {
             .is_empty());
         settle(&mut c);
         assert!(home.path().join("src/Makefile.local").is_file());
-        assert!(
-            c.transfers_text().contains("Done: 3 file(s)"),
+        let done = |c: &ConnectionController, what: &str| {
+            c.queue_rows()
+                .iter()
+                .filter(|r| r.status.starts_with(what))
+                .count()
+        };
+        assert_eq!(
+            done(&c, "Done, CRC-32 matches"),
+            3,
             "{}",
             c.transfers_text()
         );
-        // Again: everything exists now, so it asks.
-        let e = c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
-        assert!(matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.copy.conflict"));
-        c.apply(Action::CopyConflict(1));
+        // Again: it is there now, so the batch asks; Skip them leaves it.
+        c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        let s = settle_ask(&mut c, "conn.queue.exists");
+        let skip = s.choices.iter().position(|b| b == "Skip them").unwrap();
+        c.apply(Action::QueueExistsAnswered(skip));
         settle(&mut c);
+        assert_eq!(done(&c, "Skipped"), 1, "{}", c.transfers_text());
+        // Ask for each: the queue stops at each file that is there; Skip all answers the rest.
+        c.apply(Action::Copy(Side::Remote, vec!["src".into()]));
+        let s = settle_ask(&mut c, "conn.queue.exists");
+        let each = s.choices.iter().position(|b| b == "Ask for each").unwrap();
+        c.apply(Action::QueueExistsAnswered(each));
+        let s = settle_ask(&mut c, "conn.queue.item");
         assert!(
-            c.transfers_text().contains("skipped 1"),
+            s.message.contains("already on this computer"),
             "{}",
-            c.transfers_text()
+            s.message
         );
+        let all = s.choices.iter().position(|b| b == "Skip all").unwrap();
+        c.apply(Action::QueueItemAnswered(all));
+        settle(&mut c);
+        assert_eq!(done(&c, "Skipped"), 3, "{}", c.transfers_text());
+        // Over the limit, the batch asks before it is added; Cancel adds nothing.
+        c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
+        c.set_queue_prefs(QueuePrefs {
+            ask_over: 1,
+            checksum: false,
+        });
+        c.apply(Action::Copy(Side::Remote, vec!["src".into()]));
+        let s = settle_ask(&mut c, "conn.queue.many");
+        assert!(s.message.starts_with("Adding 2 files"), "{}", s.message);
+        c.apply(Action::QueueManyAnswered(1));
+        settle(&mut c);
+        assert!(c.queue_rows().is_empty(), "{}", c.transfers_text());
+        // Add to queue fills it without starting; Start runs it.
+        std::fs::write(home.path().join("later.txt"), b"later").unwrap();
+        c.apply(Action::Refresh(Side::Local));
+        settle(&mut c);
+        c.apply(Action::AddToQueue(Side::Local, vec!["later.txt".into()]));
+        settle(&mut c);
+        assert_eq!(done(&c, "Waiting"), 1, "{}", c.transfers_text());
+        assert!(c.transfers_text().contains("the queue is paused"));
+        let ids: Vec<u64> = c.queue_rows().iter().map(|r| r.id).collect();
+        let buttons = c.queue_buttons(&ids);
+        assert!(buttons
+            .iter()
+            .any(|b| b.op == QueueOp::Start && b.enabled && b.id == ids::QUEUE_RUN));
+        assert!(!buttons.iter().any(|b| b.op == QueueOp::Resume && b.enabled));
+        c.apply(Action::Queue(QueueOp::Start, Vec::new()));
+        settle(&mut c);
+        assert_eq!(done(&c, "Done, size matches"), 1, "{}", c.transfers_text());
+        assert!(c.remote_rows().iter().any(|r| r.name == "later.txt"));
+        c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
         // Upload a new local file; it shows in the remote listing.
         std::fs::write(home.path().join("hello.txt"), b"hi there").unwrap();
         c.apply(Action::Refresh(Side::Local));
@@ -2805,7 +2785,7 @@ mod tests {
         c.apply(Action::CopyConflict(1));
         settle(&mut c);
         assert!(
-            c.transfers_text().contains("Done: 0 file(s)"),
+            c.transfers_text().contains("0 file(s)"),
             "{}",
             c.transfers_text()
         );

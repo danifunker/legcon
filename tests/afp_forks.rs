@@ -42,9 +42,8 @@ fn try_run(
             local_dir: &local,
             picks: &picks,
             sizes: &[None],
-            overwrite: true,
         };
-        copy(&mut *s.lock().unwrap(), &b, ctx)
+        copy(&mut *s.lock().unwrap(), &b, true, ctx)
     });
     match job.wait().status {
         legcon::model::job::Status::Failed(e) => Err(e),

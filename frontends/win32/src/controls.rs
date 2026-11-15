@@ -3,13 +3,13 @@
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_TEXT, LVITEMW,
-    LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMTEXTW, LVNI_SELECTED, LVSIL_SMALL,
-    LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS,
-    LVS_SINGLESEL, TCIF_TEXT, TCITEMW, TCM_DELETEALLITEMS, TCM_GETCURSEL, TCM_GETITEMCOUNT,
-    TCM_GETITEMRECT, TCM_INSERTITEMW, TCM_SETCURSEL, TCM_SETITEMSIZE, TCS_FIXEDWIDTH,
-    TCS_OWNERDRAWFIXED,
+    SetWindowTheme, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_STATE,
+    LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
+    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMSTATE,
+    LVM_SETITEMTEXTW, LVNI_SELECTED, LVSIL_SMALL, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
+    LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS, LVS_SINGLESEL, TCIF_TEXT, TCITEMW,
+    TCM_DELETEALLITEMS, TCM_GETCURSEL, TCM_GETITEMCOUNT, TCM_GETITEMRECT, TCM_INSERTITEMW,
+    TCM_SETCURSEL, TCM_SETITEMSIZE, TCS_FIXEDWIDTH, TCS_OWNERDRAWFIXED,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_TABSTOP,
@@ -93,7 +93,69 @@ pub fn fill(list: HWND, rows: &[(i32, Vec<String>)]) {
     }
 }
 
-/// The selected row of a single-selection list view.
+/// Bring a list from `old` rows to `new`: cell by cell when the count is unchanged, so the
+/// selection and scroll stay put while a row's progress moves; refilled otherwise.
+pub fn update(list: HWND, old: &[(i32, Vec<String>)], new: &[(i32, Vec<String>)]) {
+    if old.len() != new.len() {
+        fill(list, new);
+        return;
+    }
+    for (n, (o, r)) in old.iter().zip(new).enumerate() {
+        for (col, cell) in r.1.iter().enumerate() {
+            if o.1.get(col) == Some(cell) && (col > 0 || o.0 == r.0) {
+                continue;
+            }
+            let mut t = ui::wide(&ui::plain(cell));
+            let item = LVITEMW {
+                mask: if col == 0 {
+                    LVIF_TEXT | LVIF_IMAGE
+                } else {
+                    LVIF_TEXT
+                },
+                iItem: n as i32,
+                iSubItem: col as i32,
+                iImage: r.0,
+                pszText: PWSTR(t.as_mut_ptr()),
+                ..Default::default()
+            };
+            send(list, LVM_SETITEMTEXTW, n, &item as *const _ as isize);
+            if col == 0 && o.0 != r.0 {
+                send(
+                    list,
+                    windows::Win32::UI::Controls::LVM_SETITEMW,
+                    0,
+                    &item as *const _ as isize,
+                );
+            }
+        }
+    }
+}
+
+/// Select exactly these rows.
+pub fn select_rows(list: HWND, rows: &[usize]) {
+    let state = |on: bool| LVITEMW {
+        mask: LVIF_STATE,
+        state: if on {
+            LVIS_SELECTED
+        } else {
+            Default::default()
+        },
+        stateMask: LVIS_SELECTED,
+        ..Default::default()
+    };
+    let off = state(false);
+    send(
+        list,
+        LVM_SETITEMSTATE,
+        usize::MAX,
+        &off as *const _ as isize,
+    );
+    let on = state(true);
+    for &r in rows {
+        send(list, LVM_SETITEMSTATE, r, &on as *const _ as isize);
+    }
+}
+
 /// Every selected row, in order.
 pub fn selected_all(list: HWND) -> Vec<usize> {
     let mut out = Vec::new();
@@ -101,6 +163,10 @@ pub fn selected_all(list: HWND) -> Vec<usize> {
     loop {
         let i = send(list, LVM_GETNEXTITEM, at, LVNI_SELECTED as isize);
         let Ok(i) = usize::try_from(i) else { break };
+        // A destroyed list answers 0 forever; the next selected row always comes later.
+        if at != usize::MAX && i <= at {
+            break;
+        }
         out.push(i);
         at = i;
     }

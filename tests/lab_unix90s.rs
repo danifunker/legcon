@@ -113,6 +113,61 @@ fn ftp_vsftpd() {
 
 #[test]
 #[ignore = "needs the lab container (lab/lab.sh up)"]
+fn ftp_append_and_checksum() {
+    let mut s = lc_ftp::connect(&host(), p(10021), USER, PASSWORD, &Default::default()).unwrap();
+    resume_round_trip(&mut s, "vsftpd", false);
+    s.disconnect(Duration::from_secs(5)).unwrap();
+    // proftpd refuses APPE as configured; the queue's copy then sends the file whole.
+    let mut s = lc_ftp::connect(&host(), p(10121), USER, PASSWORD, &Default::default()).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let data: Vec<u8> = (0..3000u32).map(|i| (i % 253) as u8).collect();
+    std::fs::write(local.path().join("part.bin"), &data).unwrap();
+    let remote = RemotePath::parse(
+        PathStyle::Unix,
+        &format!("/home/lab/upload/lc-part-{}.bin", std::process::id()),
+    );
+    {
+        let mut w = s.open_write(&remote, WriteMode::Create).unwrap();
+        w.write_all(&data[..1000]).unwrap();
+    }
+    let item = legcon::model::transfer::Item {
+        dir: legcon::model::transfer::Direction::Upload,
+        remote: remote.clone(),
+        local: local.path().join("part.bin"),
+        size: Some(3000),
+        modified: None,
+        folder: false,
+        exists: Some(Some(1000)),
+        problem: None,
+    };
+    let s = std::sync::Arc::new(std::sync::Mutex::new(s));
+    let job = {
+        let s = std::sync::Arc::clone(&s);
+        legcon::model::job::Job::spawn(
+            "resume",
+            std::sync::Arc::new(legcon::model::job::NoNotify),
+            move |ctx| {
+                legcon::model::transfer::copy_item(
+                    &mut *s.lock().unwrap(),
+                    &item,
+                    legcon::model::transfer::Mode::Resume,
+                    true,
+                    ctx,
+                )
+            },
+        )
+    };
+    job.wait();
+    let c = job.take_result().expect("copied");
+    assert_eq!((c.resumed_at, c.bytes), (0, 3000), "proftpd: sent whole");
+    let mut s = s.lock().unwrap();
+    assert_eq!(s.stat(&remote).unwrap().size, Some(3000));
+    s.remove(&remote).unwrap();
+    s.disconnect(Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
 fn ftp_proftpd() {
     let s = lc_ftp::connect(&host(), 10121, USER, PASSWORD, &Default::default()).unwrap();
     exercise(
@@ -136,7 +191,7 @@ fn ftp_anonymous_is_read_only() {
 #[test]
 #[ignore = "needs the lab container (lab/lab.sh up)"]
 fn ftp_latin1_names() {
-    let mut s = lc_ftp::connect(&host(), 10121, USER, PASSWORD, &Default::default()).unwrap();
+    let mut s = lc_ftp::connect(&host(), p(10121), USER, PASSWORD, &Default::default()).unwrap();
     let home = RemotePath::parse(PathStyle::Unix, "/home/lab");
     let n = names(&mut s, &home);
     // Byte 0xE9 on disk is e-acute in ISO-8859-1, the default character set.
@@ -517,7 +572,9 @@ fn the_machine_says_where_we_come_from() {
 }
 
 /// Upload in two parts (the second appended), then read back from several offsets.
-fn resume_round_trip(fs: &mut dyn FileSession, label: &str) {
+/// Upload in two parts (the second a resume), read back from offsets, then compare the sum the
+/// machine computes, which shell protocols must have (`cksum`).
+fn resume_round_trip(fs: &mut dyn FileSession, label: &str, needs_sum: bool) {
     let data: Vec<u8> = (0..5000u32).map(|i| (i * 13 % 251) as u8).collect();
     let file = RemotePath::parse(
         PathStyle::Unix,
@@ -538,6 +595,17 @@ fn resume_round_trip(fs: &mut dyn FileSession, label: &str) {
             .unwrap_or_else(|e| panic!("{label}: resume upload: {e}"));
     }
     assert_eq!(fs.stat(&file).unwrap().size, Some(5000), "{label}");
+    match fs
+        .checksum(&file)
+        .unwrap_or_else(|e| panic!("{label}: checksum: {e}"))
+    {
+        Some(theirs) => assert_eq!(
+            theirs.of(&mut &data[..]).unwrap(),
+            theirs,
+            "{label}: the machine's sum differs"
+        ),
+        None => assert!(!needs_sum, "{label}: no checksum"),
+    }
     for at in [0usize, 700, 1024, 4999] {
         let mut back = Vec::new();
         fs.open_read(&file, at as u64)
@@ -631,7 +699,7 @@ fn resume_and_awkward_names_over_shell_commands() {
         &mut |_| Ok(()),
     )
     .unwrap();
-    resume_round_trip(&mut s, "ssh-shell");
+    resume_round_trip(&mut s, "ssh-shell", true);
     awkward_names(&mut s, "ssh-shell", false);
     s.disconnect(Duration::from_secs(5)).unwrap();
     if !rsh_direct() {
@@ -649,7 +717,7 @@ fn resume_and_awkward_names_over_shell_commands() {
         &Default::default(),
     )
     .unwrap();
-    resume_round_trip(&mut r, "rsh");
+    resume_round_trip(&mut r, "rsh", true);
     awkward_names(&mut r, "rsh", true);
     let e = lc_core::ShellSession::exec(&mut r, "echo out; echo err >&2; exit 3").unwrap();
     assert_eq!(

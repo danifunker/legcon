@@ -415,7 +415,7 @@ impl FileSession for FtpSession {
         FileCaps {
             random_read: true,
             random_write: false,
-            resume_upload: false,
+            resume_upload: true,
             rename: true,
             delete: true,
             mkdir: true,
@@ -484,7 +484,8 @@ impl FileSession for FtpSession {
         let p = path.to_string();
         let verb = match mode {
             WriteMode::Create | WriteMode::Overwrite => "STOR",
-            WriteMode::Resume(_) => return Err(Error::Unsupported("resumed uploads".into())),
+            // RFC 959 append; the caller resumes at the size the server already has.
+            WriteMode::Resume(_) => "APPE",
         };
         Ok(Box::new(self.transfer(verb, Some(&p), true)?))
     }
@@ -513,6 +514,17 @@ impl FileSession for FtpSession {
         } else {
             Err(refuse(&r, "delete"))
         }
+    }
+
+    /// `XCRC` where the server has it (Serv-U, some others); `None` on a refusal.
+    fn checksum(&mut self, path: &RemotePath) -> Result<Option<lc_core::Checksum>> {
+        self.live()?;
+        let r = self.ctrl.command("XCRC", Some(&path.to_string()))?;
+        Ok(if (200..300).contains(&r.code) {
+            lc_core::checksum::parse_xcrc(&r.text())
+        } else {
+            None
+        })
     }
 
     fn quote(&mut self, dir: &RemotePath, line: &str) -> Result<String> {

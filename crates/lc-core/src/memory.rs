@@ -119,7 +119,7 @@ impl FileSession for MemoryFs {
         FileCaps {
             random_read: true,
             random_write: false,
-            resume_upload: false,
+            resume_upload: true,
             rename: true,
             delete: true,
             mkdir: true,
@@ -187,14 +187,29 @@ impl FileSession for MemoryFs {
         let exists = self.tree.lock().unwrap().nodes.contains_key(&key);
         match mode {
             WriteMode::Create if exists => return Err(Error::Denied(format!("{key} exists"))),
-            WriteMode::Resume(_) => return Err(Error::Unsupported("resume".into())),
             _ => {}
         }
+        let data = match (mode, self.tree.lock().unwrap().nodes.get(&key)) {
+            (WriteMode::Resume(at), Some(Node::File(d))) => {
+                d[..(at as usize).min(d.len())].to_vec()
+            }
+            _ => Vec::new(),
+        };
         Ok(Box::new(Upload {
             tree: Arc::clone(&self.tree),
             key,
-            data: Vec::new(),
+            data,
         }))
+    }
+
+    fn checksum(&mut self, path: &RemotePath) -> Result<Option<crate::Checksum>> {
+        self.live()?;
+        match self.tree.lock().unwrap().nodes.get(&path.to_string()) {
+            Some(Node::File(d)) => Ok(Some(crate::Checksum::Crc32(
+                crate::checksum::crc32(&mut &d[..]).map_err(Error::Io)?,
+            ))),
+            _ => Err(Error::NotFound(path.to_string())),
+        }
     }
 
     fn mkdir(&mut self, path: &RemotePath) -> Result<()> {

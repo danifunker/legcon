@@ -7,7 +7,7 @@ prove a shell is wired to the shared controllers; the logic itself is tested by 
 ```bash
 cargo build && cargo build -p lc-ssh --example fake_sshd1 && (cd frontends/win32 && cargo build)
 python regression-tests/run_flows.py                    # every flow on win32
-python regression-tests/run_flows.py connection.toml    # one file
+python regression-tests/run_flows.py connection.toml    # one file (flow.conn.queue: the transfer queue)
 python regression-tests/run_flows.py flow.settings.os-store
 ```
 

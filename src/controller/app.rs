@@ -55,6 +55,9 @@ pub enum Action {
     /// Open a machine's settings form (Machines tab, or the machine's header).
     EditMachine(String),
     MachineFormAnswered(Option<FormValues>),
+    /// Open the app's Options form.
+    EditOptions,
+    OptionsAnswered(Option<FormValues>),
     DisconnectAll,
     /// Give a machine's tab another colour (from its tab's context menu).
     SetColor(String, TabColor),
@@ -188,7 +191,7 @@ impl AppController {
             return vec![Effect::Message(format!("No machine called {id}."))];
         };
         let home = self.home_or_fallback();
-        let tab = ConnectionController::new(
+        let mut tab = ConnectionController::new(
             m,
             &home,
             self.settings.recent_places.clone(),
@@ -197,6 +200,7 @@ impl AppController {
             Arc::clone(&self.notify),
         )
         .with_keys_dir(self.dir.join("keys"));
+        tab.set_queue_prefs(self.queue_prefs());
         self.tabs.push(tab);
         self.active = Tab::Connection(self.tabs.len() - 1);
         Vec::new()
@@ -285,6 +289,13 @@ impl AppController {
 }
 
 impl AppController {
+    fn queue_prefs(&self) -> connection::QueuePrefs {
+        connection::QueuePrefs {
+            ask_over: self.settings.queue_ask_over,
+            checksum: self.settings.verify_checksum,
+        }
+    }
+
     fn save_machine_form(&mut self, id: String, values: FormValues) -> Vec<Effect> {
         match self.machines.edit(&id, &values) {
             Ok(m) => {
@@ -495,6 +506,20 @@ impl Controller for AppController {
                 };
                 return self.save_machine_form(id, values);
             }
+            Action::EditOptions => {
+                return vec![Effect::Form(super::options::form(&self.settings))];
+            }
+            Action::OptionsAnswered(None) => {}
+            Action::OptionsAnswered(Some(values)) => {
+                if let Err(e) = super::options::apply(&mut self.settings, &values) {
+                    return vec![Effect::Message(e)];
+                }
+                let prefs = self.queue_prefs();
+                for t in &mut self.tabs {
+                    t.set_queue_prefs(prefs);
+                }
+                return self.save_settings();
+            }
             Action::DisconnectAll => self.disconnect_all(),
             Action::SetColor(id, color) => {
                 if let Err(e) = self.machines.set_color(&id, color) {
@@ -679,6 +704,30 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(a.tab(0).unwrap().can_disconnect());
+        // A copy that finished leaves nothing that holds up the quit.
+        for _ in 0..400 {
+            a.tick();
+            if !a.tab(0).unwrap().remote_rows().is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        a.apply(Action::Conn(
+            0,
+            connection::Action::Copy(connection::Side::Remote, vec![".profile".into()]),
+        ));
+        for _ in 0..400 {
+            a.tick();
+            if home.path().join(".profile").is_file() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            home.path().join(".profile").is_file(),
+            "{}",
+            a.tab(0).unwrap().transfers_text()
+        );
         assert!(a.apply(Action::Quit).is_empty());
         let mut quit = false;
         for _ in 0..400 {

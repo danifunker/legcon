@@ -19,6 +19,7 @@ pub mod keys;
 pub mod log;
 pub mod machine_form;
 pub mod machines;
+pub mod options;
 pub mod picks;
 pub mod ssh_keys;
 pub mod task;

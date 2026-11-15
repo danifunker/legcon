@@ -1,11 +1,13 @@
-//! Copying between this computer and a machine, folders included, as one job per batch.
+//! Copying between this computer and a machine, folders included, for the transfer queue.
 //!
-//! A batch walks its folders first (listing the remote side, reading the local one), then copies
-//! file by file in 64 KB blocks, reporting bytes and the current file, and honours cancel between
-//! blocks. Existing targets are overwritten or skipped as the batch says; the caller asked first.
+//! [`plan`] walks a batch's folders (listing the remote side, reading the local one) into one
+//! [`Item`] per file or folder and notes which targets exist; [`copy_item`] then copies one item
+//! in 64 KB blocks, resuming where asked, honours cancel between blocks, and checks the result by
+//! size and, where the machine can compute one, a checksum.
 
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
@@ -37,15 +39,50 @@ pub struct Summary {
     pub failed: Vec<(String, String)>,
 }
 
-/// One file to copy, once the folders are walked.
-struct Step {
-    remote: RemotePath,
-    local: PathBuf,
-    size: Option<u64>,
+/// One queue entry: a file to copy, or a folder to make on the target side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Item {
+    pub dir: Direction,
+    pub remote: RemotePath,
+    pub local: PathBuf,
+    pub size: Option<u64>,
     /// The remote file's modification time (seconds since 1970), when known.
-    modified: Option<i64>,
+    pub modified: Option<i64>,
     /// A folder to create on the target side, not a file to copy.
-    folder: bool,
+    pub folder: bool,
+    /// The target was already there when the batch was planned, and its size if known.
+    pub exists: Option<Option<u64>>,
+    /// Why it cannot be copied at all (a name the machine refuses), found while planning.
+    pub problem: Option<String>,
+}
+
+impl Item {
+    /// The name the queue shows: the source side's.
+    pub fn name(&self) -> String {
+        match self.dir {
+            Direction::Download => self.remote.name().to_string(),
+            Direction::Upload => self
+                .local
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+type Step = Item;
+
+fn step(dir: Direction, remote: RemotePath, local: PathBuf, folder: bool) -> Step {
+    Item {
+        dir,
+        remote,
+        local,
+        size: None,
+        modified: None,
+        folder,
+        exists: None,
+        problem: None,
+    }
 }
 
 fn walk_remote(
@@ -56,13 +93,12 @@ fn walk_remote(
     ctx: &JobCtx,
 ) -> anyhow::Result<()> {
     ctx.check_cancel()?;
-    out.push(Step {
-        remote: remote.clone(),
-        local: local.clone(),
-        size: None,
-        modified: None,
-        folder: true,
-    });
+    out.push(step(
+        Direction::Download,
+        remote.clone(),
+        local.clone(),
+        true,
+    ));
     for e in fs.list(&remote)? {
         let (r, l) = (
             remote.join(&e.name),
@@ -71,12 +107,10 @@ fn walk_remote(
         if e.is_folder() {
             walk_remote(fs, r, l, out, ctx)?;
         } else if e.kind == lc_core::EntryKind::File || e.kind == lc_core::EntryKind::Other {
-            out.push(Step {
-                remote: r,
-                local: l,
+            out.push(Item {
                 size: e.size,
                 modified: e.modified.map(|t| t.unix),
-                folder: false,
+                ..step(Direction::Download, r, l, false)
             });
         }
     }
@@ -91,13 +125,7 @@ fn walk_local(
     ctx: &JobCtx,
 ) -> anyhow::Result<()> {
     ctx.check_cancel()?;
-    out.push(Step {
-        remote: remote.clone(),
-        local: local.clone(),
-        size: None,
-        modified: None,
-        folder: true,
-    });
+    out.push(step(Direction::Upload, remote.clone(), local.clone(), true));
     for item in std::fs::read_dir(&local).with_context(|| format!("reading {}", local.display()))? {
         let item = item?;
         let name = names(&item.file_name().to_string_lossy());
@@ -105,12 +133,9 @@ fn walk_local(
         if meta.is_dir() {
             walk_local(item.path(), remote.join(&name), out, names, ctx)?;
         } else {
-            out.push(Step {
-                remote: remote.join(&name),
-                local: item.path(),
+            out.push(Item {
                 size: Some(meta.len()),
-                modified: None,
-                folder: false,
+                ..step(Direction::Upload, remote.join(&name), item.path(), false)
             });
         }
     }
@@ -152,8 +177,24 @@ pub struct Batch<'a> {
     pub local_dir: &'a Path,
     pub picks: &'a [Pick],
     pub sizes: &'a [Option<u64>],
-    /// False skips targets that already exist.
-    pub overwrite: bool,
+}
+
+/// A batch walked into queue items.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Plan {
+    pub items: Vec<Item>,
+    /// The protocol can continue a partly copied file in this direction.
+    pub can_resume: bool,
+}
+
+impl Plan {
+    pub fn files(&self) -> usize {
+        self.items.iter().filter(|i| !i.folder).count()
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.items.iter().filter_map(|i| i.size).sum()
+    }
 }
 
 fn sidecar_of(local: &Path) -> Option<PathBuf> {
@@ -223,21 +264,14 @@ pub fn remove_tree(
     fs.remove(path)
 }
 
-/// Copy a batch between this computer and the machine.
-pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result<Summary> {
-    let (dir, remote_dir, local_dir, picks, sizes, overwrite) = (
-        b.dir,
-        b.remote_dir,
-        b.local_dir,
-        b.picks,
-        b.sizes,
-        b.overwrite,
-    );
+/// Walk a batch into queue items, noting which targets already exist.
+pub fn plan(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result<Plan> {
+    let (dir, remote_dir, local_dir) = (b.dir, b.remote_dir, b.local_dir);
     ctx.set_phase("Looking at what to copy");
     let (charset, style) = (fs.charset(), remote_dir.style);
     let to_remote = move |n: &str| super::names::to_remote(n, charset, style);
     let mut steps = Vec::new();
-    for (p, size) in picks.iter().zip(sizes) {
+    for (p, size) in b.picks.iter().zip(b.sizes) {
         // A pick is named as its own side shows it; the other side gets the mapped name.
         let (r, l) = match dir {
             Direction::Download => (
@@ -253,26 +287,21 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             (Direction::Download, true) => walk_remote(fs, r, l, &mut steps, ctx)?,
             (Direction::Upload, true) => walk_local(l, r, &mut steps, &to_remote, ctx)?,
             _ => {
-                // A picked file's date comes from the machine; a failed look costs only the date.
-                let modified = match dir {
-                    Direction::Download => {
-                        fs.stat(&r).ok().and_then(|e| e.modified).map(|t| t.unix)
-                    }
+                // A picked file's date (and size, if the pane had none) come from the machine.
+                let st = match dir {
+                    Direction::Download => fs.stat(&r).ok(),
                     Direction::Upload => None,
                 };
-                steps.push(Step {
-                    remote: r,
-                    local: l,
-                    size: *size,
-                    modified,
-                    folder: false,
+                steps.push(Item {
+                    size: size.or(st.as_ref().and_then(|e| e.size)),
+                    modified: st.and_then(|e| e.modified).map(|t| t.unix),
+                    ..step(dir, r, l, false)
                 })
             }
         }
     }
     // Sidecars travel with their file into a protocol that keeps forks, not as files of their own.
-    let forks = fs.keeps_mac_extras();
-    if forks && dir == Direction::Upload {
+    if fs.keeps_mac_extras() && dir == Direction::Upload {
         steps.retain(|s| {
             let name = s
                 .local
@@ -281,96 +310,301 @@ pub fn copy(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             !name.is_some_and(|n| super::appledouble::is_sidecar(&n))
         });
     }
-    let total: u64 = steps.iter().filter_map(|s| s.size).sum();
-    let files = steps.iter().filter(|s| !s.folder).count();
-    let existing: Vec<String> = match dir {
-        Direction::Upload => {
-            let mut names = Vec::new();
-            if let Ok(list) = fs.list(remote_dir) {
-                names = list.into_iter().map(|e| e.name).collect();
-            }
-            names
-        }
-        Direction::Download => Vec::new(),
-    };
-    let mut sum = Summary::default();
-    let mut done = 0u64;
-    let mut n = 0;
-    for s in &steps {
+    ctx.set_phase("Looking at what is already there");
+    // Upload targets: each remote folder is listed once; one found missing needs no listing below.
+    let mut there: HashMap<String, Vec<(String, Option<u64>)>> = HashMap::new();
+    let max_len = fs.max_name_len();
+    for s in &mut steps {
         ctx.check_cancel()?;
-        if s.folder {
-            match dir {
-                Direction::Download => std::fs::create_dir_all(&s.local)?,
-                // An existing folder is fine; anything else shows up when its files fail.
-                Direction::Upload => {
-                    let _ = fs.mkdir(&s.remote);
-                }
-            }
-            continue;
-        }
-        n += 1;
-        let name = s.remote.name().to_string();
-        ctx.set_phase(format!("{n} of {files}: {name}"));
-        let exists = match dir {
-            Direction::Download => s.local.exists(),
-            Direction::Upload => {
-                s.remote.parent().as_ref() == Some(remote_dir) && existing.contains(&name)
-            }
-        };
-        if exists && !overwrite {
-            sum.skipped.push(name);
-            done += s.size.unwrap_or(0);
-            continue;
-        }
-        if dir == Direction::Upload {
-            if let Some(why) = super::names::remote_problem(&name, charset, fs.max_name_len()) {
-                sum.failed.push((name, why));
-                continue;
-            }
-        }
-        let r: anyhow::Result<u64> = (|| match dir {
+        match dir {
             Direction::Download => {
-                let mut src = fs.open_read(&s.remote, 0)?;
-                let mut dst = File::create(&s.local)
-                    .with_context(|| format!("creating {}", s.local.display()))?;
-                let n = pump(&mut src, &mut dst, &mut done, total, ctx)?;
-                drop(src);
-                if let Some(t) = s.modified.and_then(system_time) {
-                    // Keeping the machine's date matters more than the copy itself failing over it.
-                    let _ = dst.set_modified(t);
+                if !s.folder {
+                    s.exists = std::fs::metadata(&s.local)
+                        .ok()
+                        .filter(|m| !m.is_dir())
+                        .map(|m| Some(m.len()));
                 }
-                drop(dst);
-                if forks {
-                    save_sidecar(fs, &s.remote, &s.local, s.modified)?;
-                }
-                Ok(n)
             }
             Direction::Upload => {
-                let mut src = File::open(&s.local)
-                    .with_context(|| format!("opening {}", s.local.display()))?;
-                let size = src.metadata()?.len();
-                let mut dst = fs.open_write_sized(&s.remote, WriteMode::Overwrite, size)?;
-                let n = pump(&mut src, &mut dst, &mut done, total, ctx)?;
-                drop(dst);
-                if forks {
-                    apply_sidecar(fs, &s.local, &s.remote)?;
+                let Some(parent) = s.remote.parent() else {
+                    continue;
+                };
+                let key = parent.to_string();
+                if !there.contains_key(&key) {
+                    let list = fs
+                        .list(&parent)
+                        .map(|l| l.into_iter().map(|e| (e.name, e.size)).collect())
+                        .unwrap_or_default();
+                    there.insert(key.clone(), list);
                 }
-                Ok(n)
+                let name = s.remote.name().to_string();
+                let found = there[&key].iter().find(|(n, _)| *n == name).map(|e| e.1);
+                if s.folder {
+                    if found.is_none() {
+                        there.insert(s.remote.to_string(), Vec::new());
+                    }
+                } else {
+                    s.exists = found;
+                    s.problem = super::names::remote_problem(&name, charset, max_len);
+                }
             }
-        })();
-        match r {
-            Ok(bytes) => {
-                sum.files += 1;
-                sum.bytes += bytes;
-            }
-            Err(e) if e.downcast_ref::<super::job::Cancelled>().is_some() => return Err(e),
-            Err(e) => sum.failed.push((name, format!("{e:#}"))),
         }
     }
-    if files > 0 && sum.files == 0 && !sum.failed.is_empty() && sum.skipped.is_empty() {
+    let caps = fs.caps();
+    Ok(Plan {
+        items: steps,
+        can_resume: match dir {
+            Direction::Download => true,
+            Direction::Upload => caps.resume_upload,
+        },
+    })
+}
+
+/// A whole batch in one job, without the queue (tests, scripts): existing targets are
+/// overwritten or skipped.
+pub fn copy(
+    fs: &mut dyn FileSession,
+    b: &Batch,
+    overwrite: bool,
+    ctx: &JobCtx,
+) -> anyhow::Result<Summary> {
+    let plan = plan(fs, b, ctx)?;
+    let mut sum = Summary::default();
+    for item in &plan.items {
+        if item.exists.is_some() && !overwrite && !item.folder {
+            sum.skipped.push(item.name());
+            continue;
+        }
+        match copy_item(fs, item, Mode::Overwrite, false, ctx) {
+            Ok(c) if !item.folder => {
+                sum.files += 1;
+                sum.bytes += c.bytes;
+            }
+            Ok(_) => {}
+            Err(e) if e.downcast_ref::<super::job::Cancelled>().is_some() => return Err(e),
+            Err(e) => sum.failed.push((item.name(), format!("{e:#}"))),
+        }
+    }
+    if plan.files() > 0 && sum.files == 0 && !sum.failed.is_empty() && sum.skipped.is_empty() {
         bail!("nothing was copied: {}", sum.failed[0].1);
     }
     Ok(sum)
+}
+
+/// How to treat a target that is already there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Overwrite,
+    /// Continue from the target's length (from the start where the protocol cannot).
+    Resume,
+}
+
+/// How a finished file was checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verified {
+    /// The sizes match and the machine computed a matching sum.
+    Sum(lc_core::Checksum),
+    Size(u64),
+    /// No size to compare (a folder, or a machine that gives none).
+    Unchecked,
+}
+
+/// One item copied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Copied {
+    pub bytes: u64,
+    /// Where it continued from, when it resumed.
+    pub resumed_at: u64,
+    pub verified: Verified,
+}
+
+/// The copy arrived but does not match its source; a retry starts it over rather than resuming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mismatch(pub String);
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Mismatch {}
+
+/// Copy one queue item, then check it by size and, when asked and the machine can, a checksum.
+pub fn copy_item(
+    fs: &mut dyn FileSession,
+    item: &Item,
+    mode: Mode,
+    sum: bool,
+    ctx: &JobCtx,
+) -> anyhow::Result<Copied> {
+    ctx.check_cancel()?;
+    if item.folder {
+        match item.dir {
+            Direction::Download => std::fs::create_dir_all(&item.local)
+                .with_context(|| format!("creating {}", item.local.display()))?,
+            // An existing folder is fine; anything else shows up when its files fail.
+            Direction::Upload => {
+                let _ = fs.mkdir(&item.remote);
+            }
+        }
+        return Ok(Copied {
+            bytes: 0,
+            resumed_at: 0,
+            verified: Verified::Unchecked,
+        });
+    }
+    if let Some(why) = &item.problem {
+        bail!("{why}");
+    }
+    ctx.set_phase(item.name());
+    let forks = fs.keeps_mac_extras();
+    let (bytes, at, size) = match item.dir {
+        Direction::Download => {
+            if let Some(parent) = item.local.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let have = match mode {
+                Mode::Resume => std::fs::metadata(&item.local).map_or(0, |m| m.len()),
+                Mode::Overwrite => 0,
+            };
+            let at = item.size.map_or(have, |s| have.min(s));
+            let mut src = fs.open_read(&item.remote, at)?;
+            let mut dst = File::options()
+                .create(true)
+                .write(true)
+                .truncate(false)
+                .open(&item.local)
+                .with_context(|| format!("creating {}", item.local.display()))?;
+            dst.set_len(at)?;
+            dst.seek(SeekFrom::End(0))?;
+            let mut done = at;
+            let n = pump(&mut src, &mut dst, &mut done, item.size.unwrap_or(0), ctx)?;
+            drop(src);
+            if let Some(t) = item.modified.and_then(system_time) {
+                // Keeping the machine's date matters more than the copy itself failing over it.
+                let _ = dst.set_modified(t);
+            }
+            drop(dst);
+            if forks {
+                save_sidecar(fs, &item.remote, &item.local, item.modified)?;
+            }
+            (n, at, item.size)
+        }
+        Direction::Upload => {
+            let mut src = File::open(&item.local)
+                .with_context(|| format!("opening {}", item.local.display()))?;
+            let size = src.metadata()?.len();
+            let mut at = 0;
+            if mode == Mode::Resume && fs.caps().resume_upload {
+                at = fs
+                    .stat(&item.remote)
+                    .ok()
+                    .and_then(|e| e.size)
+                    .filter(|&n| n <= size)
+                    .unwrap_or(0);
+            }
+            let n = if at == size && at > 0 {
+                0
+            } else {
+                match send_from(fs, &item.remote, &mut src, at, size, ctx) {
+                    // A server may refuse to append (proftpd without AllowStoreRestart): send it whole.
+                    Err(Sent::Refused(_)) if at > 0 => {
+                        at = 0;
+                        send_from(fs, &item.remote, &mut src, 0, size, ctx).map_err(Sent::error)?
+                    }
+                    r => r.map_err(Sent::error)?,
+                }
+            };
+            if forks {
+                apply_sidecar(fs, &item.local, &item.remote)?;
+            }
+            (n, at, Some(size))
+        }
+    };
+    ctx.set_phase(format!("Checking {}", item.name()));
+    let verified = verify(fs, item, size, sum)?;
+    Ok(Copied {
+        bytes,
+        resumed_at: at,
+        verified,
+    })
+}
+
+/// Why an upload stopped: the machine would not open the target, or the copy failed after.
+enum Sent {
+    Refused(anyhow::Error),
+    Failed(anyhow::Error),
+}
+
+impl Sent {
+    fn error(self) -> anyhow::Error {
+        match self {
+            Sent::Refused(e) | Sent::Failed(e) => e,
+        }
+    }
+}
+
+/// Upload `src` from `at` on, appending to what the machine has when `at` is not 0.
+fn send_from(
+    fs: &mut dyn FileSession,
+    remote: &RemotePath,
+    src: &mut File,
+    at: u64,
+    size: u64,
+    ctx: &JobCtx,
+) -> Result<u64, Sent> {
+    src.seek(SeekFrom::Start(at))
+        .map_err(|e| Sent::Failed(e.into()))?;
+    let mode = if at > 0 {
+        WriteMode::Resume(at)
+    } else {
+        WriteMode::Overwrite
+    };
+    let mut dst = fs
+        .open_write_sized(remote, mode, size - at)
+        .map_err(|e| Sent::Refused(e.into()))?;
+    let mut done = at;
+    let n = pump(src, &mut dst, &mut done, size, ctx).map_err(Sent::Failed)?;
+    drop(dst);
+    Ok(n)
+}
+
+fn verify(
+    fs: &mut dyn FileSession,
+    item: &Item,
+    size: Option<u64>,
+    sum: bool,
+) -> anyhow::Result<Verified> {
+    let here = std::fs::metadata(&item.local)?.len();
+    let there = match item.dir {
+        Direction::Download => size,
+        Direction::Upload => fs.stat(&item.remote).ok().and_then(|e| e.size),
+    };
+    let Some(there) = there else {
+        return Ok(Verified::Unchecked);
+    };
+    if here != there {
+        return Err(Mismatch(format!(
+            "sizes differ: {here} bytes here, {there} on the machine"
+        ))
+        .into());
+    }
+    if sum {
+        if let Ok(Some(theirs)) = fs.checksum(&item.remote) {
+            let mut f = File::open(&item.local)?;
+            let ours = theirs.of(&mut f)?;
+            if ours != theirs {
+                return Err(Mismatch(format!(
+                    "{} differs: {ours} here, {theirs} on the machine",
+                    theirs.name()
+                ))
+                .into());
+            }
+            return Ok(Verified::Sum(theirs));
+        }
+    }
+    Ok(Verified::Size(here))
 }
 
 #[cfg(test)]
@@ -381,16 +615,29 @@ mod tests {
     use lc_core::PathStyle;
     use std::sync::{Arc, Mutex};
 
-    fn run(
-        fs: MemoryFs,
-        dir: Direction,
-        local: PathBuf,
-        picks: Vec<Pick>,
-        overwrite: bool,
-    ) -> Summary {
-        let fs = Arc::new(Mutex::new(fs));
-        let job = Job::spawn("copy", Arc::new(NoNotify), move |ctx| {
-            let mut fs = fs.lock().unwrap();
+    fn in_job<R: Send + 'static>(
+        fs: &MemoryFs,
+        f: impl FnOnce(&mut MemoryFs, &JobCtx) -> anyhow::Result<R> + Send + 'static,
+    ) -> anyhow::Result<R> {
+        let fs = Arc::new(Mutex::new(fs.clone()));
+        let job = Job::spawn("t", Arc::new(NoNotify), move |ctx| {
+            f(&mut fs.lock().unwrap(), ctx)
+        });
+        job.wait();
+        job.take_result()
+            .ok_or_else(|| anyhow::anyhow!("{:?}", job.snapshot().status))
+    }
+
+    fn pick(name: &str, is_dir: bool) -> Pick {
+        Pick {
+            name: name.into(),
+            is_dir,
+        }
+    }
+
+    fn plan_of(fs: &MemoryFs, dir: Direction, local: &Path, picks: Vec<Pick>) -> Plan {
+        let local = local.to_path_buf();
+        in_job(fs, move |fs, ctx| {
             let sizes = vec![None; picks.len()];
             let home = RemotePath::parse(PathStyle::Unix, "/home");
             let b = Batch {
@@ -399,70 +646,117 @@ mod tests {
                 local_dir: &local,
                 picks: &picks,
                 sizes: &sizes,
-                overwrite,
             };
-            copy(&mut *fs, &b, ctx)
-        });
-        job.wait();
-        job.take_result().expect("the copy finished")
+            plan(fs, &b, ctx)
+        })
+        .unwrap()
+    }
+
+    fn run(fs: &MemoryFs, item: &Item, mode: Mode) -> anyhow::Result<Copied> {
+        let item = item.clone();
+        in_job(fs, move |fs, ctx| copy_item(fs, &item, mode, true, ctx))
+    }
+
+    fn remote(fs: &MemoryFs, path: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        fs.clone()
+            .open_read(&RemotePath::parse(PathStyle::Unix, path), 0)
+            .unwrap()
+            .read_to_end(&mut out)
+            .unwrap();
+        out
     }
 
     #[test]
-    fn download_a_folder_then_upload_with_skip() {
+    fn download_a_folder_then_upload_with_one_already_there() {
         let fs = MemoryFs::new(PathStyle::Unix, "/home");
         fs.add_file("/home/src/a.c", b"int main;");
         fs.add_file("/home/src/lib/b.h", b"#define B");
         fs.add_file("/home/notes.txt", b"hi");
         let local = tempfile::tempdir().unwrap();
-        let picks = vec![
-            Pick {
-                name: "src".into(),
-                is_dir: true,
-            },
-            Pick {
-                name: "notes.txt".into(),
-                is_dir: false,
-            },
-        ];
-        let s = run(
-            fs.clone(),
+        let p = plan_of(
+            &fs,
             Direction::Download,
-            local.path().to_path_buf(),
-            picks,
-            false,
+            local.path(),
+            vec![pick("src", true), pick("notes.txt", false)],
         );
-        assert_eq!((s.files, s.bytes), (3, 9 + 9 + 2));
+        assert_eq!((p.files(), p.items.len()), (3, 5));
+        assert!(p.items.iter().all(|i| i.exists.is_none()));
+        for i in &p.items {
+            let c = run(&fs, i, Mode::Overwrite).unwrap();
+            if !i.folder {
+                assert!(matches!(c.verified, Verified::Sum(_)), "{c:?}");
+            }
+        }
         assert_eq!(
             std::fs::read(local.path().join("src/lib/b.h")).unwrap(),
             b"#define B"
         );
 
         std::fs::write(local.path().join("new.txt"), b"fresh").unwrap();
-        let picks = vec![
-            Pick {
-                name: "new.txt".into(),
-                is_dir: false,
-            },
-            Pick {
-                name: "notes.txt".into(),
-                is_dir: false,
-            },
-        ];
-        let s = run(
-            fs.clone(),
+        let p = plan_of(
+            &fs,
             Direction::Upload,
-            local.path().to_path_buf(),
-            picks,
-            false,
+            local.path(),
+            vec![
+                pick("new.txt", false),
+                pick("notes.txt", false),
+                pick("src", true),
+            ],
         );
-        assert_eq!(s.files, 1);
-        assert_eq!(s.skipped, ["notes.txt"]);
-        let mut f = fs.clone();
-        let mut got = String::new();
-        f.open_read(&RemotePath::parse(PathStyle::Unix, "/home/new.txt"), 0)
-            .unwrap()
-            .read_to_string(&mut got)
-            .unwrap();
-        assert_eq!(got, "fresh");
+        let exists: Vec<(String, Option<Option<u64>>)> = p
+            .items
+            .iter()
+            .filter(|i| !i.folder)
+            .map(|i| (i.name(), i.exists))
+            .collect();
+        assert!(exists.contains(&("new.txt".into(), None)));
+        assert!(exists.contains(&("notes.txt".into(), Some(Some(2)))));
+        assert!(exists.contains(&("b.h".into(), Some(Some(9)))));
+        assert!(p.can_resume);
+        run(&fs, &p.items[0], Mode::Overwrite).unwrap();
+        assert_eq!(remote(&fs, "/home/new.txt"), b"fresh");
+    }
+
+    #[test]
+    fn resume_both_ways_and_catch_a_short_copy() {
+        let fs = MemoryFs::new(PathStyle::Unix, "/home");
+        fs.add_file("/home/big.bin", b"0123456789");
+        let local = tempfile::tempdir().unwrap();
+        std::fs::write(local.path().join("big.bin"), b"0123").unwrap();
+        let p = plan_of(
+            &fs,
+            Direction::Download,
+            local.path(),
+            vec![pick("big.bin", false)],
+        );
+        let mut item = p.items[0].clone();
+        assert_eq!(item.exists, Some(Some(4)));
+        item.size = Some(10);
+        let c = run(&fs, &item, Mode::Resume).unwrap();
+        assert_eq!((c.resumed_at, c.bytes), (4, 6));
+        assert_eq!(
+            std::fs::read(local.path().join("big.bin")).unwrap(),
+            b"0123456789"
+        );
+
+        // The machine claimed more than it sent: the size check fails and says so.
+        item.size = Some(12);
+        let e = run(&fs, &item, Mode::Overwrite).unwrap_err();
+        assert!(e.to_string().contains("sizes differ"), "{e:#}");
+
+        std::fs::write(local.path().join("up.txt"), b"abcdefgh").unwrap();
+        fs.add_file("/home/up.txt", b"abc");
+        let p = plan_of(
+            &fs,
+            Direction::Upload,
+            local.path(),
+            vec![pick("up.txt", false)],
+        );
+        let c = run(&fs, &p.items[0], Mode::Resume).unwrap();
+        assert_eq!((c.resumed_at, c.bytes), (3, 5));
+        assert_eq!(remote(&fs, "/home/up.txt"), b"abcdefgh");
+        let c = run(&fs, &p.items[0], Mode::Overwrite).unwrap();
+        assert_eq!((c.resumed_at, c.bytes), (0, 8));
     }
 }

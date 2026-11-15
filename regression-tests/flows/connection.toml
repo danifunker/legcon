@@ -140,3 +140,25 @@ ui = [
 
 [case.expect_machines]
 "0.pinned_folders.0" = "/export/home/dani/src"
+
+[[case]]
+id = "flow.conn.queue"
+description = "Copy a file twice: the queue lists it, asks about the copy already there and skips it; Clear finished empties the list"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = ".profile" },
+  { op = "expect_row", id = "transfers.list", name = ".profile" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "wait_dialog" },
+  { op = "press", name = "Skip them" },
+  { op = "expect_enabled", id = "transfers.clear", enabled = true },
+  { op = "activate", id = "transfers.clear" },
+  { op = "expect_row", id = "transfers.list", name = ".profile", present = false },
+]
+expect_files = [".profile"]

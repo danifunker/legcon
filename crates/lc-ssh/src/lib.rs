@@ -746,6 +746,16 @@ impl FileSession for SshSession {
         self.sftp()?.rename(&f, &t)
     }
 
+    /// POSIX `cksum` on the machine; `None` where it has none.
+    fn checksum(&mut self, path: &RemotePath) -> Result<Option<lc_core::Checksum>> {
+        let cmd = lc_core::checksum::cksum_command(&self.path(path));
+        Ok(self
+            .run(&cmd)
+            .ok()
+            .filter(|r| r.exit_status.unwrap_or(0) == 0)
+            .and_then(|r| lc_core::checksum::parse_cksum(&String::from_utf8_lossy(&r.output))))
+    }
+
     /// A shell command, run in `dir`; output and errors together, then the exit status if not 0.
     fn quote(&mut self, dir: &RemotePath, line: &str) -> Result<String> {
         let mut cmd = b"cd '".to_vec();

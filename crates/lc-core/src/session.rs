@@ -128,6 +128,13 @@ pub trait FileSession: Connection {
         ))
     }
 
+    /// A checksum the machine computes itself (`cksum` over a shell, FTP `XCRC`); `None` if it
+    /// cannot, so a copy is checked by size alone.
+    fn checksum(&mut self, path: &RemotePath) -> Result<Option<crate::Checksum>> {
+        let _ = path;
+        Ok(None)
+    }
+
     /// Send one of the protocol's own commands as typed (the Console tab), in folder `dir` so
     /// relative names mean what the user sees; the reply text.
     fn quote(&mut self, dir: &RemotePath, line: &str) -> Result<String> {

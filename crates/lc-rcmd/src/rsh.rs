@@ -536,6 +536,15 @@ impl FileSession for Rsh {
         self.sh(&from.to_string(), &cmd).map(drop)
     }
 
+    /// POSIX `cksum` on the machine; `None` where it has none.
+    fn checksum(&mut self, path: &RemotePath) -> Result<Option<lc_core::Checksum>> {
+        let cmd = lc_core::checksum::cksum_command(&self.path(path));
+        Ok(self
+            .sh(&path.to_string(), &cmd)
+            .ok()
+            .and_then(|out| lc_core::checksum::parse_cksum(&String::from_utf8_lossy(&out))))
+    }
+
     /// A shell command run in `dir`, as typed in the Console tab.
     fn quote(&mut self, dir: &RemotePath, line: &str) -> Result<String> {
         let mut cmd = b"cd ".to_vec();

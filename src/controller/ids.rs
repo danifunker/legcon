@@ -72,3 +72,22 @@ pub const MS_UID: &str = "machine.uid";
 pub const MS_GID: &str = "machine.gid";
 pub const MS_NFS_VERSION: &str = "machine.nfs_version";
 pub const MS_LOCAL_USER: &str = "machine.local_user";
+
+// The Transfers tab (controller::connection::transfers).
+pub const QUEUE_LIST: &str = "transfers.list";
+/// Start queue / Pause queue, one button.
+pub const QUEUE_RUN: &str = "transfers.run";
+pub const QUEUE_PAUSE: &str = "transfers.pause";
+pub const QUEUE_RESUME: &str = "transfers.resume";
+pub const QUEUE_RETRY: &str = "transfers.retry";
+pub const QUEUE_REMOVE: &str = "transfers.remove";
+pub const QUEUE_UP: &str = "transfers.up";
+pub const QUEUE_DOWN: &str = "transfers.down";
+pub const QUEUE_CLEAR: &str = "transfers.clear";
+pub const QUEUE_CANCEL: &str = "transfers.cancel";
+
+// The Options form (controller::options).
+pub const MACHINES_OPTIONS: &str = "machines.options";
+pub const OPT_SECTION_QUEUE: &str = "options.section.queue";
+pub const OPT_QUEUE_ASK_OVER: &str = "options.queue_ask_over";
+pub const OPT_CHECKSUM: &str = "options.checksum";

@@ -9,6 +9,7 @@
 //! a closed socket (PLAN.md §1.4).
 
 pub mod charset;
+pub mod checksum;
 pub mod dos;
 pub mod entry;
 pub mod error;
@@ -20,6 +21,7 @@ pub mod session;
 pub mod shellfile;
 
 pub use charset::Charset;
+pub use checksum::Checksum;
 pub use entry::{Entry, EntryKind, TimePrecision, Timestamp};
 pub use error::{Error, Result};
 pub use path::{PathStyle, RemotePath};

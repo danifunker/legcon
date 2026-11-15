@@ -17,7 +17,14 @@ pub struct Settings {
     pub recent_places: Vec<PathBuf>,
     /// Local folders the user pinned to the Places menu, in the order pinned.
     pub pinned_places: Vec<PathBuf>,
+    /// Ask before adding more files than this to the transfer queue; 0 never asks.
+    pub queue_ask_over: usize,
+    /// Check each copy with a checksum where the machine can compute one, besides its size.
+    pub verify_checksum: bool,
 }
+
+/// The default for [`Settings::queue_ask_over`].
+pub const QUEUE_ASK_OVER: usize = 100;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -26,6 +33,8 @@ impl Default for Settings {
             files_share: DEFAULT_FILES_SHARE,
             recent_places: Vec::new(),
             pinned_places: Vec::new(),
+            queue_ask_over: QUEUE_ASK_OVER,
+            verify_checksum: true,
         }
     }
 }

@@ -10,6 +10,7 @@ pub mod machines;
 pub mod names;
 pub mod places;
 pub mod probe;
+pub mod queue;
 pub mod rate_tracker;
 pub mod rsh_trust;
 pub mod secrets;

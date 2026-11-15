@@ -72,6 +72,7 @@ pub struct Widgets {
     m_open: HWND,
     m_remove: HWND,
     m_settings: HWND,
+    m_options: HWND,
     m_disconnect_all: HWND,
     m_list: HWND,
     k_new: HWND,
@@ -88,7 +89,9 @@ pub struct Widgets {
     term_text: HWND,
     console: HWND,
     console_send: HWND,
-    cancel_copy: HWND,
+    /// The Transfers tab: its buttons (by widget id) and the queue list.
+    q_buttons: Vec<(&'static str, HWND)>,
+    q_list: HWND,
 }
 
 /// One tab as the strip paints it.
@@ -110,6 +113,8 @@ struct Drawn {
     header: Option<HeaderInfo>,
     screen: Option<TermScreen>,
     machine: String,
+    queue: Vec<(i32, Vec<String>)>,
+    queue_ids: Vec<u64>,
 }
 
 /// Everything a layout depends on.
@@ -306,6 +311,7 @@ fn build(window: HWND) -> Widgets {
         m_open: ui::button(window, "Open", ids::MACHINES_OPEN),
         m_remove: ui::button(window, "Remove", ids::MACHINES_REMOVE),
         m_settings: ui::button(window, "Settings...", ids::MACHINES_SETTINGS),
+        m_options: ui::button(window, "Options...", ids::MACHINES_OPTIONS),
         m_disconnect_all: ui::button(window, "Disconnect all", ids::MACHINES_DISCONNECT_ALL),
         m_list: controls::list(
             window,
@@ -357,7 +363,17 @@ fn build(window: HWND) -> Widgets {
             e
         },
         console_send: ui::button(window, "Send", "console.send"),
-        cancel_copy: ui::button(window, "Cancel copy", "transfers.cancel"),
+        q_buttons: QUEUE_BUTTONS
+            .iter()
+            .map(|(id, label)| (*id, ui::button(window, label, id)))
+            .collect(),
+        q_list: controls::list(
+            window,
+            ids::QUEUE_LIST,
+            &conn::QUEUE_COLUMNS,
+            icons::system_list(),
+            false,
+        ),
     }
 }
 
@@ -585,6 +601,10 @@ fn run(effects: Vec<Effect>) {
                         conn_action(conn::Action::KeyLoginPasswordAnswered(i))
                     }
                     "conn.rsh.refused" => conn_action(conn::Action::RshRefusedAnswered(i)),
+                    "conn.queue.many" => conn_action(conn::Action::QueueManyAnswered(i)),
+                    "conn.queue.exists" => conn_action(conn::Action::QueueExistsAnswered(i)),
+                    "conn.queue.item" => conn_action(conn::Action::QueueItemAnswered(i)),
+                    "conn.queue.disconnect" => conn_action(conn::Action::DisconnectAnswered(i)),
                     _ => {}
                 }
             }
@@ -593,6 +613,9 @@ fn run(effects: Vec<Effect>) {
                 match spec.purpose {
                     legcon::controller::machine_form::PURPOSE => {
                         dispatch(app::Action::MachineFormAnswered(answer))
+                    }
+                    legcon::controller::options::PURPOSE => {
+                        dispatch(app::Action::OptionsAnswered(answer))
                     }
                     sshkeys::NEW_PURPOSE => {
                         dispatch(app::Action::Keys(sshkeys::Action::NewAnswered(answer)))
@@ -739,6 +762,7 @@ fn refresh() {
             s.w.m_open,
             s.w.m_remove,
             s.w.m_settings,
+            s.w.m_options,
             s.w.m_disconnect_all,
             s.w.m_list,
         ] {
@@ -788,9 +812,12 @@ fn refresh() {
                 s.w.term_text,
                 s.w.console,
                 s.w.console_send,
-                s.w.cancel_copy,
+                s.w.q_list,
             ] {
                 ui::set_visible(h, false);
+            }
+            for (_, h) in &s.w.q_buttons {
+                ui::set_visible(*h, false);
             }
             s.drawn.header = None;
             if on_keys {
@@ -816,6 +843,9 @@ fn refresh() {
             // Empty the controls too: a tab with no rows would otherwise keep the last tab's.
             controls::fill(s.w.local.list, &[]);
             controls::fill(s.w.remote.list, &[]);
+            controls::fill(s.w.q_list, &[]);
+            s.drawn.queue.clear();
+            s.drawn.queue_ids.clear();
         }
         let info = t.header_info();
         if s.drawn.header.as_ref() != Some(&info) {
@@ -843,13 +873,61 @@ fn refresh() {
         }
         let on_shell = term == TermTab::Shell;
         ui::set_visible(s.w.term.hwnd, on_shell);
-        ui::set_visible(s.w.term_text, !on_shell);
+        let on_queue = term == TermTab::Transfers;
+        ui::set_visible(s.w.term_text, !on_shell && !on_queue);
+        ui::set_visible(s.w.q_list, on_queue);
+        for (_, h) in &s.w.q_buttons {
+            ui::set_visible(*h, on_queue);
+        }
+        if on_queue {
+            let rows = t.queue_rows();
+            let cells: Vec<(i32, Vec<String>)> = rows
+                .iter()
+                .map(|r| {
+                    (
+                        icons::file_icon(&r.name, r.name.ends_with('/')),
+                        vec![
+                            r.name.clone(),
+                            r.size.clone(),
+                            r.direction.clone(),
+                            r.status.clone(),
+                            r.progress.clone(),
+                            r.from.clone(),
+                            r.to.clone(),
+                        ],
+                    )
+                })
+                .collect();
+            let ids: Vec<u64> = rows.iter().map(|r| r.id).collect();
+            let picked = selected_in(s.w.q_list, &s.drawn.queue_ids);
+            if cells != s.drawn.queue || ids != s.drawn.queue_ids {
+                controls::update(s.w.q_list, &s.drawn.queue, &cells);
+                if ids != s.drawn.queue_ids {
+                    // Rows moved or went: keep the same entries selected.
+                    let keep: Vec<usize> = ids
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, id)| picked.contains(id))
+                        .map(|(i, _)| i)
+                        .collect();
+                    controls::select_rows(s.w.q_list, &keep);
+                }
+                s.drawn.queue = cells;
+                s.drawn.queue_ids = ids;
+            }
+            let picked = selected_in(s.w.q_list, &s.drawn.queue_ids);
+            for b in t.queue_buttons(&picked) {
+                if let Some((_, h)) = s.w.q_buttons.iter().find(|(id, _)| *id == b.id) {
+                    ui::set_text(*h, b.label);
+                    ui::set_enabled(*h, b.enabled);
+                }
+            }
+        }
         let on_console = term == TermTab::Console;
         ui::set_visible(s.w.console, on_console);
         ui::set_visible(s.w.console_send, on_console);
         ui::set_enabled(s.w.console, t.can_console());
         ui::set_enabled(s.w.console_send, t.can_console());
-        ui::set_visible(s.w.cancel_copy, term == TermTab::Transfers && t.copying());
         if !on_shell {
             let text = t.term_text().replace('\n', "\r\n");
             if ui::text(s.w.term_text) != text {
@@ -952,6 +1030,7 @@ fn layout() {
                 (s.w.m_open, 80),
                 (s.w.m_remove, 80),
                 (s.w.m_settings, 90),
+                (s.w.m_options, 90),
                 (s.w.m_disconnect_all, 110),
             ] {
                 ui::place(b, (x, top + m, sc(bw), btn));
@@ -1046,9 +1125,19 @@ fn layout() {
                 (body.0 + body.2 - sc(80), y, sc(80), sc(24)),
             );
         }
+        // Transfers: a row of buttons, the queue list under it.
+        let mut x = body.0;
+        for (id, h) in &s.w.q_buttons {
+            let bw = QUEUE_BUTTONS
+                .iter()
+                .find(|(i, _)| i == id)
+                .map_or(80, |(_, l)| 24 + 7 * l.len() as i32);
+            ui::place(*h, (x, body.1 + sc(4), sc(bw), sc(24)));
+            x += sc(bw) + sc(4);
+        }
         ui::place(
-            s.w.cancel_copy,
-            (w - m - sc(110), term_y + 1, sc(106), sc(23)),
+            s.w.q_list,
+            (body.0, body.1 + sc(32), body.2, body.3 - sc(32)),
         );
         true
     });
@@ -1366,6 +1455,89 @@ fn selected_names(side: Side) -> Vec<String> {
     .unwrap_or_default()
 }
 
+/// The Transfers buttons in order: widget id and the widest label it shows.
+const QUEUE_BUTTONS: [(&str, &str); 9] = [
+    (ids::QUEUE_RUN, "Pause queue"),
+    (ids::QUEUE_PAUSE, "Pause"),
+    (ids::QUEUE_RESUME, "Resume"),
+    (ids::QUEUE_RETRY, "Retry"),
+    (ids::QUEUE_REMOVE, "Remove"),
+    (ids::QUEUE_UP, "Up"),
+    (ids::QUEUE_DOWN, "Down"),
+    (ids::QUEUE_CLEAR, "Clear finished"),
+    (ids::QUEUE_CANCEL, "Cancel all"),
+];
+
+/// The queue entries selected in the Transfers list.
+fn selected_in(list: HWND, ids: &[u64]) -> Vec<u64> {
+    controls::selected_all(list)
+        .into_iter()
+        .filter_map(|i| ids.get(i).copied())
+        .collect()
+}
+
+/// What the Transfers buttons offer for the current selection.
+fn queue_buttons() -> Option<(Vec<conn::QueueButton>, Vec<u64>)> {
+    with(|s| {
+        let i = match s.app.active() {
+            Tab::Connection(i) => i,
+            Tab::Machines | Tab::Keys => return None,
+        };
+        let picked = selected_in(s.w.q_list, &s.drawn.queue_ids);
+        s.app.tab(i).map(|t| (t.queue_buttons(&picked), picked))
+    })
+    .flatten()
+}
+
+fn queue_click(id: &str) {
+    let Some((buttons, picked)) = queue_buttons() else {
+        return;
+    };
+    if let Some(b) = buttons.into_iter().find(|b| b.id == id && b.enabled) {
+        conn_action(conn::Action::Queue(b.op, picked));
+    }
+}
+
+/// Right-click on the Transfers list: the same choices as its buttons.
+fn queue_menu() {
+    let (Some((buttons, picked)), Some(hwnd)) = (queue_buttons(), with(|s| s.window)) else {
+        return;
+    };
+    let mut p = POINT::default();
+    // SAFETY: a popup menu built, shown modally and destroyed here.
+    let cmd = unsafe {
+        let _ = GetCursorPos(&mut p);
+        let Ok(menu) = CreatePopupMenu() else { return };
+        let labels: Vec<Vec<u16>> = buttons.iter().map(|b| ui::wide(b.label)).collect();
+        for (i, (b, label)) in buttons.iter().zip(&labels).enumerate() {
+            let flags = if b.enabled {
+                MF_STRING
+            } else {
+                MF_STRING | MF_GRAYED
+            };
+            if b.op == conn::QueueOp::ClearFinished {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            }
+            let _ = AppendMenuW(menu, flags, i + 1, windows::core::PCWSTR(label.as_ptr()));
+        }
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            p.x,
+            p.y,
+            None,
+            hwnd,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        cmd
+    };
+    if let Some(b) = cmd.checked_sub(1).and_then(|i| buttons.get(i)) {
+        conn_action(conn::Action::Queue(b.op, picked));
+    }
+}
+
 fn send_console() {
     let Some(edit) = with(|s| s.w.console) else {
         return;
@@ -1399,6 +1571,7 @@ fn file_menu(side: Side) {
             format!("{}\tF6", other.unwrap_or_else(|| "Copy".into())),
             !names.is_empty(),
         ),
+        (6, "Add to queue".into(), !names.is_empty()),
         (2, "New folder...\tCtrl+N".into(), true),
         (3, "Rename...\tF2".into(), names.len() == 1),
         (4, "Delete...\tDel".into(), !names.is_empty()),
@@ -1416,7 +1589,7 @@ fn file_menu(side: Side) {
                 MF_STRING | MF_GRAYED
             };
             let _ = AppendMenuW(menu, flags, *id, windows::core::PCWSTR(label.as_ptr()));
-            if *id == 1 || *id == 4 {
+            if *id == 6 || *id == 4 {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
             }
         }
@@ -1435,6 +1608,7 @@ fn file_menu(side: Side) {
     };
     match cmd {
         1 => conn_action(conn::Action::Copy(side, names)),
+        6 => conn_action(conn::Action::AddToQueue(side, names)),
         2 => conn_action(conn::Action::NewFolder(side)),
         3 => conn_action(conn::Action::Rename(side, names[0].clone())),
         4 => conn_action(conn::Action::Delete(side, names)),
@@ -1569,12 +1743,12 @@ fn command(from: HWND, code: u32) {
             _ => {}
         }
     }
-    if let Some((send, cancel)) = with(|s| (s.w.console_send, s.w.cancel_copy)) {
+    if let Some((send, queue)) = with(|s| (s.w.console_send, s.w.q_buttons.clone())) {
         if from == send {
             return send_console();
         }
-        if from == cancel {
-            return conn_action(conn::Action::CancelTransfers);
+        if let Some((id, _)) = queue.iter().find(|(_, h)| *h == from) {
+            return queue_click(id);
         }
     }
     let Some(b) = with(|s| {
@@ -1583,6 +1757,7 @@ fn command(from: HWND, code: u32) {
             s.w.m_open,
             s.w.m_remove,
             s.w.m_settings,
+            s.w.m_options,
             s.w.m_disconnect_all,
             s.w.local.places,
             s.w.local.home,
@@ -1594,7 +1769,8 @@ fn command(from: HWND, code: u32) {
     }) else {
         return;
     };
-    let [add, open, remove, settings, all, l_places, l_home, l_go_to, r_places, r_home, r_up] = b;
+    let [add, open, remove, settings, options, all, l_places, l_home, l_go_to, r_places, r_home, r_up] =
+        b;
     match from {
         h if h == add => dispatch(app::Action::AddMachine),
         h if h == open => {
@@ -1612,6 +1788,7 @@ fn command(from: HWND, code: u32) {
                 dispatch(app::Action::EditMachine(id));
             }
         }
+        h if h == options => dispatch(app::Action::EditOptions),
         h if h == all => dispatch(app::Action::DisconnectAll),
         h if h == l_places => conn_action(conn::Action::Places(Side::Local)),
         h if h == l_home => conn_action(conn::Action::LocalHome),
@@ -1668,6 +1845,8 @@ fn notify(hdr: &NMHDR) {
                 unsafe { SetCapture(main) };
             }
         }
+    } else if hdr.code == NM_RCLICK && with(|s| s.w.q_list == from).unwrap_or(false) {
+        queue_menu();
     } else if hdr.code == NM_RCLICK && (from == l_list || from == r_list) {
         file_menu(if from == l_list {
             Side::Local

@@ -304,13 +304,44 @@ def op_menu(o):
     raise Fail(f"no menu item {o['name']} in {seen}")
 
 
+def window_image(h, Image):
+    """One window as the window itself draws it (PrintWindow), covered or not."""
+    g = ctypes.windll.gdi32
+    r = ctypes.wintypes.RECT()
+    user32.GetWindowRect(h, ctypes.byref(r))
+    w, ht = r.right - r.left, r.bottom - r.top
+    if w <= 0 or ht <= 0:
+        return None
+    sdc = user32.GetDC(None)
+    dc = g.CreateCompatibleDC(sdc)
+    bmp = g.CreateCompatibleBitmap(sdc, w, ht)
+    g.SelectObject(dc, bmp)
+    user32.PrintWindow(h, dc, 2)
+    bi = (ctypes.c_uint32 * 10)(40, w, ctypes.c_uint32(-ht).value, 1 | (32 << 16), 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(w * ht * 4)
+    g.GetDIBits(dc, bmp, 0, ht, buf, bi, 0)
+    g.DeleteObject(bmp)
+    g.DeleteDC(dc)
+    user32.ReleaseDC(None, sdc)
+    return Image.frombuffer("RGB", (w, ht), buf.raw, "raw", "BGRX", 0, 1)
+
+
 def op_screenshot(o):
-    """The whole screen to `path`, for a failed step; Pillow is optional."""
+    """The shell's own windows to `path`, for a failed step (never the rest of the screen)."""
     try:
-        from PIL import ImageGrab
+        from PIL import Image
     except ImportError:
         raise Fail("no Pillow for screenshots")
-    ImageGrab.grab(all_screens=True).save(o["path"])
+    shots = [i for i in (window_image(h, Image) for h in reversed(windows() or [MAIN])) if i]
+    if not shots:
+        raise Fail("no window to capture")
+    # Main window first, then any dialogs beside it.
+    out = Image.new("RGB", (sum(i.width for i in shots), max(i.height for i in shots)), "white")
+    x = 0
+    for i in shots:
+        out.paste(i, (x, 0))
+        x += i.width
+    out.save(o["path"])
 
 
 OPS = {
@@ -362,8 +393,13 @@ def main():
                 code = PROC.wait(15)
                 reply({"ok": code == 0, "error": f"exit code {code}"})
             except subprocess.TimeoutExpired:
+                left = []
+                for h in windows():
+                    buf = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(h, buf, 256)
+                    left.append(f"{class_of(h)} {buf.value!r}")
                 PROC.kill()
-                reply({"ok": False, "error": "the shell did not quit"})
+                reply({"ok": False, "error": f"the shell did not quit; windows left: {left}"})
             return
         try:
             OPS[o["op"]](o)
