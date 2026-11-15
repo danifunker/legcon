@@ -9,25 +9,21 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The lab (lab/README.md): build the unix90s container, run legcon's lab tests against it, and on
-  # main publish the image to the GitHub Container Registry so other jobs and machines can pull it.
+  # The lab (lab/README.md): pull the published unix90s image pinned in lab/IMAGE and run legcon's
+  # lab tests against it. The image is built and published only by hand (lab-image.yml, D43).
   unix90s:
     name: lab (unix90s)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: read
     steps:
       - uses: actions/checkout@v7
 
-      - name: Image name
+      - name: Pull the pinned lab image
         run: |
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "LAB_IMAGE=ghcr.io/$owner/legcon-lab-unix90s:${GITHUB_SHA::12}" >> "$GITHUB_ENV"
-          echo "LAB_LATEST=ghcr.io/$owner/legcon-lab-unix90s:latest" >> "$GITHUB_ENV"
-
-      - name: Build the lab image
-        run: bash lab/lab.sh build
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          bash lab/lab.sh pull
 
       - name: Start the lab
         run: bash lab/lab.sh up
@@ -52,14 +48,6 @@ jobs:
       - name: Server logs on failure
         if: failure()
         run: bash lab/lab.sh logs
-
-      - name: Publish the image
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker tag "$LAB_IMAGE" "$LAB_LATEST"
-          docker push "$LAB_IMAGE"
-          docker push "$LAB_LATEST"
 
       - name: Stop the lab
         if: always()
