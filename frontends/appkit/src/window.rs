@@ -437,6 +437,9 @@ fn build(mtm: MainThreadMarker, content: &NSView) -> Widgets {
         unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] }
     };
     ui::set_id(&splitter, ids::CONN_SPLITTER);
+    splitter.setAccessibilityElement(true);
+    // SAFETY: AppKit's own role constant.
+    splitter.setAccessibilityRole(Some(unsafe { objc2_app_kit::NSAccessibilitySplitterRole }));
     content.addSubview(&splitter);
     let labels: Vec<_> = TermTab::ALL.iter().map(|t| ns(t.label())).collect();
     let labels: Vec<&objc2_foundation::NSString> = labels.iter().map(|l| &**l).collect();

@@ -3,7 +3,7 @@
 [[case]]
 id = "flow.settings.edit-and-save"
 description = "Open sparc's settings from the Machines tab, change its port, charset and NFS ids, save"
-shells = ["win32"]
+shells = ["win32", "appkit"]
 machines = [
   { id = "sparc", name = "sparc", address = "192.168.99.50", services = [{ kind = "ftp", port = 21 }, { kind = "telnet", port = 23 }], user = "root", password = "b64:cHc=" },
 ]
@@ -35,7 +35,7 @@ lc = [{ args = ["machines", "show", "sparc"], stdout_has = ["files_port       = 
 [[case]]
 id = "flow.settings.os-store"
 description = "Tick Keep the password in the OS store: the file holds only `os` and the store the password; untick moves it back"
-shells = ["win32"]
+shells = ["win32", "appkit"]
 machines = [
   { id = "nt", name = "nt", address = "192.168.99.78", services = [{ kind = "smb", port = 139 }], user = "mister", password = "b64:cHc=" },
 ]
@@ -59,7 +59,7 @@ nt = "pw"
 [[case]]
 id = "flow.settings.cancel-keeps-everything"
 description = "Change fields and Cancel: nothing is saved"
-shells = ["win32"]
+shells = ["win32", "appkit"]
 machines = [
   { id = "mac", name = "mac", address = "192.168.99.198", services = [{ kind = "afp", port = 548 }], charset = "MacRoman" },
 ]
@@ -78,7 +78,7 @@ ui = [
 [[case]]
 id = "flow.settings.from-the-tab"
 description = "Open a machine's tab, change its name from the header's Settings: the tab title follows"
-shells = ["win32"]
+shells = ["win32", "appkit"]
 machines = [
   { id = "indy", name = "indy", address = "192.168.99.60", services = [{ kind = "ftp", port = 21 }] },
 ]

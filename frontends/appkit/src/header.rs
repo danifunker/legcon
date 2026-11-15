@@ -9,7 +9,9 @@ use legcon::controller::connection::HeaderInfo;
 use legcon::controller::{ids, ConnState};
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSButton, NSColor, NSTextField, NSView};
+use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityGroupRole, NSButton, NSColor, NSTextField, NSView,
+};
 use objc2_foundation::NSRect;
 
 use crate::ui;
@@ -88,6 +90,9 @@ impl Header {
         );
         let view: Retained<NSView> = Retained::into_super(view);
         ui::set_id(&view, ids::CONN_HEADER);
+        view.setAccessibilityElement(true);
+        // SAFETY: AppKit's own role constant.
+        view.setAccessibilityRole(Some(unsafe { NSAccessibilityGroupRole }));
         let name = ui::label(mtm, "");
         name.setFont(Some(&ui::bold()));
         let address = ui::label(mtm, "");

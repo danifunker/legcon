@@ -8,7 +8,10 @@ use legcon::controller::ConnState;
 use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSAppearanceCustomization, NSButton, NSColor, NSEvent, NSView};
+use objc2_app_kit::{
+    NSAccessibility, NSAccessibilityTabGroupRole, NSAppearanceCustomization, NSButton, NSColor,
+    NSEvent, NSView,
+};
 use objc2_foundation::NSRect;
 
 use crate::header::state_rgb;
@@ -144,6 +147,9 @@ impl TabStrip {
     pub fn new(mtm: MainThreadMarker) -> TabStrip {
         let view = ui::flipped(mtm);
         ui::set_id(&view, "tabs");
+        view.setAccessibilityElement(true);
+        // SAFETY: AppKit's own role constant.
+        view.setAccessibilityRole(Some(unsafe { NSAccessibilityTabGroupRole }));
         TabStrip {
             view,
             tabs: RefCell::new(Vec::new()),
@@ -159,9 +165,10 @@ impl TabStrip {
             }
         }
         while tabs.len() < looks.len() {
+            // An index no tab has, so the loop below gives it its title and id.
             let this = mtm.alloc::<TabButton>().set_ivars(RefCell::new(TabState {
                 look: looks[tabs.len()].clone(),
-                index: tabs.len(),
+                index: usize::MAX,
                 selected: false,
             }));
             // SAFETY: NSButton's designated initialiser.
