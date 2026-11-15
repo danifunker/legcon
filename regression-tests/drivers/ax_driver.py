@@ -169,7 +169,10 @@ def frontmost():
 
 def type_text(s):
     for ch in s:
-        post(0, 0, ch)
+        if ch in "\r\n":
+            post(KEYS["enter"], 0)
+        else:
+            post(0, 0, ch)
         time.sleep(0.01)
 
 

@@ -37,10 +37,11 @@ fn login_prompt_terminal_type_and_hang_up() {
         s.write_all(b"\r\nSunOS 5.8\r\n\r\nlogin: ").unwrap();
         let mut ttype = b"\xff\xfa\x18\x00VT100".to_vec();
         ttype.extend([IAC, SE]);
-        let heard = read_until(&mut s, &ttype, 5);
+        // One wait: a single read can hold the terminal type and the typed name together.
+        let heard = read_until(&mut s, b"dani\r\n", 5);
         assert!(heard.windows(3).any(|w| w == [IAC, DO, ECHO]), "{heard:?}");
-        let typed = read_until(&mut s, b"dani\r\n", 5);
-        assert!(typed.ends_with(b"dani\r\n"));
+        assert!(heard.windows(ttype.len()).any(|w| w == ttype), "{heard:?}");
+        assert!(heard.ends_with(b"dani\r\n"));
         s.write_all(b"dani\r\nPassword:").unwrap();
     });
     let pty = lc_telnet::connect("127.0.0.1", port, &lc_telnet::Options::default()).unwrap();
