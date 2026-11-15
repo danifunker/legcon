@@ -190,13 +190,16 @@ jobs:
             os: windows-latest
           - target: linux-x64
             os: ubuntu-latest
-          - target: macos-arm64
+          - target: macos-universal
             os: macos-latest
+            rust_targets: aarch64-apple-darwin, x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -206,23 +209,88 @@ jobs:
             frontends/win32 -> target
             frontends/appkit -> target
 
+      # macOS signing, with the secrets vintrdp, rusty-backup and iris use (MACOS_CERTIFICATE,
+      # MACOS_CERTIFICATE_PWD, MACOS_TEAM_ID, MACOS_NOTARIZE_*); without them, ad hoc, unnotarized.
+      - name: Import the Developer ID certificate
+        if: runner.os == 'macOS'
+        id: signing
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+        run: |
+          if [ -z "$MACOS_CERTIFICATE" ]; then
+            echo "::warning::MACOS_CERTIFICATE is not set: legcon.app is signed ad hoc and not notarized."
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PWD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          ID=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+               | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          if [ -z "$ID" ]; then
+            echo "::error::MACOS_CERTIFICATE imported, but it holds no 'Developer ID Application' identity."
+            exit 1
+          fi
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Write the notarization key
+        if: runner.os == 'macOS'
+        env:
+          MACOS_NOTARIZE_API_KEY: ${{ secrets.MACOS_NOTARIZE_API_KEY }}
+        run: |
+          if [ -n "$MACOS_NOTARIZE_API_KEY" ]; then
+            printf '%s' "$MACOS_NOTARIZE_API_KEY" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          fi
+
       - name: Release build
         shell: bash
+        env:
+          MACOS_SIGN_IDENTITY: ${{ steps.signing.outputs.identity }}
+          NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARIZE_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARIZE_API_ISSUER }}
+          NOTARY_KEY_PATH: ${{ secrets.MACOS_NOTARIZE_API_KEY != '' && format('{0}/notary.p8', runner.temp) || '' }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARIZE_APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
         run: |
           mkdir -p dist
-          cargo build --release --bin lc
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-${GITHUB_SHA::8}"
           if [ "$RUNNER_OS" = Windows ]; then
+            cargo build --release --bin lc
             (cd frontends/win32 && cargo build --release)
             cp target/release/lc.exe frontends/win32/target/release/legcon.exe dist/
           elif [ "$RUNNER_OS" = macOS ]; then
-            frontends/appkit/bundle/build-app.sh "$PWD/dist"
-            # Zipped with ditto: an artifact would drop the bundle's executable bit.
-            (cd dist && ditto -c -k --keepParent legcon.app legcon-macos.zip && rm -rf legcon.app)
-            cp target/release/lc dist/
+            # Both architectures; the bundle script signs, notarizes and packages the app.
+            for t in aarch64-apple-darwin x86_64-apple-darwin; do
+              cargo build --release --bin lc --target "$t"
+            done
+            lipo -create -output dist/lc target/aarch64-apple-darwin/release/lc target/x86_64-apple-darwin/release/lc
+            if [ -n "$MACOS_SIGN_IDENTITY" ] && [ "$MACOS_SIGN_IDENTITY" != "-" ]; then
+              codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/lc
+            fi
+            frontends/appkit/bundle/build-app.sh --universal --package "$VERSION" "$PWD/dist"
+            # The zip and dmg carry the app: an artifact would drop the bundle's executable bit.
+            rm -rf dist/legcon.app
           else
+            cargo build --release --bin lc
             cp target/release/lc dist/
           fi
           ls -l dist
+
+      - name: Remove the signing keychain and key
+        if: always() && runner.os == 'macOS'
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          [ -f "$KEYCHAIN" ] && security delete-keychain "$KEYCHAIN" || true
+          rm -f "$RUNNER_TEMP/notary.p8"
 
       - uses: actions/upload-artifact@v7
         with:
