@@ -436,6 +436,11 @@ fn lab2(cmd: &[u8]) -> String {
 #[ignore = "needs the lab container (lab/lab.sh up)"]
 fn rsh_trust_over_rexec_ftp_and_telnet() {
     use legcon::model::machines::{Machine, Service, ServiceKind};
+    // Linux hands out ports below 1024 only to root (or with the capability); Windows to anyone.
+    if !(1000..1024).any(|port| std::net::TcpListener::bind(("0.0.0.0", port)).is_ok()) {
+        eprintln!("skipped: this user cannot use a source port below 1024, which rsh needs");
+        return;
+    }
     for (kind, port) in [
         (ServiceKind::Ftp, p(10021)),
         (ServiceKind::Rexec, p(10512)),
