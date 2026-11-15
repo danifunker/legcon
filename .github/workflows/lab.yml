@@ -15,7 +15,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Image name
         run: |
@@ -40,8 +40,10 @@ jobs:
         run: |
           bin=$(cargo test --test lab_unix90s --no-run --message-format=json \
             | jq -r 'select(.executable != null and .target.name == "lab_unix90s") | .executable')
+          # The runner's own Ubuntu, so the binary built here finds the C library it was built against.
+          runner_ubuntu="ubuntu:$(. /etc/os-release && echo "$VERSION_ID")"
           docker run --rm --network container:legcon-lab-unix90s -v "$bin":/lab_tests:ro \
-            -e LEGCON_LAB_HOST=127.0.0.1 -e LEGCON_LAB_NATIVE=1 -e LEGCON_LAB_RSH=1 ubuntu:24.04 \
+            -e LEGCON_LAB_HOST=127.0.0.1 -e LEGCON_LAB_NATIVE=1 -e LEGCON_LAB_RSH=1 "$runner_ubuntu" \
             /lab_tests --ignored --test-threads=1 rsh the_machine_says resume
 
       - name: Server logs on failure
