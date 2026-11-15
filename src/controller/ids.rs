@@ -72,4 +72,5 @@ pub const MS_HOME: &str = "machine.home";
 pub const MS_LOGOUT: &str = "machine.logout";
 pub const MS_UID: &str = "machine.uid";
 pub const MS_GID: &str = "machine.gid";
+pub const MS_NFS_VERSION: &str = "machine.nfs_version";
 pub const MS_LOCAL_USER: &str = "machine.local_user";

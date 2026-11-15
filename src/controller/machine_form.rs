@@ -42,6 +42,9 @@ fn kinds(files: bool, m: &Machine) -> Vec<ServiceKind> {
     v
 }
 
+/// The NFS version choices and what each stores.
+const NFS_VERSIONS: [(&str, Option<u32>); 3] = [("Auto", None), ("3", Some(3)), ("2", Some(2))];
+
 fn choice(options: Vec<String>, selected: usize) -> FieldKind {
     FieldKind::Choice { options, selected }
 }
@@ -223,6 +226,18 @@ pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
             "",
         ),
         field(
+            ids::MS_NFS_VERSION,
+            "NFS version",
+            choice(
+                NFS_VERSIONS.iter().map(|(l, _)| l.to_string()).collect(),
+                NFS_VERSIONS
+                    .iter()
+                    .position(|(_, v)| *v == m.nfs_version)
+                    .unwrap_or(0),
+            ),
+            "Auto asks for 3 and falls back to 2.",
+        ),
+        field(
             ids::MS_LOCAL_USER,
             "rsh / rlogin local user",
             FieldKind::Text(m.local_user.clone().unwrap_or_default()),
@@ -344,6 +359,9 @@ pub fn apply(m: &mut Machine, v: &FormValues, keys: &[KeyInfo]) -> Result<(), St
     }
     m.uid = number(v.text(ids::MS_UID), "uid")?;
     m.gid = number(v.text(ids::MS_GID), "gid")?;
+    if let Some((_, n)) = NFS_VERSIONS.get(v.choice(ids::MS_NFS_VERSION)) {
+        m.nfs_version = *n;
+    }
     let local = v.text(ids::MS_LOCAL_USER).trim();
     m.local_user = (!local.is_empty()).then(|| local.to_string());
     Ok(())
@@ -442,6 +460,7 @@ mod tests {
         set_from_text(&spec, &mut v, ids::MS_FILES_PORT, "2222").unwrap();
         set_from_text(&spec, &mut v, ids::MS_CHARSET, "MacRoman").unwrap();
         set_from_text(&spec, &mut v, ids::MS_UID, "100").unwrap();
+        set_from_text(&spec, &mut v, ids::MS_NFS_VERSION, "2").unwrap();
         set_from_text(&spec, &mut v, ids::MS_OS_STORE, "yes").unwrap();
         apply(&mut m, &v, &[]).unwrap();
         assert_eq!(
@@ -453,6 +472,7 @@ mod tests {
         );
         assert_eq!(m.charset, "MacRoman");
         assert_eq!(m.uid, Some(100));
+        assert_eq!(m.nfs_version, Some(2));
         assert_eq!(m.password, Password::Os);
         assert_eq!(secrets::get("form-test").unwrap(), "pw");
         // Unticking moves it back into the file and out of the store.

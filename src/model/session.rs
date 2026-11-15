@@ -290,6 +290,7 @@ fn open_file_session(
                 uid: machine.uid.unwrap_or(65534),
                 gid: machine.gid.unwrap_or(65534),
                 portmap_port: if port == lc_nfs::PORT { 111 } else { port },
+                version: machine.nfs_version,
                 ..lc_nfs::Options::default()
             };
             let session = lc_nfs::connect(&machine.address, &opts)?;

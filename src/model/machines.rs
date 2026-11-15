@@ -297,6 +297,9 @@ pub struct Machine {
     pub uid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gid: Option<u32>,
+    /// NFS version 3 or 2; unset tries 3, then 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nfs_version: Option<u32>,
     /// The name on this computer that rsh / rlogin present (`.rhosts` lists it); the user when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_user: Option<String>,
@@ -393,6 +396,7 @@ impl Machine {
             key_file: None,
             uid: None,
             gid: None,
+            nfs_version: None,
             local_user: None,
         }
     }

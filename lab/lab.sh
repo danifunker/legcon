@@ -22,11 +22,11 @@ PORTS=(
 SERVICES=(
   "vsftpd ftp 10021" "proftpd ftp 10121" "telnet telnet 10023" "rexec rexec 10512"
   "rlogin rlogin 10513" "rsh rsh 10514" "samba smb 10139" "openssh ssh 10022"
-  "dropbear ssh 10222" "ssh1 ssh 10200" "nfs nfs 10111" "netatalk afp 10548"
+  "dropbear ssh 10222" "ssh1 ssh 10200" "nfs nfs 10111" "nfs2 nfs 10111" "netatalk afp 10548"
   "apache http 10080" "gophernicus gopher 10070"
 )
-# Checked by `status` only: the NFSv2 server shares the portmapper with unfs3.
-EXTRA=("nfs2 nfs 12149")
+# Checked by `status` only: the NFSv2 server itself (lab-nfs2 reaches it through the portmapper).
+EXTRA=("nfs2-nfsd nfs 12149")
 
 up() {
   local args=()

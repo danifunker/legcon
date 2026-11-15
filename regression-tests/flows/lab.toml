@@ -151,6 +151,39 @@ ui = [
 expect_files = ["readme.txt"]
 
 [[case]]
+id = "flow.lab.nfs2-user-server"
+description = "Set NFS version 2 in the settings, then download and upload (lab-nfs2)"
+lab = true
+machines = "lab"
+local_files = { "up-{run}.txt" = "uploaded by a legcon GUI flow" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab-nfs2" },
+  { op = "activate", id = "machines.settings" },
+  { op = "wait_dialog" },
+  { op = "section", id = "machines.settings.sections", name = "System" },
+  { op = "choose", id = "machine.nfs_version", option = "2" },
+  { op = "activate", id = "machines.settings.ok" },
+  { op = "expect_no_dialog" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "home", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "home" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "lab", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "lab" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "remote.list", name = "readme.txt" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
+  { op = "select_row", id = "local.list", name = "up-{run}.txt" },
+  { op = "key", id = "local.list", key = "f6" },
+  { op = "expect_row", id = "remote.list", name = "up-{run}.txt", timeout = 60 },
+]
+expect_files = ["readme.txt"]
+lc = [{ args = ["machines", "show", "lab-nfs2"], stdout_has = ["nfs_version      = 2 "] }]
+
+[[case]]
 id = "flow.lab.afp-netatalk"
 description = "Connect, download readme.txt, upload a file (lab-netatalk)"
 lab = true
