@@ -31,6 +31,8 @@ define_class!(
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _note: &NSNotification) {
+            // Set once launched: AppKit sets its own (none outside a bundle) while launching.
+            set_icon(&NSApplication::sharedApplication(self.mtm()));
             crate::window::start(self.mtm());
         }
 
@@ -132,7 +134,6 @@ pub fn run() {
     let mtm = MainThreadMarker::new().expect("main runs on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    set_icon(&app);
     let delegate: Retained<Delegate> = {
         let this = mtm.alloc::<Delegate>().set_ivars(());
         // SAFETY: NSObject's plain init.

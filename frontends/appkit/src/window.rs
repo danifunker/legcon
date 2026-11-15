@@ -330,6 +330,8 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
     content.addSubview(&bg);
     let path = ui::label(mtm, "");
     path.setFont(Some(&ui::mono()));
+    // The end of a path is the folder the user is in: cut the middle, as the Finder does.
+    path.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingMiddle);
     path.setSelectable(true);
     ui::set_id(&path, path_id);
     let p = Pane {

@@ -223,7 +223,9 @@ def op_section(o):
     """Show a tab by its title: a form's sections, or the main tab strip."""
     box = find(o["id"])
     for e in walk(box)[1:]:
-        if text(e, "AXRole") in ("AXRadioButton", "AXButton", "AXTab") and text(e, "AXTitle") == o["name"]:
+        # A segment names itself in its description, a tab or button in its title.
+        label = text(e, "AXTitle") or text(e, "AXDescription")
+        if text(e, "AXRole") in ("AXRadioButton", "AXButton", "AXTab") and label == o["name"]:
             press(e, o["name"])
             time.sleep(0.5)
             return

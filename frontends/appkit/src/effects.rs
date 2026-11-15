@@ -78,6 +78,10 @@ pub fn pick_file(
 
 fn alert(mtm: MainThreadMarker, title: &str, message: &str) -> Retained<NSAlert> {
     let a = NSAlert::new(mtm);
+    // The app's own icon: an unbundled build (the flows) would show a folder.
+    let icon = objc2_app_kit::NSApplication::sharedApplication(mtm).applicationIconImage();
+    // SAFETY: the alert keeps its own reference to the image.
+    unsafe { a.setIcon(icon.as_deref()) };
     a.setMessageText(&ns(&ui::plain(title)));
     a.setInformativeText(&ns(&ui::plain(message)));
     a
