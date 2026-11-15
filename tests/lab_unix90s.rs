@@ -374,6 +374,83 @@ fn shell_commands_on_vintage_openssh() {
     s.disconnect(Duration::from_secs(5)).unwrap();
 }
 
+/// A 10-file tree with nested and empty folders, up through the queue's copy and back down.
+fn tree_round_trip(fs: Box<dyn FileSession>, label: &str) {
+    use legcon::model::transfer::{copy, Batch, Direction, Pick};
+    let fs = std::sync::Arc::new(std::sync::Mutex::new(fs));
+    let run = |dir: Direction, local: &std::path::Path, remote: &RemotePath, name: &str| {
+        let (fs, local, remote, name) = (
+            std::sync::Arc::clone(&fs),
+            local.to_path_buf(),
+            remote.clone(),
+            name.to_string(),
+        );
+        let job = legcon::model::job::Job::spawn(
+            "tree",
+            std::sync::Arc::new(legcon::model::job::NoNotify),
+            move |ctx| {
+                let picks = [Pick { name, is_dir: true }];
+                let b = Batch {
+                    dir,
+                    remote_dir: &remote,
+                    local_dir: &local,
+                    picks: &picks,
+                    sizes: &[None],
+                };
+                copy(&mut **fs.lock().unwrap(), &b, true, ctx)
+            },
+        );
+        job.wait();
+        job.take_result()
+            .unwrap_or_else(|| panic!("{label}: {:?}", job.snapshot().status))
+    };
+    let files = [
+        "a1.txt",
+        "a2.txt",
+        "a3.txt",
+        "sub/b1.txt",
+        "sub/b2.txt",
+        "sub/b3.txt",
+        "sub/deep/c1.txt",
+        "sub/deep/c2.txt",
+        "other/d1.txt",
+        "other/d2.txt",
+    ];
+    let name = format!("lc-tree-{label}-{}", std::process::id());
+    let up = tempfile::tempdir().unwrap();
+    for f in files {
+        let p = up.path().join(&name).join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("{f} on {label}")).unwrap();
+    }
+    std::fs::create_dir_all(up.path().join(&name).join("empty")).unwrap();
+    let upload = RemotePath::parse(PathStyle::Unix, "/home/lab/upload");
+    let s = run(Direction::Upload, up.path(), &upload, &name);
+    assert_eq!((s.files, s.failed.len()), (10, 0), "{label}: up {s:?}");
+    let down = tempfile::tempdir().unwrap();
+    let s = run(Direction::Download, down.path(), &upload, &name);
+    assert_eq!((s.files, s.failed.len()), (10, 0), "{label}: down {s:?}");
+    for f in files {
+        assert_eq!(
+            std::fs::read_to_string(down.path().join(&name).join(f)).unwrap(),
+            format!("{f} on {label}"),
+            "{label}: {f}"
+        );
+    }
+    assert!(down.path().join(&name).join("empty").is_dir(), "{label}");
+    let mut fs = fs.lock().unwrap();
+    legcon::model::transfer::remove_tree(&mut **fs, &upload.join(&name), true).unwrap();
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn a_folder_tree_up_and_down() {
+    let ftp = lc_ftp::connect(&host(), 10021, USER, PASSWORD, &Default::default()).unwrap();
+    tree_round_trip(Box::new(ftp), "vsftpd");
+    tree_round_trip(Box::new(ssh(10022)), "openssh");
+    tree_round_trip(Box::new(ssh(10202)), "openssh3");
+}
+
 fn ssh(port: u16) -> lc_ssh::SshSession {
     lc_ssh::connect(
         &host(),

@@ -70,6 +70,18 @@ impl Entry {
         self.item.exists.is_some() && self.on_existing == OnExisting::Skip
     }
 
+    /// This folder entry is the target-side folder `other` goes into.
+    fn holds(&self, other: &Entry) -> bool {
+        match other.item.dir {
+            super::transfer::Direction::Upload => {
+                other.item.remote.parent().as_ref() == Some(&self.item.remote)
+            }
+            super::transfer::Direction::Download => {
+                other.item.local.parent() == Some(self.item.local.as_path())
+            }
+        }
+    }
+
     pub fn unfinished(&self) -> bool {
         matches!(
             self.state,
@@ -139,6 +151,20 @@ impl Queue {
             .iter()
             .find(|e| e.state == State::Waiting)
             .map(|e| e.id)
+    }
+
+    /// The entry to start now: the first waiting one, or first a waiting folder it goes into,
+    /// so an entry moved above its folders still finds them made.
+    pub fn next_to_run(&self) -> Option<Id> {
+        let mut at = self.entries.iter().find(|e| e.state == State::Waiting)?;
+        while let Some(f) = self
+            .entries
+            .iter()
+            .find(|f| f.state == State::Waiting && f.item.folder && f.id != at.id && f.holds(at))
+        {
+            at = f;
+        }
+        Some(at.id)
     }
 
     /// Entries not yet done, skipped or failed.

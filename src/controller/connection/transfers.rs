@@ -866,7 +866,7 @@ impl ConnectionController {
             && self.can_disconnect()
             && !self.xfer.queue.asking()
         {
-            let Some(id) = self.xfer.queue.next_waiting() else {
+            let Some(id) = self.xfer.queue.next_to_run() else {
                 break;
             };
             let e = self.xfer.queue.get(id).expect("listed").clone();

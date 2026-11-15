@@ -185,6 +185,13 @@ impl FileSession for MemoryFs {
         self.live()?;
         let key = path.to_string();
         let exists = self.tree.lock().unwrap().nodes.contains_key(&key);
+        // As a real server: no file in a folder that is not there.
+        if let Some(parent) = path.parent().filter(|p| !p.is_root()) {
+            let tree = self.tree.lock().unwrap();
+            if !matches!(tree.nodes.get(&parent.to_string()), Some(Node::Folder)) {
+                return Err(Error::NotFound(parent.to_string()));
+            }
+        }
         match mode {
             WriteMode::Create if exists => return Err(Error::Denied(format!("{key} exists"))),
             _ => {}

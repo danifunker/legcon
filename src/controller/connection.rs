@@ -2414,6 +2414,69 @@ mod tests {
     }
 
     #[test]
+    fn a_ten_file_tree_goes_up_and_comes_back_even_reordered() {
+        let home = tempfile::tempdir().unwrap();
+        let files = [
+            "tree/a1.txt",
+            "tree/a2.txt",
+            "tree/a3.txt",
+            "tree/sub/b1.txt",
+            "tree/sub/b2.txt",
+            "tree/sub/b3.txt",
+            "tree/sub/deep/c1.txt",
+            "tree/sub/deep/c2.txt",
+            "tree/other/d1.txt",
+            "tree/other/d2.txt",
+        ];
+        for f in files {
+            let p = home.path().join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, format!("contents of {f}")).unwrap();
+        }
+        std::fs::create_dir_all(home.path().join("tree/empty")).unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        c.apply(Action::Refresh(Side::Local));
+        settle(&mut c);
+        // Upload: ten rows (folders are not rows), waiting until Start.
+        c.apply(Action::AddToQueue(Side::Local, vec!["tree".into()]));
+        settle(&mut c);
+        let rows = c.queue_rows();
+        assert_eq!(rows.len(), 10, "{}", c.transfers_text());
+        assert!(rows.iter().all(|r| r.status == "Waiting"));
+        // The deepest file to the top, above the folders it needs.
+        let c1 = rows.iter().find(|r| r.name == "c1.txt").unwrap().id;
+        for _ in 0..12 {
+            c.apply(Action::Queue(QueueOp::Up, vec![c1]));
+        }
+        assert_eq!(c.queue_rows()[0].name, "c1.txt");
+        c.apply(Action::Queue(QueueOp::Start, Vec::new()));
+        settle(&mut c);
+        let done = c
+            .queue_rows()
+            .iter()
+            .filter(|r| r.status.starts_with("Done"))
+            .count();
+        assert_eq!(done, 10, "{}", c.transfers_text());
+        // Back down into a clean folder: same bytes, empty folder included.
+        std::fs::remove_dir_all(home.path().join("tree")).unwrap();
+        c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
+        c.apply(Action::Refresh(Side::Remote));
+        settle(&mut c);
+        c.apply(Action::Copy(Side::Remote, vec!["tree".into()]));
+        settle(&mut c);
+        for f in files {
+            assert_eq!(
+                std::fs::read_to_string(home.path().join(f)).unwrap(),
+                format!("contents of {f}"),
+                "{f}"
+            );
+        }
+        assert!(home.path().join("tree/empty").is_dir());
+    }
+
+    #[test]
     fn disconnect_with_transfers_left_asks_and_can_finish_first() {
         let home = tempfile::tempdir().unwrap();
         let mut c = tab(home.path());
