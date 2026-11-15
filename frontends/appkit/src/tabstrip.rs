@@ -99,8 +99,10 @@ fn dark(v: &NSView) -> bool {
 fn draw(s: &TabState, b: NSRect, dark: bool) {
     let (w, h) = (b.size.width, b.size.height);
     let face: Retained<NSColor> = match (s.look.color, s.selected) {
-        (Some(c), true) => ui::tint(c, if dark { 0.55 } else { 0.22 }),
-        (Some(c), false) => ui::tint(c, if dark { 0.35 } else { 0.12 }),
+        (Some(c), true) if dark => ui::shade(c, 0.55),
+        (Some(c), false) if dark => ui::shade(c, 0.28),
+        (Some(c), true) => ui::tint(c, 0.22),
+        (Some(c), false) => ui::tint(c, 0.12),
         (None, true) => NSColor::windowBackgroundColor(),
         (None, false) => NSColor::quaternaryLabelColor(),
     };

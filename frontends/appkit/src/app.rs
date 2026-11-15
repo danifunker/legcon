@@ -18,6 +18,9 @@ thread_local! {
     static DELEGATE: RefCell<Option<Retained<Delegate>>> = const { RefCell::new(None) };
     /// Set once the controller said every machine is logged off.
     static QUITTING: Cell<bool> = const { Cell::new(false) };
+    /// macOS asked to quit (Cmd+Q, log out, shut down) and waits for our answer.
+    static ASKED: Cell<bool> = const { Cell::new(false) };
+    static MENU_TARGETS: RefCell<Vec<Retained<crate::ui::Callback>>> = const { RefCell::new(Vec::new()) };
 }
 
 define_class!(
@@ -41,9 +44,10 @@ define_class!(
             if QUITTING.with(Cell::get) {
                 return NSApplicationTerminateReply::TerminateNow;
             }
-            // Log every machine off first; the controller's Quit effect comes back here.
+            // Log every machine off first; the controller's Quit effect answers macOS.
+            ASKED.with(|a| a.set(true));
             crate::ui::later(Box::new(crate::window::quit));
-            NSApplicationTerminateReply::TerminateCancel
+            NSApplicationTerminateReply::TerminateLater
         }
     }
 );
@@ -51,7 +55,33 @@ define_class!(
 /// The controller logged every machine off: end the process.
 pub fn terminate(mtm: MainThreadMarker) {
     QUITTING.with(|q| q.set(true));
-    NSApplication::sharedApplication(mtm).terminate(None);
+    let app = NSApplication::sharedApplication(mtm);
+    if ASKED.with(|a| a.replace(false)) {
+        app.replyToApplicationShouldTerminate(true);
+    } else {
+        app.terminate(None);
+    }
+}
+
+/// A menu item running the shell's command for widget `id` (as its button would).
+fn ours(mtm: MainThreadMarker, title: &str, id: &'static str, key: &str) -> Retained<NSMenuItem> {
+    let cb = crate::ui::callback(
+        mtm,
+        Box::new(move |_| crate::ui::later(Box::new(move || crate::window::command(id)))),
+    );
+    // SAFETY: a plain menu item; its target is kept in MENU_TARGETS for the app's life.
+    let it = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            mtm.alloc(),
+            &ns(title),
+            Some(sel!(fire:)),
+            &ns(key),
+        )
+    };
+    // SAFETY: as above.
+    unsafe { it.setTarget(Some(&cb)) };
+    MENU_TARGETS.with(|t| t.borrow_mut().push(cb));
+    it
 }
 
 /// The app's icon, so a build run outside its bundle (the flows) shows it in the Dock and alerts.
@@ -99,6 +129,19 @@ fn menu_bar(mtm: MainThreadMarker) {
         "legcon",
         vec![
             item(mtm, "About legcon", sel!(orderFrontStandardAboutPanel:), ""),
+            NSMenuItem::separatorItem(mtm),
+            ours(
+                mtm,
+                "Options...",
+                legcon::controller::ids::MACHINES_OPTIONS,
+                ",",
+            ),
+            ours(
+                mtm,
+                "Disconnect all",
+                legcon::controller::ids::MACHINES_DISCONNECT_ALL,
+                "",
+            ),
             NSMenuItem::separatorItem(mtm),
             item(mtm, "Hide legcon", sel!(hide:), "h"),
             hide_others,

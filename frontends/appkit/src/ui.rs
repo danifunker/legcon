@@ -40,6 +40,16 @@ pub fn rgb(c: u32) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(ch(16), ch(8), ch(0), 1.0)
 }
 
+/// `c` mixed towards a dark grey by `1 - amount`: a tint for dark mode.
+pub fn shade(c: u32, amount: f64) -> Retained<NSColor> {
+    let base = 30.0 / 255.0;
+    let mix = |s: u32| {
+        let v = f64::from((c >> s) & 0xff) / 255.0;
+        v * amount + base * (1.0 - amount)
+    };
+    NSColor::colorWithSRGBRed_green_blue_alpha(mix(16), mix(8), mix(0), 1.0)
+}
+
 /// `c` mixed towards white by `1 - amount` (Win32's `paint::tint`).
 pub fn tint(c: u32, amount: f64) -> Retained<NSColor> {
     let mix = |s: u32| {

@@ -75,6 +75,9 @@ pub const DEFAULTS: &[(Chord, Command)] = &[
     (chord(Key::Char('W'), true, false), Command::CloseTab),
     (chord(Key::Tab, true, false), Command::NextTab),
     (chord(Key::Tab, true, true), Command::PrevTab),
+    // Cmd+Tab belongs to macOS; these are Safari's and Terminal's.
+    (chord(Key::Char(']'), true, true), Command::NextTab),
+    (chord(Key::Char('['), true, true), Command::PrevTab),
     (chord(Key::Digit(0), true, false), Command::ShowMachines),
     (chord(Key::F(6), false, false), Command::Copy),
     (chord(Key::F(2), false, false), Command::Rename),

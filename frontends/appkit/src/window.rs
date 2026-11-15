@@ -255,6 +255,8 @@ pub fn start(mtm: MainThreadMarker) {
         }
     };
     legcon::controller::log::capture::set_wake(wake.clone());
+    // legcon draws its own connection tabs; macOS's window tabs would be a second set.
+    NSWindow::setAllowsAutomaticWindowTabbing(false, mtm);
     let style = NSWindowStyleMask::Titled
         | NSWindowStyleMask::Closable
         | NSWindowStyleMask::Miniaturizable
@@ -300,7 +302,11 @@ pub fn start(mtm: MainThreadMarker) {
             _monitor: monitor,
         })
     });
-    window.center();
+    // Where the user last left it; the first time, centred.
+    if !window.setFrameUsingName(&ns("legcon.main")) {
+        window.center();
+    }
+    window.setFrameAutosaveName(&ns("legcon.main"));
     window.makeKeyAndOrderFront(None);
     NSApplication::sharedApplication(mtm).activate();
     refresh();
@@ -1601,6 +1607,7 @@ fn chord(e: &NSEvent) -> Option<Chord> {
             match c {
                 '0'..='9' => Key::Digit(c as u8 - b'0'),
                 c if c.is_ascii_alphabetic() => Key::Char(c.to_ascii_uppercase()),
+                '[' | ']' => Key::Char(c),
                 _ => return None,
             }
         }
