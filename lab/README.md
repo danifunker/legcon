@@ -39,7 +39,8 @@ read-only file, a symlink, a Latin-1 name (`caf\xe9.txt`), and names Windows can
 reach Windows on `localhost`.
 
 ```sh
-lab/lab.sh build      # build legcon-lab/unix90s:dev
+lab/lab.sh pull       # the published image pinned in lab/IMAGE, as legcon-lab/unix90s:dev
+lab/lab.sh build      # or build legcon-lab/unix90s:dev from containers/unix90s
 lab/lab.sh up         # start it and check every service answers
 lab/lab.sh status
 lab/lab.sh machines   # a legcon machines.json, one machine per service
@@ -86,3 +87,11 @@ does the same through the window. `LEGCON_LAB_HOST` points the tests at another 
 - Gopher: names included Gophernicus's date and size columns.
 - SSH: closing a Dropbear terminal could hang for good (Dropbear does not always answer the
   channel close); legcon now waits two seconds, then logs off.
+
+## The published image (D43)
+
+The image is built once and kept: the pipeline pulls the exact tag in `lab/IMAGE` and never builds
+or publishes it. Changing the container is its own step: edit `containers/unix90s`, run the
+**lab-image** workflow by hand (Actions > lab-image > Run workflow), which builds the image, runs the
+lab tests against it and publishes it as `ghcr.io/danifunker/legcon-lab-unix90s:<date>-<commit>`,
+then put that tag in `lab/IMAGE` in a commit of its own.

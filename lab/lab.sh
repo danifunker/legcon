@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The legcon lab: FOSS servers in containers, for integration and GUI tests (lab/README.md).
-# Usage: lab/lab.sh build|up|down|status|logs|machines [image]
+# Usage: lab/lab.sh build|pull|up|down|status|logs|machines
+# `pull` fetches the published image pinned in lab/IMAGE; `build` makes one from containers/.
 # Needs only docker (no compose). On Windows run it inside WSL: wsl -- bash lab/lab.sh up
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -72,10 +73,14 @@ machines() {
 
 case "${1:-}" in
   build) docker build -t "$IMAGE" containers/unix90s ;;
+  pull)
+    pinned="$(tr -d '[:space:]' < IMAGE)"
+    docker pull "$pinned" && docker tag "$pinned" "$IMAGE" && echo "$pinned as $IMAGE"
+    ;;
   up) up ;;
   down) docker rm -f "$NAME" >/dev/null && echo "stopped $NAME" ;;
   status) status ;;
   logs) docker logs "$NAME" ;;
   machines) machines ;;
-  *) echo "usage: $0 build|up|down|status|logs|machines" >&2; exit 2 ;;
+  *) echo "usage: $0 build|pull|up|down|status|logs|machines" >&2; exit 2 ;;
 esac

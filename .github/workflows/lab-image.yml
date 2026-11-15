@@ -1,0 +1,60 @@
+# Rebuild the lab container, run legcon's lab tests against it and publish it to the GitHub
+# Container Registry under a new tag. Run by hand only (Actions > lab-image > Run workflow), when
+# lab/containers changes; then put the printed tag in lab/IMAGE so the pipeline uses it (D43).
+name: lab-image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  image:
+    name: build, test and publish the unix90s lab image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "LAB_TAG=ghcr.io/$owner/legcon-lab-unix90s:$(date -u +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "LAB_LATEST=ghcr.io/$owner/legcon-lab-unix90s:latest" >> "$GITHUB_ENV"
+
+      - name: Build the lab image
+        run: bash lab/lab.sh build
+
+      - name: Start the lab
+        run: bash lab/lab.sh up
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Lab tests
+        run: cargo test --test lab_unix90s -- --ignored --test-threads=1
+
+      - name: rsh lab tests, inside the lab's network
+        run: |
+          bin=$(cargo test --test lab_unix90s --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.name == "lab_unix90s") | .executable')
+          runner_ubuntu="ubuntu:$(. /etc/os-release && echo "$VERSION_ID")"
+          docker run --rm --network container:legcon-lab-unix90s -v "$bin":/lab_tests:ro \
+            -e LEGCON_LAB_HOST=127.0.0.1 -e LEGCON_LAB_NATIVE=1 -e LEGCON_LAB_RSH=1 "$runner_ubuntu" \
+            /lab_tests --ignored --test-threads=1 rsh the_machine_says resume
+
+      - name: Server logs on failure
+        if: failure()
+        run: bash lab/lab.sh logs
+
+      - name: Publish
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag legcon-lab/unix90s:dev "$LAB_TAG"
+          docker tag legcon-lab/unix90s:dev "$LAB_LATEST"
+          docker push "$LAB_TAG"
+          docker push "$LAB_LATEST"
+          echo "Published $LAB_TAG. Put it in lab/IMAGE to use it in the pipeline." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop the lab
+        if: always()
+        run: bash lab/lab.sh down || true
