@@ -13,8 +13,10 @@ pub struct Settings {
     /// The local folder every connection starts in; `None` until the first run asks.
     pub home_folder: Option<PathBuf>,
     pub files_share: f32,
-    /// Places the user left home to, newest first.
+    /// Local folders files were last copied to or from (or gone to), newest first.
     pub recent_places: Vec<PathBuf>,
+    /// Local folders the user pinned to the Places menu, in the order pinned.
+    pub pinned_places: Vec<PathBuf>,
 }
 
 impl Default for Settings {
@@ -23,12 +25,13 @@ impl Default for Settings {
             home_folder: None,
             files_share: DEFAULT_FILES_SHARE,
             recent_places: Vec::new(),
+            pinned_places: Vec::new(),
         }
     }
 }
 
-/// How many recent places are kept.
-const RECENT_MAX: usize = 8;
+/// How many recent places are kept (locally, and per machine).
+pub const RECENT_MAX: usize = 8;
 
 impl Settings {
     pub fn path_in(dir: &Path) -> PathBuf {
@@ -48,11 +51,31 @@ impl Settings {
         super::config::write_atomic(&Self::path_in(dir), &serde_json::to_vec_pretty(self)?)
     }
 
-    /// Remember a place the user left home to, newest first, without duplicates.
+    /// Remember a place files were copied to or from, newest first, without duplicates.
     pub fn add_recent(&mut self, place: PathBuf) {
-        self.recent_places.retain(|p| p != &place);
-        self.recent_places.insert(0, place);
-        self.recent_places.truncate(RECENT_MAX);
+        add_recent(&mut self.recent_places, place);
+    }
+
+    /// Pin a place to the Places menu, or unpin it.
+    pub fn set_pinned(&mut self, place: PathBuf, pinned: bool) {
+        self.pinned_places.retain(|p| p != &place);
+        if pinned {
+            self.pinned_places.push(place);
+        }
+    }
+}
+
+/// Put `item` first in a recent list, without duplicates, keeping at most `RECENT_MAX`.
+pub fn add_recent<T: PartialEq>(list: &mut Vec<T>, item: T) {
+    list.retain(|p| p != &item);
+    list.insert(0, item);
+    list.truncate(RECENT_MAX);
+}
+
+impl Settings {
+    /// For tests and the CLI: whether `place` is pinned.
+    pub fn is_pinned(&self, place: &Path) -> bool {
+        self.pinned_places.iter().any(|p| p == place)
     }
 }
 

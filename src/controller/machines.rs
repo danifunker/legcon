@@ -263,6 +263,23 @@ impl MachinesController {
         }
     }
 
+    /// Remember a machine's pinned and recent folders (its Places menu).
+    pub fn set_places(
+        &mut self,
+        id: &str,
+        pinned: Vec<String>,
+        recent: Vec<String>,
+    ) -> Result<(), String> {
+        match self.store.get_mut(id) {
+            Some(m) if m.pinned_folders != pinned || m.recent_folders != recent => {
+                m.pinned_folders = pinned;
+                m.recent_folders = recent;
+                self.save()
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Remember the SSH host key a machine showed (learned, or accepted after a change).
     pub fn set_host_key(&mut self, id: &str, key: String) -> Result<(), String> {
         match self.store.get_mut(id) {

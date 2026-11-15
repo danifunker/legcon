@@ -19,17 +19,15 @@ pub const CONN_CLOSE: &str = "conn.close_tab";
 pub const CONN_SWAP: &str = "conn.swap";
 pub const CONN_SPLITTER: &str = "conn.splitter";
 
-pub const LOCAL_TREE_TOGGLE: &str = "local.tree_toggle";
+pub const LOCAL_PLACES: &str = "local.places";
 pub const LOCAL_HOME: &str = "local.home";
-pub const LOCAL_LEAVE_HOME: &str = "local.leave_home";
+pub const LOCAL_GO_TO: &str = "local.go_to";
 pub const LOCAL_PATH: &str = "local.path";
-pub const LOCAL_TREE: &str = "local.tree";
 pub const LOCAL_LIST: &str = "local.list";
 
-pub const REMOTE_TREE_TOGGLE: &str = "remote.tree_toggle";
+pub const REMOTE_PLACES: &str = "remote.places";
 pub const REMOTE_HOME: &str = "remote.home";
 pub const REMOTE_PATH: &str = "remote.path";
-pub const REMOTE_TREE: &str = "remote.tree";
 pub const REMOTE_LIST: &str = "remote.list";
 
 pub const TERM_TABS: &str = "term.tabs";

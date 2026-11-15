@@ -501,3 +501,63 @@ unsafe extern "system" fn prompt_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPAR
         _ => unsafe { DefWindowProcW(hwnd, msg, wp, lp) },
     }
 }
+
+/// A popup menu under `anchor` (or at the mouse); the chosen item's index, `None` when dismissed.
+pub fn menu(
+    owner: HWND,
+    anchor: Option<HWND>,
+    items: &[legcon::controller::MenuItem],
+) -> Option<usize> {
+    use legcon::controller::MenuItem;
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, TrackPopupMenu, MF_GRAYED,
+        MF_SEPARATOR, MF_STRING, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_TOPALIGN,
+    };
+    // SAFETY: a menu we create, show modally and destroy here; the label buffers outlive each call.
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for (i, item) in items.iter().enumerate() {
+            let (flags, label) = match item {
+                MenuItem::Item { label, enabled } => (
+                    if *enabled {
+                        MF_STRING
+                    } else {
+                        MF_STRING | MF_GRAYED
+                    },
+                    label.as_str(),
+                ),
+                MenuItem::Heading(label) => (MF_STRING | MF_GRAYED, label.as_str()),
+                MenuItem::Separator => (MF_SEPARATOR, ""),
+            };
+            // Menus treat '&' as a mnemonic marker; paths may contain one.
+            let text = ui::wide(&label.replace('&', "&&"));
+            let _ = AppendMenuW(menu, flags, i + 1, PCWSTR(text.as_ptr()));
+        }
+        let mut at = POINT::default();
+        let mut r = RECT::default();
+        match anchor {
+            Some(a) if GetWindowRect(a, &mut r).is_ok() => {
+                at = POINT {
+                    x: r.left,
+                    y: r.bottom,
+                }
+            }
+            _ => {
+                let _ = GetCursorPos(&mut at);
+            }
+        }
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+            at.x,
+            at.y,
+            None,
+            owner,
+            None,
+        )
+        .0 as usize;
+        let _ = DestroyMenu(menu);
+        cmd.checked_sub(1)
+    }
+}

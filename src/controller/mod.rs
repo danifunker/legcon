@@ -68,6 +68,8 @@ pub enum Effect {
     Choose(ChoiceSpec),
     /// A dialog of labelled fields (settings); answer with the controller's `...FormAnswered`.
     Form(FormSpec),
+    /// A popup menu under a control (Places); answer with the controller's `...Chosen`.
+    Menu(MenuSpec),
     /// A transient message for the user (status line or alert).
     Message(String),
     CopyToClipboard(String),
@@ -104,6 +106,26 @@ pub struct ConfirmSpec {
     pub message: String,
     pub confirm_label: String,
     pub destructive: bool,
+}
+
+/// A popup menu shown under the control `anchor` (a widget id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuSpec {
+    pub purpose: &'static str,
+    pub anchor: &'static str,
+    pub items: Vec<MenuItem>,
+}
+
+/// One line of a popup menu; the answer is an index into the items.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuItem {
+    Item {
+        label: String,
+        enabled: bool,
+    },
+    /// A greyed label over a group, such as Pinned.
+    Heading(String),
+    Separator,
 }
 
 /// A question with several answers.

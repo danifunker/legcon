@@ -75,15 +75,68 @@ expect_files = ["incoming"]
 
 [[case]]
 id = "flow.conn.layout-is-remembered"
-description = "Swap the areas and hide the local tree: the machine remembers both"
+description = "Swap the areas: the machine remembers it"
 machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
   { op = "activate", id = "conn.swap" },
-  { op = "activate", id = "local.tree_toggle" },
 ]
 
 [case.expect_machines]
 "0.layout.swapped" = true
-"0.layout.local_tree" = false
+
+[[case]]
+id = "flow.conn.local-places"
+description = "Pin a local folder from the Places menu, go home, and come back through the pin"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "retro" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "select_row", id = "local.list", name = "retro" },
+  { op = "key", id = "local.list", key = "enter" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "inside" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "local.list", name = "inside" },
+  { op = "activate", id = "local.places" },
+  { op = "menu", name = "Pin this folder" },
+  { op = "activate", id = "local.home" },
+  { op = "expect_row", id = "local.list", name = "retro" },
+  { op = "activate", id = "local.places" },
+  { op = "menu", name = '{work}\retro' },
+  { op = "expect_row", id = "local.list", name = "inside" },
+]
+
+[case.expect_settings]
+"pinned_places.0" = '{work}\retro'
+
+[[case]]
+id = "flow.conn.remote-places"
+description = "Pin a folder on the machine, go to the top level, and come back through the pin"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = "src" },
+  { op = "select_row", id = "remote.list", name = "src" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "gcc-2.95.3" },
+  { op = "activate", id = "remote.places" },
+  { op = "menu", name = "Pin this folder" },
+  { op = "activate", id = "remote.places" },
+  { op = "menu", name = "Top level: /" },
+  { op = "expect_row", id = "remote.list", name = "gcc-2.95.3", present = false },
+  { op = "activate", id = "remote.places" },
+  { op = "menu", name = "/export/home/dani/src" },
+  { op = "expect_row", id = "remote.list", name = "gcc-2.95.3" },
+]
+
+[case.expect_machines]
+"0.pinned_folders.0" = "/export/home/dani/src"

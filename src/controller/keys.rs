@@ -33,10 +33,12 @@ pub struct Chord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     Swap,
-    ToggleLocalTree,
-    ToggleRemoteTree,
+    /// Open a pane's Places menu.
+    LocalPlaces,
+    RemotePlaces,
     LocalHome,
-    LeaveHome,
+    /// Type a folder to go to, in the focused pane.
+    GoTo,
     Refresh,
     Up,
     CloseTab,
@@ -64,10 +66,10 @@ const fn chord(key: Key, primary: bool, shift: bool) -> Chord {
 /// The default bindings (docs/PLAN.md §1.1).
 pub const DEFAULTS: &[(Chord, Command)] = &[
     (chord(Key::Char('S'), true, true), Command::Swap),
-    (chord(Key::Digit(1), true, true), Command::ToggleLocalTree),
-    (chord(Key::Digit(2), true, true), Command::ToggleRemoteTree),
+    (chord(Key::Digit(1), true, true), Command::LocalPlaces),
+    (chord(Key::Digit(2), true, true), Command::RemotePlaces),
     (chord(Key::Char('H'), true, true), Command::LocalHome),
-    (chord(Key::Char('L'), true, true), Command::LeaveHome),
+    (chord(Key::Char('G'), true, true), Command::GoTo),
     (chord(Key::F(5), false, false), Command::Refresh),
     (chord(Key::Backspace, false, false), Command::Up),
     (chord(Key::Char('W'), true, false), Command::CloseTab),

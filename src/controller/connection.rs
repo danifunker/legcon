@@ -1,9 +1,9 @@
 //! One connection tab: files on top (this computer | the machine), the terminal area below,
 //! a splitter between them and Swap (docs/PLAN.md §1.1, mockups/connection-view.html).
 //!
-//! The local pane starts in the home folder; Leave home... is the only way out of it (a typed
-//! path, Browse..., or a recent place) and Home is the way back. The remote pane connects only
-//! when the user says so and logs off cleanly on Disconnect.
+//! The local pane starts in the home folder; each pane's Places menu goes to known, pinned and
+//! recent folders, and Go to... takes a typed path. The remote pane connects only when the user
+//! says so and logs off cleanly on Disconnect.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use std::sync::Arc;
 use lc_core::{Entry, RemotePath};
 
 use super::{
-    ids, job_outcome, ConnState, Controller, Effect, Layout, PasswordSpec, PathSpec, ServiceKind,
-    TabColor,
+    ids, job_outcome, ConnState, Controller, Effect, Layout, MenuItem, MenuSpec, PasswordSpec,
+    PathSpec, ServiceKind, TabColor, TextSpec,
 };
 use crate::model::job::{Job, Notify};
 use crate::model::term::TermSession;
@@ -21,7 +21,9 @@ use crate::model::transfer::{self, Direction, Pick, Summary};
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password};
 use crate::model::names;
+use crate::model::places::{self, Place};
 use crate::model::session::Sessions;
+use crate::model::settings::add_recent;
 use crate::model::ssh::{set_up_key_login, take_note, KeyNote, KeySetup, KeySlot};
 
 /// What a password or an accepted host key is for.
@@ -102,14 +104,19 @@ pub enum Action {
     Swap,
     /// The files area's share of the height after a splitter drag (clamped).
     SetFilesShare(f32),
-    ToggleTree(Side),
     SelectTerm(TermTab),
     LocalHome,
     LocalUp,
     LocalOpen(String),
-    LeaveHome,
-    /// The Leave home prompt's answer; `None` when cancelled.
-    LeaveHomeAnswered(Option<PathBuf>),
+    /// Open a pane's Places menu.
+    Places(Side),
+    /// The Places menu's answer: an index into its items; `None` when dismissed.
+    PlaceChosen(Side, Option<usize>),
+    /// Ask for a folder to go to in a pane.
+    GoTo(Side),
+    /// The Go to prompts' answers; `None` when cancelled.
+    LocalGoToAnswered(Option<PathBuf>),
+    RemoteGoToAnswered(Option<String>),
     Connect,
     PasswordAnswered(Option<String>),
     Disconnect,
@@ -198,6 +205,24 @@ pub fn valid_mac_name(text: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// What a Places menu item does.
+#[derive(Debug, Clone)]
+enum Target {
+    Local(PathBuf),
+    Remote(RemotePath),
+    /// Pin (true) or unpin the pane's current folder.
+    Pin(Side, bool),
+    GoTo(Side),
+}
+
+/// A change to the app-wide local places, for the settings file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlaceEvent {
+    /// Files were copied to or from here, or the user went here: a recent place.
+    Visited(PathBuf),
+    Pinned(PathBuf, bool),
 }
 
 /// One copy batch as the Transfers tab lists it.
@@ -310,7 +335,14 @@ pub struct ConnectionController {
     local_job: Option<Job<Vec<LocalEntry>>>,
     local_error: Option<String>,
     recent: Vec<PathBuf>,
-    left_home_to: Option<PathBuf>,
+    pins: Vec<PathBuf>,
+    system: Vec<Place>,
+    drives: Vec<PathBuf>,
+    drives_job: Option<Job<Vec<PathBuf>>>,
+    /// The open Places menu: its side and what each item does.
+    menu: Option<(Side, Vec<Option<Target>>)>,
+    place_events: Vec<PlaceEvent>,
+    remote_places_changed: bool,
     remote_home: Option<RemotePath>,
     remote_dir: Option<RemotePath>,
     remote_rows: Vec<Entry>,
@@ -350,6 +382,7 @@ impl ConnectionController {
         machine: Machine,
         app_home: &Path,
         recent: Vec<PathBuf>,
+        pins: Vec<PathBuf>,
         sessions: Sessions,
         notify: Arc<dyn Notify>,
     ) -> Self {
@@ -370,7 +403,13 @@ impl ConnectionController {
             local_job: None,
             local_error: None,
             recent,
-            left_home_to: None,
+            pins,
+            system: places::system_places(),
+            drives: Vec::new(),
+            drives_job: None,
+            menu: None,
+            place_events: Vec::new(),
+            remote_places_changed: false,
             remote_home: None,
             remote_dir: None,
             remote_rows: Vec::new(),
@@ -399,6 +438,11 @@ impl ConnectionController {
             console_job: None,
         };
         c.list_local();
+        c.drives_job = Some(Job::spawn(
+            "Find drives".to_string(),
+            Arc::clone(&c.notify),
+            |_| Ok(places::drives()),
+        ));
         c
     }
 
@@ -586,9 +630,25 @@ impl ConnectionController {
         self
     }
 
-    /// A place the user left home to, once, for the app's recent list.
-    pub(crate) fn take_left_home(&mut self) -> Option<PathBuf> {
-        self.left_home_to.take()
+    /// Pins and recent places changed here, once, for the settings file.
+    pub(crate) fn take_place_events(&mut self) -> Vec<PlaceEvent> {
+        std::mem::take(&mut self.place_events)
+    }
+
+    /// The machine's pinned and recent folders after a change, once, for the machine store.
+    pub(crate) fn take_remote_places(&mut self) -> Option<(Vec<String>, Vec<String>)> {
+        std::mem::take(&mut self.remote_places_changed).then(|| {
+            (
+                self.machine.pinned_folders.clone(),
+                self.machine.recent_folders.clone(),
+            )
+        })
+    }
+
+    /// The app-wide pins and recent places, after any tab changed them.
+    pub(crate) fn set_local_places(&mut self, pins: Vec<PathBuf>, recent: Vec<PathBuf>) {
+        self.pins = pins;
+        self.recent = recent;
     }
 
     pub fn term_tab(&self) -> TermTab {
@@ -834,11 +894,6 @@ impl ConnectionController {
         self.home.display().to_string()
     }
 
-    /// The local pane is outside the home folder.
-    pub fn away_from_home(&self) -> bool {
-        !self.local_dir.starts_with(&self.home)
-    }
-
     pub fn local_rows(&self) -> Vec<Row> {
         self.local_rows
             .iter()
@@ -858,24 +913,6 @@ impl ConnectionController {
 
     pub fn local_error(&self) -> Option<&str> {
         self.local_error.as_deref()
-    }
-
-    /// The folders from the home (or the place left to) down to the current one, for the tree.
-    pub fn local_trail(&self) -> Vec<String> {
-        let root = if self.away_from_home() {
-            self.local_dir
-                .ancestors()
-                .last()
-                .unwrap_or(&self.local_dir)
-                .to_path_buf()
-        } else {
-            self.home.clone()
-        };
-        let mut trail = vec![root.display().to_string()];
-        if let Ok(rest) = self.local_dir.strip_prefix(&root) {
-            trail.extend(rest.iter().map(|p| p.to_string_lossy().into_owned()));
-        }
-        trail
     }
 
     pub fn remote_path(&self) -> String {
@@ -903,21 +940,6 @@ impl ConnectionController {
                     .unwrap_or_default(),
             })
             .collect()
-    }
-
-    /// The remote folders from the login folder down, for the tree.
-    pub fn remote_trail(&self) -> Vec<String> {
-        let (Some(home), Some(dir)) = (&self.remote_home, &self.remote_dir) else {
-            return Vec::new();
-        };
-        let root = if dir.starts_with(home) {
-            home.clone()
-        } else {
-            RemotePath::root(dir.style)
-        };
-        let mut trail = vec![root.to_string()];
-        trail.extend(dir.parts()[root.parts().len()..].iter().cloned());
-        trail
     }
 
     pub fn remote_error(&self) -> Option<&str> {
@@ -1025,6 +1047,8 @@ impl ConnectionController {
         let Some(remote_dir) = self.remote_dir.clone() else {
             return;
         };
+        self.note_local(local_dir.clone());
+        self.note_remote(&remote_dir);
         let what = if picks.len() == 1 {
             picks[0].name.clone()
         } else {
@@ -1365,6 +1389,159 @@ impl ConnectionController {
         ));
     }
 
+    /// A local folder for the recent list (and the settings file).
+    fn note_local(&mut self, dir: PathBuf) {
+        if self.recent.first() != Some(&dir) {
+            add_recent(&mut self.recent, dir.clone());
+            self.place_events.push(PlaceEvent::Visited(dir));
+        }
+    }
+
+    /// A folder on the machine for its recent list.
+    fn note_remote(&mut self, dir: &RemotePath) {
+        let text = dir.to_string();
+        if self.machine.recent_folders.first() != Some(&text) {
+            add_recent(&mut self.machine.recent_folders, text);
+            self.remote_places_changed = true;
+        }
+    }
+
+    /// The Places menu for one pane: what it shows and what each line does.
+    fn places_menu(&mut self, side: Side) -> Vec<Effect> {
+        let mut lines: Vec<(MenuItem, Option<Target>)> = Vec::new();
+        match side {
+            Side::Local => {
+                let here = &self.local_dir;
+                lines.push(line(
+                    format!("Home: {}", self.home.display()),
+                    Some(Target::Local(self.home.clone())),
+                ));
+                for p in &self.system {
+                    lines.push(line(p.label.clone(), Some(Target::Local(p.path.clone()))));
+                }
+                if !self.drives.is_empty() {
+                    lines.push((MenuItem::Separator, None));
+                }
+                for d in &self.drives {
+                    lines.push(line(
+                        d.display().to_string(),
+                        Some(Target::Local(d.clone())),
+                    ));
+                }
+                let local = |p: &PathBuf| (p.display().to_string(), Target::Local(p.clone()));
+                group(&mut lines, "Pinned", self.pins.iter().map(local));
+                group(
+                    &mut lines,
+                    "Recent",
+                    self.recent
+                        .iter()
+                        .filter(|p| !self.pins.contains(p))
+                        .map(local),
+                );
+                let pinned = self.pins.contains(here);
+                lines.push((MenuItem::Separator, None));
+                lines.push(line(
+                    pin_label(pinned),
+                    Some(Target::Pin(Side::Local, !pinned)),
+                ));
+                lines.push(line(
+                    "Go to folder...".into(),
+                    Some(Target::GoTo(Side::Local)),
+                ));
+            }
+            Side::Remote => {
+                let dir = self.remote_dir.clone();
+                let on = |t: Target| dir.as_ref().map(|_| t);
+                let style = dir.as_ref().map(|d| d.style).unwrap_or_default();
+                let home = self
+                    .remote_home
+                    .clone()
+                    .unwrap_or_else(|| RemotePath::root(style));
+                let top = RemotePath::root(style);
+                lines.push(line(
+                    format!("Login folder: {home}"),
+                    on(Target::Remote(home)),
+                ));
+                lines.push(line(format!("Top level: {top}"), on(Target::Remote(top))));
+                let pins = &self.machine.pinned_folders;
+                if dir.is_some() {
+                    let remote =
+                        |p: &String| (p.clone(), Target::Remote(RemotePath::parse(style, p)));
+                    group(&mut lines, "Pinned", pins.iter().map(remote));
+                    group(
+                        &mut lines,
+                        "Recent",
+                        self.machine
+                            .recent_folders
+                            .iter()
+                            .filter(|p| !pins.contains(p))
+                            .map(remote),
+                    );
+                }
+                let pinned = dir.as_ref().is_some_and(|d| pins.contains(&d.to_string()));
+                lines.push((MenuItem::Separator, None));
+                lines.push(line(
+                    pin_label(pinned),
+                    on(Target::Pin(Side::Remote, !pinned)),
+                ));
+                lines.push(line(
+                    "Go to folder...".into(),
+                    on(Target::GoTo(Side::Remote)),
+                ));
+            }
+        }
+        let (items, targets) = lines.into_iter().unzip();
+        self.menu = Some((side, targets));
+        vec![Effect::Menu(MenuSpec {
+            purpose: match side {
+                Side::Local => "local.places",
+                Side::Remote => "remote.places",
+            },
+            anchor: match side {
+                Side::Local => ids::LOCAL_PLACES,
+                Side::Remote => ids::REMOTE_PLACES,
+            },
+            items,
+        })]
+    }
+
+    fn go_to_target(&mut self, t: Target) -> Vec<Effect> {
+        match t {
+            Target::Local(p) if p.is_dir() => self.go_local(p),
+            Target::Local(p) => {
+                return vec![Effect::Message(format!(
+                    "{} is not there any more.",
+                    p.display()
+                ))]
+            }
+            Target::Remote(p) => {
+                if self.remote_dir.is_some() {
+                    self.go_remote(p);
+                }
+            }
+            Target::Pin(Side::Local, on) => {
+                let dir = self.local_dir.clone();
+                self.pins.retain(|p| p != &dir);
+                if on {
+                    self.pins.push(dir.clone());
+                }
+                self.place_events.push(PlaceEvent::Pinned(dir, on));
+            }
+            Target::Pin(Side::Remote, on) => {
+                if let Some(dir) = &self.remote_dir {
+                    let text = dir.to_string();
+                    self.machine.pinned_folders.retain(|p| p != &text);
+                    if on {
+                        self.machine.pinned_folders.push(text);
+                    }
+                    self.remote_places_changed = true;
+                }
+            }
+            Target::GoTo(side) => return self.apply(Action::GoTo(side)),
+        }
+        Vec::new()
+    }
+
     fn go_local(&mut self, dir: PathBuf) {
         self.local_dir = dir;
         self.list_local();
@@ -1416,7 +1593,7 @@ impl ConnectionController {
     }
 }
 
-/// A Leave home answer must be an existing folder.
+/// A local Go to answer must be an existing folder.
 fn existing_folder(text: &str) -> Result<(), String> {
     let t = text.trim();
     if t.is_empty() {
@@ -1429,6 +1606,64 @@ fn existing_folder(text: &str) -> Result<(), String> {
     }
 }
 
+fn not_empty(text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        Err(String::new())
+    } else {
+        Ok(())
+    }
+}
+
+/// A typed remote folder: absolute as the machine spells it, or relative to `dir`.
+fn remote_target(dir: &RemotePath, text: &str) -> RemotePath {
+    let sep = dir.style.separator();
+    // A classic Mac path is relative when it starts with ':'; others when it lacks the leading separator.
+    let relative = match dir.style {
+        lc_core::PathStyle::Mac => text.starts_with(':'),
+        _ => !text.starts_with(sep),
+    };
+    if relative {
+        RemotePath::parse(dir.style, &format!("{dir}{sep}{text}"))
+    } else {
+        RemotePath::parse(dir.style, text)
+    }
+}
+
+fn pin_label(pinned: bool) -> String {
+    if pinned {
+        "Unpin this folder"
+    } else {
+        "Pin this folder"
+    }
+    .into()
+}
+
+/// A menu line; it is greyed when it has nothing to do.
+fn line(label: String, target: Option<Target>) -> (MenuItem, Option<Target>) {
+    (
+        MenuItem::Item {
+            label,
+            enabled: target.is_some(),
+        },
+        target,
+    )
+}
+
+/// A headed group of places (Pinned, Recent) with a separator above; nothing when empty.
+fn group(
+    lines: &mut Vec<(MenuItem, Option<Target>)>,
+    heading: &str,
+    places: impl Iterator<Item = (String, Target)>,
+) {
+    let mut places = places.peekable();
+    if places.peek().is_none() {
+        return;
+    }
+    lines.push((MenuItem::Separator, None));
+    lines.push((MenuItem::Heading(heading.into()), None));
+    lines.extend(places.map(|(l, t)| line(l, Some(t))));
+}
+
 impl Controller for ConnectionController {
     type Action = Action;
 
@@ -1439,24 +1674,11 @@ impl Controller for ConnectionController {
                 self.layout_changed = true;
             }
             Action::SetFilesShare(share) => self.set_share(share),
-            Action::ToggleTree(side) => {
-                let t = match side {
-                    Side::Local => &mut self.layout.local_tree,
-                    Side::Remote => &mut self.layout.remote_tree,
-                };
-                *t = !*t;
-                self.layout_changed = true;
-            }
             Action::SelectTerm(t) => self.term = t,
             Action::LocalHome => self.go_local(self.home.clone()),
             Action::LocalUp => {
-                // Up stops at the home folder; leaving it is Leave home's job.
-                let parent = self.local_dir.parent().map(Path::to_path_buf);
-                match parent {
-                    Some(p) if self.away_from_home() || p.starts_with(&self.home) => {
-                        self.go_local(p)
-                    }
-                    _ => {}
+                if let Some(p) = self.local_dir.parent().map(Path::to_path_buf) {
+                    self.go_local(p);
                 }
             }
             Action::LocalOpen(name) => {
@@ -1465,33 +1687,53 @@ impl Controller for ConnectionController {
                     self.go_local(target);
                 }
             }
-            Action::LeaveHome => {
+            Action::Places(side) => return self.places_menu(side),
+            Action::PlaceChosen(side, i) => {
+                let target = match (self.menu.take(), i) {
+                    (Some((s, targets)), Some(i)) if s == side => targets.get(i).cloned().flatten(),
+                    _ => None,
+                };
+                if let Some(t) = target {
+                    return self.go_to_target(t);
+                }
+            }
+            Action::GoTo(Side::Local) => {
                 return vec![Effect::AskPath(PathSpec {
-                    purpose: "local.leave_home",
-                    title: "Leave home".into(),
+                    purpose: "local.go_to",
+                    title: "Go to folder".into(),
                     prompt: "Go to a folder on this computer:".into(),
-                    initial: self
-                        .recent
-                        .first()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
+                    initial: self.local_path(),
                     recent: self.recent.clone(),
-                    hint: format!(
-                        "Home ({}) stays one click away with the Home button.",
-                        self.home.display()
-                    ),
+                    hint: "Pinned and recent folders are also in the Places menu.".into(),
                     validator: existing_folder,
                 })];
             }
-            Action::LeaveHomeAnswered(None) => {}
-            Action::LeaveHomeAnswered(Some(path)) => {
+            Action::GoTo(Side::Remote) => {
+                let Some(dir) = &self.remote_dir else {
+                    return vec![Effect::Message("Connect first.".into())];
+                };
+                return vec![Effect::AskText(TextSpec {
+                    purpose: "remote.go_to",
+                    title: "Go to folder".into(),
+                    prompt: format!("Go to a folder on {}:", self.machine.name),
+                    initial: dir.to_string(),
+                    ok_label: "Go".into(),
+                    validator: not_empty,
+                })];
+            }
+            Action::LocalGoToAnswered(None) | Action::RemoteGoToAnswered(None) => {}
+            Action::LocalGoToAnswered(Some(path)) => {
                 if let Err(e) = existing_folder(&path.to_string_lossy()) {
                     return vec![Effect::Message(e)];
                 }
-                self.recent.retain(|p| p != &path);
-                self.recent.insert(0, path.clone());
-                self.left_home_to = Some(path.clone());
+                self.note_local(path.clone());
                 self.go_local(path);
+            }
+            Action::RemoteGoToAnswered(Some(text)) => {
+                if let Some(dir) = &self.remote_dir {
+                    let target = remote_target(dir, text.trim());
+                    self.go_remote(target);
+                }
             }
             Action::Connect => {
                 if !self.can_connect() {
@@ -1710,6 +1952,10 @@ impl Controller for ConnectionController {
 
     fn tick(&mut self) -> Vec<Effect> {
         let mut out = Vec::new();
+        if let Some(r) = self.drives_job.as_ref().and_then(job_outcome) {
+            self.drives_job = None;
+            self.drives = r.unwrap_or_default();
+        }
         if let Some(r) = self.local_job.as_ref().and_then(job_outcome) {
             self.local_job = None;
             match r {
@@ -1895,7 +2141,14 @@ mod tests {
             kind: ServiceKind::Demo,
             port: 0,
         });
-        ConnectionController::new(m, home, Vec::new(), Sessions::new(), Arc::new(NoNotify))
+        ConnectionController::new(
+            m,
+            home,
+            Vec::new(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        )
     }
 
     #[test]
@@ -1963,43 +2216,134 @@ mod tests {
     }
 
     #[test]
-    fn swap_split_and_trees_are_remembered_once() {
+    fn swap_and_split_are_remembered_once() {
         let home = tempfile::tempdir().unwrap();
         let mut c = tab(home.path());
         assert_eq!(c.take_layout_change(), None);
         c.apply(Action::Swap);
         c.apply(Action::SetFilesShare(0.99));
-        c.apply(Action::ToggleTree(Side::Remote));
         let l = c.take_layout_change().unwrap();
-        assert!(l.swapped && !l.remote_tree && l.local_tree);
+        assert!(l.swapped);
         assert!((l.files_share - (1.0 - MIN_SHARE)).abs() < 1e-6);
         assert_eq!(c.take_layout_change(), None);
     }
 
+    /// Open a pane's Places menu and choose the line labelled `label`.
+    fn choose_place(c: &mut ConnectionController, side: Side, label: &str) -> Vec<Effect> {
+        let effects = c.apply(Action::Places(side));
+        let [Effect::Menu(m)] = &effects[..] else {
+            panic!("no menu: {effects:?}");
+        };
+        let i = m
+            .items
+            .iter()
+            .position(|it| matches!(it, MenuItem::Item { label: l, enabled: true } if l == label))
+            .unwrap_or_else(|| panic!("no enabled {label:?} in {:?}", m.items));
+        c.apply(Action::PlaceChosen(side, Some(i)))
+    }
+
+    fn menu_labels(c: &mut ConnectionController, side: Side) -> Vec<String> {
+        let effects = c.apply(Action::Places(side));
+        let [Effect::Menu(m)] = &effects[..] else {
+            panic!("no menu");
+        };
+        let labels = m
+            .items
+            .iter()
+            .filter_map(|it| match it {
+                MenuItem::Item { label, .. } | MenuItem::Heading(label) => Some(label.clone()),
+                MenuItem::Separator => None,
+            })
+            .collect();
+        c.apply(Action::PlaceChosen(side, None));
+        labels
+    }
+
     #[test]
-    fn up_stops_at_home_and_leave_home_goes_anywhere() {
+    fn up_leaves_home_and_places_pin_and_go_back() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir(home.path().join("sparc")).unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
         let mut c = tab(home.path());
         settle(&mut c);
         c.apply(Action::LocalOpen("sparc".into()));
-        settle(&mut c);
-        assert!(c.local_path().ends_with("sparc"));
         c.apply(Action::LocalUp);
         c.apply(Action::LocalUp);
         settle(&mut c);
-        assert_eq!(c.local_path(), home.path().display().to_string());
-        assert!(matches!(c.apply(Action::LeaveHome)[0], Effect::AskPath(_)));
-        c.apply(Action::LeaveHomeAnswered(Some(
-            elsewhere.path().to_path_buf(),
-        )));
+        // No fence at the home folder any more.
+        assert_eq!(
+            c.local_path(),
+            home.path().parent().unwrap().display().to_string()
+        );
+        assert!(matches!(
+            c.apply(Action::GoTo(Side::Local))[0],
+            Effect::AskPath(_)
+        ));
+        c.apply(Action::LocalGoToAnswered(Some(elsewhere.path().into())));
         settle(&mut c);
-        assert!(c.away_from_home());
-        assert_eq!(c.take_left_home().as_deref(), Some(elsewhere.path()));
+        assert_eq!(c.local_path(), elsewhere.path().display().to_string());
+        assert!(choose_place(&mut c, Side::Local, "Pin this folder").is_empty());
+        assert_eq!(
+            c.take_place_events(),
+            [
+                PlaceEvent::Visited(elsewhere.path().into()),
+                PlaceEvent::Pinned(elsewhere.path().into(), true)
+            ]
+        );
         c.apply(Action::LocalHome);
         settle(&mut c);
-        assert!(!c.away_from_home());
+        let pinned = elsewhere.path().display().to_string();
+        let labels = menu_labels(&mut c, Side::Local);
+        assert!(labels.contains(&"Pinned".to_string()) && labels.contains(&pinned));
+        // A pinned place is not listed again under Recent.
+        assert!(!labels.contains(&"Recent".to_string()), "{labels:?}");
+        choose_place(&mut c, Side::Local, &pinned);
+        settle(&mut c);
+        assert_eq!(c.local_path(), pinned);
+        assert!(menu_labels(&mut c, Side::Local).contains(&"Unpin this folder".to_string()));
+        // A dismissed menu does nothing; an answer for a menu no longer open is ignored.
+        c.apply(Action::Places(Side::Local));
+        assert!(c
+            .apply(Action::PlaceChosen(Side::Remote, Some(0)))
+            .is_empty());
+        assert!(c
+            .apply(Action::PlaceChosen(Side::Local, Some(0)))
+            .is_empty());
+    }
+
+    #[test]
+    fn remote_places_need_a_connection_and_are_kept_per_machine() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        let effects = c.apply(Action::Places(Side::Remote));
+        let [Effect::Menu(m)] = &effects[..] else {
+            panic!("no menu");
+        };
+        assert!(m
+            .items
+            .iter()
+            .all(|it| !matches!(it, MenuItem::Item { enabled: true, .. })));
+        c.apply(Action::Connect);
+        settle(&mut c);
+        c.apply(Action::RemoteOpen("src".into()));
+        settle(&mut c);
+        choose_place(&mut c, Side::Remote, "Pin this folder");
+        assert_eq!(
+            c.take_remote_places(),
+            Some((vec!["/export/home/dani/src".to_string()], Vec::new()))
+        );
+        choose_place(&mut c, Side::Remote, "Top level: /");
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/");
+        choose_place(&mut c, Side::Remote, "/export/home/dani/src");
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/export/home/dani/src");
+        // Go to takes a path relative to the current folder, or an absolute one.
+        c.apply(Action::RemoteGoToAnswered(Some("..".into())));
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/export/home/dani");
+        c.apply(Action::RemoteGoToAnswered(Some("/tmp".into())));
+        assert_eq!(c.remote_path(), "/tmp");
     }
 
     #[test]
@@ -2014,7 +2358,7 @@ mod tests {
         settle(&mut c);
         let names: Vec<_> = c.remote_rows().into_iter().map(|r| r.name).collect();
         assert_eq!(names, ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"]);
-        assert_eq!(c.remote_trail(), ["/export/home/dani", "src"]);
+        assert_eq!(c.remote_path(), "/export/home/dani/src");
         assert_eq!(c.remote_rows()[2].mode, "-rw-r--r--");
         c.apply(Action::Disconnect);
         settle(&mut c);
@@ -2191,6 +2535,7 @@ mod tests {
         let mut c = ConnectionController::new(
             m,
             home.path(),
+            Vec::new(),
             Vec::new(),
             Sessions::new(),
             Arc::new(NoNotify),

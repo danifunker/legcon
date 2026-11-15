@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::connection::{self, ConnectionController};
+use super::connection::{self, ConnectionController, PlaceEvent};
 use super::log::LogStore;
 use super::machines::ProbeSummary;
 use super::machines::{suggest_id, validate_id, MachineRow, MachinesController, NewMachine};
@@ -192,6 +192,7 @@ impl AppController {
             m,
             &home,
             self.settings.recent_places.clone(),
+            self.settings.pinned_places.clone(),
             self.sessions.clone(),
             Arc::clone(&self.notify),
         )
@@ -228,7 +229,7 @@ impl AppController {
         }
     }
 
-    /// Save what a tab changed (its layout, a place left home to).
+    /// Save what a tab changed (its layout, its places).
     fn absorb(&mut self, i: usize) -> Vec<Effect> {
         let mut out = Vec::new();
         let Some(tab) = self.tabs.get_mut(i) else {
@@ -236,7 +237,8 @@ impl AppController {
         };
         let id = tab.machine_id().to_string();
         let layout = tab.take_layout_change();
-        let left = tab.take_left_home();
+        let events = tab.take_place_events();
+        let remote_places = tab.take_remote_places();
         if let Some((key, forget)) = tab.take_key_login_change() {
             if let Err(e) = self.machines.set_key_login(&id, key, forget) {
                 out.push(Effect::Message(e));
@@ -252,8 +254,25 @@ impl AppController {
                 out.push(Effect::Message(e));
             }
         }
-        if let Some(p) = left {
-            self.settings.add_recent(p);
+        if let Some((pins, recent)) = remote_places {
+            if let Err(e) = self.machines.set_places(&id, pins, recent) {
+                out.push(Effect::Message(e));
+            }
+        }
+        if !events.is_empty() {
+            for e in events {
+                match e {
+                    PlaceEvent::Visited(p) => self.settings.add_recent(p),
+                    PlaceEvent::Pinned(p, on) => self.settings.set_pinned(p, on),
+                }
+            }
+            // Every tab shows the same local places.
+            for t in &mut self.tabs {
+                t.set_local_places(
+                    self.settings.pinned_places.clone(),
+                    self.settings.recent_places.clone(),
+                );
+            }
             out.extend(self.save_settings());
         }
         out

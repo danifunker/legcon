@@ -20,9 +20,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG,
-    LVN_ITEMACTIVATE, NMHDR, NMTREEVIEWW, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
-    TVN_SELCHANGEDW,
+    DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG, LVN_ITEMACTIVATE, NMHDR, NM_RCLICK,
+    ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
@@ -31,13 +30,13 @@ use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
-    SetCursor, ShowWindow, TrackPopupMenu, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_PUSHLIKE,
-    CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, HMENU, IDC_ARROW, IDC_HAND,
-    IDC_SIZENS, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
-    WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VSCROLL,
+    SetCursor, ShowWindow, TrackPopupMenu, BN_CLICKED, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE,
+    ES_READONLY, HMENU, IDC_ARROW, IDC_HAND, IDC_SIZENS, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM,
+    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
+    WS_TABSTOP, WS_VSCROLL,
 };
 
 use crate::controls;
@@ -58,12 +57,11 @@ const FIRST_CONN: usize = 2;
 const WM_APP_TAB_MENU: u32 = WM_APP + 4;
 
 pub struct Pane {
-    toggle: HWND,
+    places: HWND,
     title: HWND,
     home: HWND,
     other: HWND,
     path: HWND,
-    tree: HWND,
     list: HWND,
 }
 
@@ -109,15 +107,13 @@ struct Drawn {
     keys: Vec<(i32, Vec<String>)>,
     local: Vec<Row>,
     remote: Vec<Row>,
-    local_trail: Vec<String>,
-    remote_trail: Vec<String>,
     header: Option<HeaderInfo>,
     screen: Option<TermScreen>,
     machine: String,
 }
 
 /// Everything a layout depends on.
-type LayoutKey = (i32, i32, i64, u32, bool, bool, bool, i64);
+type LayoutKey = (i32, i32, i64, u32, bool, i64);
 
 pub struct Shell {
     window: HWND,
@@ -227,20 +223,18 @@ pub fn start() {
 }
 
 fn pane(window: HWND, local: bool) -> Pane {
-    let (toggle_id, home_id, path_id, tree_id, list_id) = if local {
+    let (places_id, home_id, path_id, list_id) = if local {
         (
-            ids::LOCAL_TREE_TOGGLE,
+            ids::LOCAL_PLACES,
             ids::LOCAL_HOME,
             ids::LOCAL_PATH,
-            ids::LOCAL_TREE,
             ids::LOCAL_LIST,
         )
     } else {
         (
-            ids::REMOTE_TREE_TOGGLE,
+            ids::REMOTE_PLACES,
             ids::REMOTE_HOME,
             ids::REMOTE_PATH,
-            ids::REMOTE_TREE,
             ids::REMOTE_LIST,
         )
     };
@@ -248,14 +242,6 @@ fn pane(window: HWND, local: bool) -> Pane {
     if !local {
         cols.push(("Permissions", 90));
     }
-    let toggle = ui::child(
-        window,
-        w!("BUTTON"),
-        "Folders",
-        WINDOW_STYLE((BS_AUTOCHECKBOX | BS_PUSHLIKE) as u32 | WS_TABSTOP.0),
-        WINDOW_EX_STYLE(0),
-        toggle_id,
-    );
     let path = ui::child(
         window,
         w!("EDIT"),
@@ -266,16 +252,15 @@ fn pane(window: HWND, local: bool) -> Pane {
     );
     ui::set_font(path, ui::mono_font_for(window));
     Pane {
-        toggle,
+        places: ui::button(window, "Places", places_id),
         title: ui::label(window, if local { "This computer" } else { "" }),
         home: ui::button(window, "Home", home_id),
         other: if local {
-            ui::button(window, "Leave home...", ids::LOCAL_LEAVE_HOME)
+            ui::button(window, "Go to...", ids::LOCAL_GO_TO)
         } else {
             ui::button(window, "Up", "remote.up")
         },
         path,
-        tree: controls::tree(window, tree_id),
         list: controls::list(window, list_id, &cols, icons::system_list(), false),
     }
 }
@@ -517,8 +502,8 @@ fn run(effects: Vec<Effect>) {
                         purpose: spec.purpose,
                     },
                 );
-                if spec.purpose == "local.leave_home" {
-                    conn_action(conn::Action::LeaveHomeAnswered(answer.map(Into::into)));
+                if spec.purpose == "local.go_to" {
+                    conn_action(conn::Action::LocalGoToAnswered(answer.map(Into::into)));
                 }
             }
             Effect::Confirm(spec) => {
@@ -574,6 +559,7 @@ fn run(effects: Vec<Effect>) {
                 );
                 match spec.purpose {
                     "conn.name" => conn_action(conn::Action::NewFolderAnswered(answer)),
+                    "remote.go_to" => conn_action(conn::Action::RemoteGoToAnswered(answer)),
                     "machines.add.address" => dispatch(app::Action::AddAddressAnswered(answer)),
                     "machines.add.name" => dispatch(app::Action::AddNameAnswered(answer)),
                     "keys.import.name" => dispatch(app::Action::Keys(
@@ -610,6 +596,20 @@ fn run(effects: Vec<Effect>) {
                     sshkeys::NEW_PURPOSE => {
                         dispatch(app::Action::Keys(sshkeys::Action::NewAnswered(answer)))
                     }
+                    _ => {}
+                }
+            }
+            Effect::Menu(spec) => {
+                let anchor = with(|s| match spec.anchor {
+                    ids::LOCAL_PLACES => Some(s.w.local.places),
+                    ids::REMOTE_PLACES => Some(s.w.remote.places),
+                    _ => None,
+                })
+                .flatten();
+                let chosen = effects::menu(owner, anchor, &spec.items);
+                match spec.purpose {
+                    "local.places" => conn_action(conn::Action::PlaceChosen(Side::Local, chosen)),
+                    "remote.places" => conn_action(conn::Action::PlaceChosen(Side::Remote, chosen)),
                     _ => {}
                 }
             }
@@ -665,12 +665,6 @@ fn cells(rows: &[Row], perms: bool) -> Vec<(i32, Vec<String>)> {
             (icons::file_icon(&r.name, r.is_dir), v)
         })
         .collect()
-}
-
-fn set_check(h: HWND, on: bool) {
-    let v = if on { BST_CHECKED } else { BST_UNCHECKED };
-    // SAFETY: a plain button message.
-    unsafe { SendMessageW(h, BM_SETCHECK, Some(WPARAM(v.0 as usize)), None) };
 }
 
 /// Bring every control in line with the controller.
@@ -750,7 +744,7 @@ fn refresh() {
             ui::set_visible(h, on_machines);
         }
         for p in [&s.w.local, &s.w.remote] {
-            for h in [p.toggle, p.title, p.home, p.other, p.path, p.list] {
+            for h in [p.places, p.title, p.home, p.other, p.path, p.list] {
                 ui::set_visible(h, on_conn);
             }
         }
@@ -789,8 +783,6 @@ fn refresh() {
         }
         let Tab::Connection(i) = active else {
             for h in [
-                s.w.local.tree,
-                s.w.remote.tree,
                 s.w.term.hwnd,
                 s.w.term_text,
                 s.w.console,
@@ -819,14 +811,10 @@ fn refresh() {
         if s.drawn.machine != t.machine_id() {
             s.drawn.local.clear();
             s.drawn.remote.clear();
-            s.drawn.local_trail.clear();
-            s.drawn.remote_trail.clear();
             s.drawn.machine = t.machine_id().to_string();
             // Empty the controls too: a tab with no rows would otherwise keep the last tab's.
             controls::fill(s.w.local.list, &[]);
             controls::fill(s.w.remote.list, &[]);
-            controls::fill_trail(s.w.local.tree, &[]);
-            controls::fill_trail(s.w.remote.tree, &[]);
         }
         let info = t.header_info();
         if s.drawn.header.as_ref() != Some(&info) {
@@ -834,17 +822,7 @@ fn refresh() {
             s.drawn.header = Some(info);
         }
         ui::set_text(s.w.remote.title, &t.title());
-        let (lt, rt) = (t.layout().local_tree, t.layout().remote_tree);
-        ui::set_visible(s.w.local.tree, lt);
-        ui::set_visible(s.w.remote.tree, rt);
-        set_check(s.w.local.toggle, lt);
-        set_check(s.w.remote.toggle, rt);
-        let away = if t.away_from_home() {
-            "   (outside home)"
-        } else {
-            ""
-        };
-        ui::set_text(s.w.local.path, &format!(" {}{away}", t.local_path()));
+        ui::set_text(s.w.local.path, &format!(" {}", t.local_path()));
         ui::set_text(s.w.remote.path, &format!(" {}", t.remote_path()));
         ui::set_enabled(s.w.remote.home, t.can_disconnect());
         ui::set_enabled(s.w.remote.other, t.can_disconnect());
@@ -857,16 +835,6 @@ fn refresh() {
         if remote != s.drawn.remote {
             controls::fill(s.w.remote.list, &cells(&remote, true));
             s.drawn.remote = remote;
-        }
-        let trail = t.local_trail();
-        if trail != s.drawn.local_trail {
-            controls::fill_trail(s.w.local.tree, &trail);
-            s.drawn.local_trail = trail;
-        }
-        let trail = t.remote_trail();
-        if trail != s.drawn.remote_trail {
-            controls::fill_trail(s.w.remote.tree, &trail);
-            s.drawn.remote_trail = trail;
         }
         let term = t.term_tab();
         if let Some(n) = TermTab::ALL.iter().position(|x| *x == term) {
@@ -933,8 +901,8 @@ fn layout() {
         let r = ui::client(s.window);
         let (w, h) = (r.right, r.bottom);
         let key: LayoutKey = match s.app.active() {
-            Tab::Machines => (w, h, -1, 0, false, false, false, -1),
-            Tab::Keys => (w, h, -3, 0, false, false, false, -1),
+            Tab::Machines => (w, h, -1, 0, false, -1),
+            Tab::Keys => (w, h, -3, 0, false, -1),
             Tab::Connection(i) => match s.app.tab(i) {
                 Some(t) => {
                     let l = t.layout();
@@ -945,15 +913,13 @@ fn layout() {
                         i as i64,
                         share.to_bits(),
                         l.swapped,
-                        l.local_tree,
-                        l.remote_tree,
                         TermTab::ALL
                             .iter()
                             .position(|x| *x == t.term_tab())
                             .unwrap_or(0) as i64,
                     )
                 }
-                None => (w, h, -2, 0, false, false, false, -1),
+                None => (w, h, -2, 0, false, -1),
             },
         };
         if s.laid == Some(key) {
@@ -1039,22 +1005,16 @@ fn layout() {
         };
         s.splitter = paint::rect(0, split_y, w, split_h);
         s.split_area = (area_top, area_h - split_h);
-        // Two panes, each a white box: a header band, a path row, then the tree and list.
+        // Two panes, each a white box: a header band, a path row, then the list.
         let pane_w = (w - 3 * m) / 2;
         let band = sc(32);
         let path_h = sc(22);
-        for (k, (p, tree_on)) in [
-            (&s.w.local, layout.local_tree),
-            (&s.w.remote, layout.remote_tree),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        for (k, p) in [&s.w.local, &s.w.remote].into_iter().enumerate() {
             let px = m + k as i32 * (pane_w + m);
             s.panes[k] = paint::rect(px, files_y, pane_w, files_h);
             let by = files_y + 1 + (band - btn) / 2;
-            ui::place(p.toggle, (px + sc(5), by, sc(64), btn));
-            let other_w = if k == 0 { sc(96) } else { sc(46) };
+            ui::place(p.places, (px + sc(5), by, sc(64), btn));
+            let other_w = if k == 0 { sc(70) } else { sc(46) };
             let right = px + pane_w - sc(5);
             ui::place(p.other, (right - other_w, by, other_w, btn));
             ui::place(p.home, (right - other_w - sc(4) - sc(56), by, sc(56), btn));
@@ -1069,18 +1029,7 @@ fn layout() {
             );
             let body_y = files_y + band + path_h + 1;
             let body_h = files_h - band - path_h - 2;
-            let tree_w = if tree_on { pane_w * 35 / 100 } else { 0 };
-            ui::place(p.tree, (px + 1, body_y, tree_w, body_h));
-            let gap = i32::from(tree_on);
-            ui::place(
-                p.list,
-                (
-                    px + 1 + tree_w + gap,
-                    body_y,
-                    pane_w - 2 - tree_w - gap,
-                    body_h,
-                ),
-            );
+            ui::place(p.list, (px + 1, body_y, pane_w - 2, body_h));
         }
         ui::place(s.w.term_tabs, (m, term_y, w - 2 * m, sc(26)));
         let body = (m, term_y + sc(26), w - 2 * m, term_h - sc(26));
@@ -1484,13 +1433,7 @@ pub fn key(vk: u16, focus: HWND) -> bool {
         return false;
     };
     let (in_list, in_term) = with(|s| {
-        let lists = [
-            s.w.local.list,
-            s.w.remote.list,
-            s.w.local.tree,
-            s.w.remote.tree,
-            s.w.m_list,
-        ];
+        let lists = [s.w.local.list, s.w.remote.list, s.w.m_list];
         (lists.contains(&focus), focus == s.w.term.hwnd)
     })
     .unwrap_or((false, false));
@@ -1502,7 +1445,7 @@ pub fn key(vk: u16, focus: HWND) -> bool {
         return false;
     }
     let side = with(|s| {
-        if focus == s.w.remote.list || focus == s.w.remote.tree {
+        if focus == s.w.remote.list {
             Side::Remote
         } else {
             Side::Local
@@ -1513,10 +1456,10 @@ pub fn key(vk: u16, focus: HWND) -> bool {
     let current = active_conn();
     match cmd {
         Command::Swap => conn_action(conn::Action::Swap),
-        Command::ToggleLocalTree => conn_action(conn::Action::ToggleTree(Side::Local)),
-        Command::ToggleRemoteTree => conn_action(conn::Action::ToggleTree(Side::Remote)),
+        Command::LocalPlaces => conn_action(conn::Action::Places(Side::Local)),
+        Command::RemotePlaces => conn_action(conn::Action::Places(Side::Remote)),
         Command::LocalHome => conn_action(conn::Action::LocalHome),
-        Command::LeaveHome => conn_action(conn::Action::LeaveHome),
+        Command::GoTo => conn_action(conn::Action::GoTo(side)),
         Command::Refresh => conn_action(conn::Action::Refresh(side)),
         Command::Up => conn_action(match side {
             Side::Local => conn::Action::LocalUp,
@@ -1619,17 +1562,17 @@ fn command(from: HWND, code: u32) {
             s.w.m_remove,
             s.w.m_settings,
             s.w.m_disconnect_all,
-            s.w.local.toggle,
+            s.w.local.places,
             s.w.local.home,
             s.w.local.other,
-            s.w.remote.toggle,
+            s.w.remote.places,
             s.w.remote.home,
             s.w.remote.other,
         ]
     }) else {
         return;
     };
-    let [add, open, remove, settings, all, l_toggle, l_home, l_leave, r_toggle, r_home, r_up] = b;
+    let [add, open, remove, settings, all, l_places, l_home, l_go_to, r_places, r_home, r_up] = b;
     match from {
         h if h == add => dispatch(app::Action::AddMachine),
         h if h == open => {
@@ -1648,36 +1591,33 @@ fn command(from: HWND, code: u32) {
             }
         }
         h if h == all => dispatch(app::Action::DisconnectAll),
-        h if h == l_toggle => conn_action(conn::Action::ToggleTree(Side::Local)),
+        h if h == l_places => conn_action(conn::Action::Places(Side::Local)),
         h if h == l_home => conn_action(conn::Action::LocalHome),
-        h if h == l_leave => conn_action(conn::Action::LeaveHome),
-        h if h == r_toggle => conn_action(conn::Action::ToggleTree(Side::Remote)),
+        h if h == l_go_to => conn_action(conn::Action::GoTo(Side::Local)),
+        h if h == r_places => conn_action(conn::Action::Places(Side::Remote)),
         h if h == r_home => conn_action(conn::Action::RemoteHome),
         h if h == r_up => conn_action(conn::Action::RemoteUp),
         _ => {}
     }
 }
 
-fn notify(hdr: &NMHDR, lp: LPARAM) {
-    let Some((w, local, remote, trails)) = with(|s| {
+fn notify(hdr: &NMHDR) {
+    let Some((w, local, remote)) = with(|s| {
         (
             (
                 s.w.tabs,
                 s.w.m_list,
                 s.w.local.list,
                 s.w.remote.list,
-                s.w.local.tree,
-                s.w.remote.tree,
                 s.w.term_tabs,
             ),
             s.drawn.local.clone(),
             s.drawn.remote.clone(),
-            (s.drawn.local_trail.len(), s.drawn.remote_trail.len()),
         )
     }) else {
         return;
     };
-    let (tabs, m_list, l_list, r_list, l_tree, r_tree, term_tabs) = w;
+    let (tabs, m_list, l_list, r_list, term_tabs) = w;
     let from = hdr.hwndFrom;
     if from == tabs && hdr.code == TCN_SELCHANGE {
         match controls::tab_selected(tabs) {
@@ -1727,19 +1667,6 @@ fn notify(hdr: &NMHDR, lp: LPARAM) {
             if let Some(r) = row.filter(|r| r.is_dir) {
                 conn_action(conn::Action::RemoteOpen(r.name.clone()));
             }
-        }
-    } else if (from == l_tree || from == r_tree) && hdr.code == TVN_SELCHANGEDW {
-        // SAFETY: TVN_SELCHANGEDW's lParam is an NMTREEVIEWW.
-        let nm = unsafe { &*(lp.0 as *const NMTREEVIEWW) };
-        let depth = nm.itemNew.lParam.0 as usize;
-        let len = if from == l_tree { trails.0 } else { trails.1 };
-        // Clicking an ancestor in the trail goes up that many levels.
-        for _ in depth + 1..len {
-            conn_action(if from == l_tree {
-                conn::Action::LocalUp
-            } else {
-                conn::Action::RemoteUp
-            });
         }
     }
 }
@@ -1839,7 +1766,7 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_NOTIFY => {
             // SAFETY: WM_NOTIFY's lParam is an NMHDR.
             let hdr = unsafe { &*(lp.0 as *const NMHDR) };
-            notify(hdr, lp);
+            notify(hdr);
             LRESULT(0)
         }
         WM_SETCURSOR if with(|s| s.file_drag.is_some()).unwrap_or(false) => {

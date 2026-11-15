@@ -68,6 +68,7 @@ field id (`machine.uid`); a form's sections, OK and Cancel are `<purpose>.sectio
 | `section` | `id`, `name` | Show a form section (tab) |
 | `key` | `id`, `key` | Focus a control and type a chord (`ctrl+n`, `f6`, `enter`) |
 | `press` | `name` | Press a message-box button by its label (they have no ids) |
+| `menu` | `name` | Choose an item of the open popup menu (Places) by its text |
 | `wait_dialog`, `expect_no_dialog` | `timeout` | A dialog opened / every dialog closed |
 | `expect_enabled` | `id`, `enabled` | A control is (not) enabled |
 | `expect_value` | `id`, `value` | A field holds this text |

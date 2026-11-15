@@ -3,16 +3,13 @@
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, HIMAGELIST, HTREEITEM, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_TEXT,
-    LVITEMW, LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+    SetWindowTheme, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_TEXT, LVITEMW,
+    LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
     LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMTEXTW, LVNI_SELECTED, LVSIL_SMALL,
     LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS,
     LVS_SINGLESEL, TCIF_TEXT, TCITEMW, TCM_DELETEALLITEMS, TCM_GETCURSEL, TCM_GETITEMCOUNT,
     TCM_GETITEMRECT, TCM_INSERTITEMW, TCM_SETCURSEL, TCM_SETITEMSIZE, TCS_FIXEDWIDTH,
-    TCS_OWNERDRAWFIXED, TVE_EXPAND, TVGN_CARET, TVIF_IMAGE, TVIF_PARAM, TVIF_SELECTEDIMAGE,
-    TVIF_TEXT, TVINSERTSTRUCTW, TVINSERTSTRUCTW_0, TVITEMW, TVI_LAST, TVI_ROOT, TVM_DELETEITEM,
-    TVM_EXPAND, TVM_INSERTITEMW, TVM_SELECTITEM, TVM_SETIMAGELIST, TVSIL_NORMAL, TVS_HASBUTTONS,
-    TVS_HASLINES, TVS_LINESATROOT, TVS_SHOWSELALWAYS,
+    TCS_OWNERDRAWFIXED,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_TABSTOP,
@@ -113,64 +110,6 @@ pub fn selected_all(list: HWND) -> Vec<usize> {
 pub fn selected(list: HWND) -> Option<usize> {
     let i = send(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
     usize::try_from(i).ok()
-}
-
-/// A tree view with lines and +/- buttons.
-pub fn tree(parent: HWND, id: &str) -> HWND {
-    let style = WINDOW_STYLE(
-        TVS_HASLINES | TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS | WS_TABSTOP.0,
-    );
-    let h = ui::child(
-        parent,
-        w!("SysTreeView32"),
-        "",
-        style,
-        WINDOW_EX_STYLE(0),
-        id,
-    );
-    explorer_theme(h);
-    send(
-        h,
-        TVM_SETIMAGELIST,
-        TVSIL_NORMAL as usize,
-        crate::icons::system_list().0,
-    );
-    h
-}
-
-/// Show `trail` as a chain of nested folders, all expanded, the last one selected.
-///
-/// Each item's lParam is its depth, so a click can say how far up to go.
-pub fn fill_trail(tree: HWND, trail: &[String]) {
-    send(tree, TVM_DELETEITEM, 0, TVI_ROOT.0);
-    let mut parent = TVI_ROOT;
-    let mut last = HTREEITEM::default();
-    for (depth, name) in trail.iter().enumerate() {
-        let mut t = ui::wide(&ui::plain(name));
-        let ins = TVINSERTSTRUCTW {
-            hParent: parent,
-            hInsertAfter: TVI_LAST,
-            Anonymous: TVINSERTSTRUCTW_0 {
-                item: TVITEMW {
-                    mask: TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE,
-                    iImage: crate::icons::file_icon("", true),
-                    iSelectedImage: crate::icons::file_icon("", true),
-                    pszText: PWSTR(t.as_mut_ptr()),
-                    lParam: LPARAM(depth as isize),
-                    ..Default::default()
-                },
-            },
-        };
-        let item = HTREEITEM(send(tree, TVM_INSERTITEMW, 0, &ins as *const _ as isize));
-        if depth > 0 {
-            send(tree, TVM_EXPAND, TVE_EXPAND.0 as usize, parent.0);
-        }
-        parent = item;
-        last = item;
-    }
-    if last.0 != 0 {
-        send(tree, TVM_SELECTITEM, TVGN_CARET as usize, last.0);
-    }
 }
 
 /// A tab strip (its pages are drawn by the window beneath it); `owner_draw` lets the parent paint it.

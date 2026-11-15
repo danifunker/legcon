@@ -125,6 +125,11 @@ def drive(case, shell, cfg, secrets, env, work):
             continue
         if got != want:
             return f"machines {path} is {got!r}, expected {want!r}"
+    settings = json.load(open(os.path.join(cfg, "settings.json")))
+    for path, want in case.get("expect_settings", {}).items():
+        got = lookup(settings, path)
+        if got != want:
+            return f"settings {path} is {got!r}, expected {want!r}"
     for rel in case.get("expect_files", []):
         if not os.path.exists(os.path.join(work, rel)):
             return f"no file {rel} in the home folder"

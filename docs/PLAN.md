@@ -49,11 +49,11 @@ terminal area below, and single clicks rearrange it. Mockup: [connection-view.ht
 +------------------------------------------------------------------+
 | sparc  FTP wu-ftpd 2.6.1  [plaintext]  [Swap]  [Connect/Disc.]  |  machine header
 +--------------------------------+---------------------------------+
-| This computer  [Home] [Leave home...] [Media v]                  |
-| +- Retro        | name   size  | +- /export/home  | name  size   |  files area:
-| |  +- sparc     | ...          | |  +- dani        | ...          |  two panes, each a
-| |  - src        |              | |  - src          |              |  folder tree (+/-)
-+--------------------------------+---------------------------------+  and a list
+| [Places] This computer [Home] [Go to] | [Places] sparc [Home] [Up]  |
+| D:\Retro\sparc                  | /export/home/dani              |  files area:
+| name          size   modified  | name         size  modified   |  two panes, each a
+| src                            | src                            |  path and a list
++--------------------------------+---------------------------------+
 | ==== splitter (drag) ====   Shell | Console | Log | Transfers     |  terminal tabs
 | $ ls -l                                                          |  terminal area,
 | ...                                                              |  1/4 of the height
@@ -61,12 +61,11 @@ terminal area below, and single clicks rearrange it. Mockup: [connection-view.ht
 ```
 
 - **Files area (top)**: two panes, this computer on the left and the machine on the right. Each
-  pane is a **folder tree with +/- expanders** next to a file list, like Explorer. Drag between
-  them, or copy with the keys (rusty-backup's browser pane and Commander key map underneath).
-  - **Each pane's tree collapses with one click** (a button at the left of the pane header, and
-    Ctrl+Shift+1 / Ctrl+Shift+2), leaving the file list the full width of the pane; the same
-    button brings it back. A View menu item collapses or shows both. The state is remembered per
-    pane and per machine.
+  pane is a path line over a file list that takes the pane's full width (no folder tree: D39).
+  Drag between them, or copy with the keys (rusty-backup's browser pane and Commander key map
+  underneath).
+  - **Places** (a button at the left of each pane header, and Ctrl+Shift+1 / Ctrl+Shift+2) opens
+    a menu of places to go to; see below.
 - **Terminal area (bottom)**, a quarter of the height by default (configurable in Settings; a
   dragged splitter is remembered per machine), with tabs:
   - **Shell**: a terminal session on the machine (Telnet, rlogin, SSH). It shows a **Connect**
@@ -87,23 +86,32 @@ terminal area below, and single clicks rearrange it. Mockup: [connection-view.ht
 - **Machine header**: name, the services in use and their servers, the security badge, and
   Connect / Disconnect for the file service and the command service.
 
-#### The local pane: home, leaving home, media
+#### The local pane: home, places, media
 
 - **Home folder.** On first run legcon asks for one folder to work from (for example
-  `D:\Retro`). Every connection's local pane opens there, with the tree rooted at it. A machine can
-  have its own home instead (for example `D:\Retro\sparc`), so its files land in the same place
-  every time.
-- **Leave home...** is the only way out of the home tree, on purpose: it asks for a path, with a
-  text box to type or paste one, a **Browse...** button (the Windows folder picker), and the recent
-  places. The pane then shows that place, with **Home** one click back.
+  `D:\Retro`). Every connection's local pane opens there. A machine can have its own home instead
+  (for example `D:\Retro\sparc`), so its files land in the same place every time. Home is a
+  starting point, not a fence: Up goes past it, and **Home** comes back.
+- **Places** menu (D39), local pane:
+  - Home, then the user's own folders as the OS names them (the user folder, Desktop, Documents,
+    Downloads; Windows known folders, the XDG and macOS equivalents elsewhere);
+  - the drives (Windows; `/` elsewhere), found in the background since a network drive can stall;
+  - **Pinned** folders (Pin this folder / Unpin this folder), app-wide, in `settings.json`;
+  - **Recent** folders: where files were last copied to or from, or gone to (8 kept);
+  - **Go to folder...**: a text box to type or paste a path, a **Browse...** button and the
+    recent places (also the Go to... button and Ctrl+Shift+G).
+  - Later: Explorer's own Quick Access pins (no documented API to read them).
 - **Media**: a drop-down of removable media attached right now, kept current as media arrive and
-  leave. One click goes there (a leave-home).
+  leave. One click goes there.
   - Windows: drives that report removable or CD-ROM, plus fixed drives whose bus is USB, SD or MMC
     (USB hard disks report as fixed), from the volume list and device-change notifications.
   - macOS: the entries in `/Volumes` other than the startup volume.
   - Linux: `/media/$USER`, `/run/media/$USER` and `/mnt`.
-- **The remote pane** works the same way: its tree is rooted at the login folder, **Go to
-  folder...** asks for a remote path, and Home goes back to the login folder.
+- **The remote pane** has its own Places menu: the login folder, the top level (an NFS export
+  list, the SMB shares, the Mac volumes), the machine's **Pinned** and **Recent** folders (kept
+  per machine in `machines.json`), and **Go to folder...** for a path as the machine spells it
+  (absolute, or relative to the current folder). Home goes back to the login folder. Before the
+  file service connects, its places are greyed.
 
 #### Preview
 
@@ -180,7 +188,7 @@ login where the protocol allows).
 
 The **Settings** button in the machine header opens that machine's settings: name and address,
 which services to use for files and for commands, the home folder, the layout (split, which area
-is on top, trees shown), character set and name translation, legacy crypto, host-key checking,
+is on top), character set and name translation, legacy crypto, host-key checking,
 credentials and keys, the logout command, idle disconnect, and preview / remote-action
 overrides. App-wide settings (default home folder, split, preview rules, remote actions, key
 manager) are under Tools -> Settings.
@@ -321,15 +329,15 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D6 | **Legacy crypto and plaintext auth are allowed per machine, with a visible warning.** Never globally, never silently. |
 | D7 | **CLI and GUI only, no TUI.** The Win32 GUI is built from the first protocol phase on, next to the CLI; later GUI shells (AppKit, GTK4) follow rusty-backup's shell rules (every shell shows the same UI). |
 | D8 | **Modern stable Rust** (decided 2026-11-13). No Rust 1.73 floor, so legcon can reuse suppaftp, ssh2, `smb` and vt100. |
-| D9 | **One connection view per machine, no modes** (§1.1, replaces the Files / Shell modes of draft 4): files on top in two panes (Transmit-like, each a folder tree with +/- and a list), the terminal area below at 1/4 height by default, a draggable splitter, and one **Swap** button in the top area that exchanges the two areas (no maximize, restore or tiling). |
+| D9 | **One connection view per machine, no modes** (§1.1, replaces the Files / Shell modes of draft 4): files on top in two panes (Transmit-like, each a path and a list; no tree since D39), the terminal area below at 1/4 height by default, a draggable splitter, and one **Swap** button in the top area that exchanges the two areas (no maximize, restore or tiling). |
 | D10 | **Connect and disconnect on demand, for every protocol, with a clean server-side log-off** (§1.4). |
 | D11 | **A tab per connection** in one window; closing a tab disconnects; a tab can be dragged out into its own window and back (decided 2026-11-13, option A of the mockup). |
 | D12 | **The MVC code is app code, not a crate**, as in rusty-backup: jobs in `src/model/job.rs`, the controller trait, effects, log and key map in `src/controller/`, copied from rusty-backup and adapted. New crates go under `crates/` in this repo and are protocol crates only (2026-11-13). |
 | D13 | **Win32 is the first and main GUI shell** (2026-11-13). |
-| D16 | **A local home folder**, picked on first run and overridable per machine; **Leave home...** (type a path or Browse...) is the way out, Home the way back, and a **Media** list goes to removable media (§1.1). |
+| D16 | **A local home folder**, picked on first run and overridable per machine: where the local pane starts, and Home goes back to it. Revised 2026-11-14 (D39): it is no longer a fence; Up goes past it and the Places menu and **Go to...** (type a path or Browse...) go anywhere. A **Media** list goes to removable media (§1.1). |
 | D17 | **The terminal area has tabs**: Shell (with a Connect button), Console (the protocol's own commands and one-shot commands), Log and Transfers (§1.1). |
 | D18 | **Credentials are part of the product**: SSH key generation and import, throw-away keys, a guided set-up that installs a key on an old machine, an easy host-key bypass for machines that are reinstalled often, and passwords saved in legcon's own machines file by default (§5, D28). |
-| D20 | **Each pane's folder tree collapses with one click**, remembered per pane and machine (§1.1). |
+| D20 | **Superseded by D39** (2026-11-14). Was: each pane's folder tree collapses with one click, remembered per pane and machine. |
 | D21 | **Right-click Preview**, reading only the start of a remote file, with viewers chosen by extension in Settings and overridable per machine (§1.1). |
 | D22 | **No mounts or shell integration**; legcon itself is the way in (replaces the shim layer of earlier drafts). **External programs only when configured or detected**, the same way on every platform, and never required (§1.3). |
 | D23 | **In-app text editor and New file**, saving back to wherever the file lives (§1.1). |
@@ -349,6 +357,7 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D36 | **SSH keys live in legcon** (2026-11-14): a **Keys** tab (and `lc keys`) makes, imports, exports, copies and deletes login keys kept in the config folder's `keys`. Kinds for old servers: RSA 2048 and RSA 1024 (SSH-2), DSA 1024 (OpenSSH before 2.5, SSH.com before 2.4), and SSH-1 RSA 1024 / 2048 identity files (SSH 1.2.x, OpenSSH `Protocol 1`) for other clients and old servers, since legcon itself logs in over SSH-2 only. Import reads OpenSSH, PEM, PKCS#8, PuTTY `.ppk` and SSH-1 files, converted to traditional PEM; passphrase-protected, ed25519 and ECDSA keys are refused with the reason. **legcon never writes to `~/.ssh`**: Import opens the picker there, Export writes the private key, `.pub` and an SSH.com `.secsh.pub` into a folder the user picks. A machine's settings choose its key; "Set up key login" uses that key, or makes one for the machine. |
 | D37 | **SSH-1 is our own code** (`lc_ssh::ssh1`, 2026-11-14): protocol 1.5 for SSH 1.2.x, F-Secure 1.x and OpenSSH with `Protocol 1` only; libssh2 has no SSH-1. Connecting reads the server's version line first: `SSH-1.x` (not `1.99`) gets SSH-1, everything else SSH-2. 3DES in SSH-1's three-CBC mode (the cipher every SSH-1 server has), password and RSA key login (SSH-1 identity files), host keys checked like SSH-2's (`rsa1` keys). SSH-1 runs one command per connection, so files go over SCP and `/bin/sh -c` commands with a connection each, and the terminal is its own connection. "Set up key login" on an SSH-1 machine makes an SSH-1 RSA 1024 key and adds it to `~/.ssh/authorized_keys`. Not supported: Blowfish, DES, IDEA, compression, TIS / Kerberos logins, rhosts-RSA. |
 | D38 | **The lab is containers of FOSS servers** (2026-11-14): `lab/containers/unix90s`, one Debian 12 image with every protocol legcon speaks (vsftpd, ProFTPD, inetutils telnetd, netkit rsh / rlogin / rexec, Samba with SMB1, OpenSSH, Dropbear, OpenSSH 7.3 as an SSH-1-only server, unfs3 for NFSv3 and the old nfs-user-server for NFSv2, Netatalk 4, Apache, Gophernicus), driven by `lab/lab.sh` with plain `docker` (no compose), built and tested by `.github/workflows/lab.yml` and published to the GitHub Container Registry from main. `tests/lab_unix90s.rs` (`--ignored`) and `regression-tests/flows/lab.toml` (`run_flows.py --lab`) test legcon against it, the second through the GUI. Containers replace the earlier disk-image idea: they are thrown away after each run and pulled from a registry. Windows FTP listings stay with recorded fixtures and real NT machines (no FOSS server writes them). |
+| D39 | **No folder trees; a Places menu instead** (2026-11-14). The trees only ever showed the trail to the current folder, which the path line already shows, and took a third of each pane. Each pane's header has a **Places** button (Ctrl+Shift+1 / 2) opening a menu. Local: Home, the OS's own user folders (user folder, Desktop, Documents, Downloads), the drives, **Pinned** folders (app-wide, `settings.json`) and **Recent** ones (copied to or from, or gone to; 8 kept), Pin / Unpin this folder, and Go to folder.... Remote: the login folder, the top level, the machine's own Pinned and Recent folders (`machines.json`), Pin / Unpin and Go to folder... (absolute or relative, as the machine spells paths). The home folder stops being a fence (D16). The menu is a controller `Effect::Menu`, so every shell draws it natively. Explorer's Quick Access pins: later. |
 | D19 | **SSH is libssh2** through the `ssh2` crate, because the target is SSH servers from 2005 and earlier (§4.1). Revised in phase 4 (2026-11-13): on Windows libssh2 uses its WinCNG backend (no OpenSSL to build); its pre-2005 algorithms (`diffie-hellman-group1-sha1`, `group14-sha1`, `gex-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`, `arcfour`, `hmac-md5`, `hmac-sha1`) are compile-time opt-ins, switched on in `.cargo/config.toml`; Blowfish and CAST are not available with WinCNG. libssh2 prefers modern algorithms, so the old ones are used only when the server offers nothing newer. **SFTP v3 is our own code** over an ssh2 channel: ssh2's SFTP turns names into `Path`s, which must be UTF-8 on Windows. Host keys are kept per machine (`host_key`), learned on first connect; a changed key asks Accept / Accept once / Cancel before any password is sent. |
 | D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
 
@@ -647,7 +656,7 @@ set NAME key=value`. **UI flows** (`regression-tests/`, FLOWS.md): TOML flows na
 controller id, a runner, and a Win32 UI Automation driver speaking a line protocol later shells'
 drivers will speak too; 11 flows cover the machine settings, adding and removing machines, and
 connecting, browsing, copying, folder operations and the layout on the demo machine. Not yet: the
-app-wide Settings, the Media list, full folder trees, probing an existing machine again, flows for
+app-wide Settings, the Media list, probing an existing machine again, flows for
 the Shell / Console / Log / Transfers tabs and the host-key and key-login dialogs.
 
 ## 10. Risks

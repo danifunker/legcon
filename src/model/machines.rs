@@ -171,8 +171,6 @@ pub struct Layout {
     pub files_share: f32,
     /// The terminal area is on top.
     pub swapped: bool,
-    pub local_tree: bool,
-    pub remote_tree: bool,
 }
 
 impl Default for Layout {
@@ -180,8 +178,6 @@ impl Default for Layout {
         Layout {
             files_share: DEFAULT_FILES_SHARE,
             swapped: false,
-            local_tree: true,
-            remote_tree: true,
         }
     }
 }
@@ -303,6 +299,12 @@ pub struct Machine {
     /// The name on this computer that rsh / rlogin present (`.rhosts` lists it); the user when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_user: Option<String>,
+    /// Folders on the machine the user pinned to its Places menu, as the machine spells them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_folders: Vec<String>,
+    /// Folders on the machine files were last copied to or from, newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_folders: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -398,6 +400,8 @@ impl Machine {
             gid: None,
             nfs_version: None,
             local_user: None,
+            pinned_folders: Vec::new(),
+            recent_folders: Vec::new(),
         }
     }
 

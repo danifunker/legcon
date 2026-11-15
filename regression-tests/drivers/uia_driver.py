@@ -277,7 +277,35 @@ def op_press(o):
     raise Fail(f"no dialog button {o['name']}")
 
 
+def op_menu(o):
+    """Choose a popup menu item by its text (popup menus have no controller ids)."""
+    end = time.time() + o.get("timeout", 5)
+    c = UIA.CreatePropertyCondition(U.UIA_ControlTypePropertyId, U.UIA_MenuItemControlTypeId)
+    seen = []
+    while time.time() < end:
+        for h in windows():
+            if class_of(h) != "#32768":
+                continue
+            arr = UIA.ElementFromHandle(h).FindAll(U.TreeScope_Descendants, c)
+            seen = [arr.GetElement(i).CurrentName for i in range(arr.Length)]
+            for i in range(arr.Length):
+                m = arr.GetElement(i)
+                if (m.CurrentName or "").replace("&&", "&") == o["name"]:
+                    if not m.CurrentIsEnabled:
+                        raise Fail(f"menu item {o['name']} is disabled")
+                    pattern(m, U.UIA_InvokePatternId, U.IUIAutomationInvokePattern).Invoke()
+                    # Wait for the menu to close, so the next step cannot find it again.
+                    gone = time.time() + 5
+                    while time.time() < gone and any(class_of(w) == "#32768" for w in windows()):
+                        time.sleep(0.1)
+                    time.sleep(o.get("pause", 0.4))
+                    return
+        time.sleep(0.2)
+    raise Fail(f"no menu item {o['name']} in {seen}")
+
+
 OPS = {
+    "menu": op_menu,
     "key": op_key,
     "expect_row": op_expect_row,
     "press": op_press,
