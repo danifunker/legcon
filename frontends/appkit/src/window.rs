@@ -106,6 +106,29 @@ pub struct Shell {
 
 thread_local! {
     static SHELL: RefCell<Option<Shell>> = const { RefCell::new(None) };
+    /// Remote rows the Finder asked for, by the folder they land in, until the batch is queued.
+    static PROMISED: RefCell<Vec<(String, PathBuf)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The Finder redeems a dragged remote row: queue its download into the folder it chose.
+fn promised(name: String, dir: PathBuf) {
+    let first = PROMISED.with(|p| {
+        let mut p = p.borrow_mut();
+        p.push((name, dir));
+        p.len() == 1
+    });
+    // The Finder asks once per row, back to back: one batch per folder, so one question.
+    if first {
+        ui::later(Box::new(|| {
+            let mut all = PROMISED.with(|p| std::mem::take(&mut *p.borrow_mut()));
+            while let Some((_, dir)) = all.first().cloned() {
+                let (here, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|(_, d)| *d == dir);
+                all = rest;
+                let names = here.into_iter().map(|(n, _)| n).collect();
+                conn_action(conn::Action::CopyOut(names, dir));
+            }
+        }));
+    }
 }
 
 /// Borrow the shell; `None` while it is already borrowed (a nested call from a modal loop).
@@ -359,6 +382,9 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
         content.addSubview(v);
     }
     let side = if local { Side::Local } else { Side::Remote };
+    if !local {
+        p.list.promise_files(Rc::new(promised));
+    }
     p.list.on_activate(Rc::new(move || open_row(side)));
     p.list.on_menu(Rc::new(move || file_menu(side)));
     p.list.drag_and_drop(

@@ -12,7 +12,8 @@ use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBorderType, NSControlTextEditingDelegate, NSDragOperation,
-    NSDraggingInfo, NSEvent, NSImage, NSImageView, NSPasteboardItem, NSPasteboardTypeFileURL,
+    NSDraggingInfo, NSEvent, NSFilePromiseProvider, NSFilePromiseProviderDelegate,
+    NSFilePromiseReceiver, NSImage, NSImageView, NSPasteboardItem, NSPasteboardTypeFileURL,
     NSPasteboardWriting, NSScrollView, NSTableColumn, NSTableView, NSTableViewDataSource,
     NSTableViewDelegate, NSTableViewDropOperation, NSView, NSWorkspace,
 };
@@ -59,6 +60,8 @@ pub struct State {
     /// The folder local rows live in, so they drag out as files.
     dir: Option<PathBuf>,
     on_drop: Option<Rc<dyn Fn(Dropped)>>,
+    /// Remote rows drag out as file promises redeemed through this.
+    on_promise: Option<Promised>,
     on_select: Handler,
     /// The shell is setting the selection itself, so the change is not reported back.
     quiet: bool,
@@ -86,7 +89,7 @@ define_class!(
             _table: &NSTableView,
             row: isize,
         ) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
-            writer(&self.ivars().borrow(), row)
+            writer(self.mtm(), &self.ivars().borrow(), row)
         }
 
         #[unsafe(method(tableView:validateDrop:proposedRow:proposedDropOperation:))]
@@ -161,18 +164,89 @@ define_class!(
 );
 
 /// A row as it leaves by drag: the side it left, and a file URL for local rows.
-/// A row as it leaves by drag: a local row is its file's URL (Finder takes it), a remote row
-/// carries its side; our own panes know each other by the drag's source.
-fn writer(state: &State, row: isize) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
+/// A row as it leaves by drag: a local row is its file's URL, a remote row a file promise the
+/// Finder redeems by naming a folder; our own panes know each other by the drag's source.
+fn writer(
+    mtm: MainThreadMarker,
+    state: &State,
+    row: isize,
+) -> Option<Retained<ProtocolObject<dyn NSPasteboardWriting>>> {
     let side = state.side?;
-    let name = state.rows.get(row as usize)?.cells.first()?.clone();
+    let line = state.rows.get(row as usize)?;
+    let name = line.cells.first()?.clone();
     if let Some(dir) = &state.dir {
         let url = NSURL::fileURLWithPath(&ns(&dir.join(&name).to_string_lossy()));
         return Some(ProtocolObject::from_retained(url));
     }
+    if let Some(promised) = &state.on_promise {
+        let dir = matches!(line.icon, Icon::File { dir: true, .. });
+        let kind = if dir { "public.folder" } else { "public.data" };
+        let delegate = promise_delegate(mtm, promised.clone());
+        let p = NSFilePromiseProvider::initWithFileType_delegate(
+            mtm.alloc(),
+            &ns(kind),
+            ProtocolObject::from_ref(&*delegate),
+        );
+        let name: Retained<AnyObject> = Retained::into_super(Retained::into_super(ns(&name)));
+        // SAFETY: an NSString, read back by the delegate; the provider keeps it.
+        unsafe { p.setUserInfo(Some(&name)) };
+        // The provider holds its delegate weakly: keep it for as long as the provider lives.
+        PROMISES.with(|k| k.borrow_mut().push(delegate));
+        return Some(ProtocolObject::from_retained(p));
+    }
     let item = NSPasteboardItem::new();
     item.setString_forType(&ns(side), &ns(ROWS));
     Some(ProtocolObject::from_retained(item))
+}
+
+/// What a promise is redeemed with: the row's name and the folder it lands in.
+pub type Promised = Rc<dyn Fn(String, PathBuf)>;
+
+define_class!(
+    /// Answers the Finder for a remote row dragged out: its name, then where it goes.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "LCPromiseDelegate"]
+    #[ivars = Promised]
+    pub struct PromiseDelegate;
+
+    unsafe impl NSObjectProtocol for PromiseDelegate {}
+
+    unsafe impl NSFilePromiseProviderDelegate for PromiseDelegate {
+        #[unsafe(method_id(filePromiseProvider:fileNameForType:))]
+        fn file_name(&self, p: &NSFilePromiseProvider, _kind: &NSString) -> Retained<NSString> {
+            promised_name(p).map_or_else(|| ns("file"), |n| ns(&n))
+        }
+
+        #[unsafe(method(filePromiseProvider:writePromiseToURL:completionHandler:))]
+        fn write(
+            &self,
+            p: &NSFilePromiseProvider,
+            url: &NSURL,
+            done: &block2::DynBlock<dyn Fn(*mut objc2_foundation::NSError)>,
+        ) {
+            let dir = url
+                .path()
+                .map(|s| PathBuf::from(s.to_string()))
+                .and_then(|p| p.parent().map(PathBuf::from));
+            if let (Some(name), Some(dir)) = (promised_name(p), dir) {
+                (self.ivars())(name, dir);
+            }
+            // The download runs in the transfer queue, which shows its progress and errors.
+            done.call((std::ptr::null_mut(),));
+        }
+    }
+);
+
+fn promised_name(p: &NSFilePromiseProvider) -> Option<String> {
+    let info = p.userInfo()?;
+    info.downcast_ref::<NSString>().map(|s| s.to_string())
+}
+
+fn promise_delegate(mtm: MainThreadMarker, f: Promised) -> Retained<PromiseDelegate> {
+    let this = mtm.alloc::<PromiseDelegate>().set_ivars(f);
+    // SAFETY: NSObject's plain init.
+    unsafe { msg_send![super(this), init] }
 }
 
 /// The side of the legcon pane a drag comes from, if it does.
@@ -225,6 +299,8 @@ fn dropped_paths(info: &ProtocolObject<dyn NSDraggingInfo>) -> Vec<PathBuf> {
 
 thread_local! {
     static ICONS: RefCell<HashMap<String, Retained<NSImage>>> = RefCell::default();
+    /// Promise delegates of the drags so far (small objects; a drag's lifetime is not told).
+    static PROMISES: RefCell<Vec<Retained<PromiseDelegate>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The system's icon for a file of `name` (by extension) or a folder, cached per kind.
@@ -432,7 +508,9 @@ impl Table {
         }
         self.view.ivars().borrow_mut().side = Some(side);
         // SAFETY: AppKit's own pasteboard type constant.
-        let kinds = [unsafe { NSPasteboardTypeFileURL }.to_owned(), ns(ROWS)];
+        let mut kinds = vec![unsafe { NSPasteboardTypeFileURL }.to_owned(), ns(ROWS)];
+        // File promises too: remote rows dragged onto the local pane carry nothing else.
+        kinds.extend(NSFilePromiseReceiver::readableDraggedTypes().iter());
         let kinds: Vec<&NSString> = kinds.iter().map(|k| &**k).collect();
         self.view
             .registerForDraggedTypes(&NSArray::from_slice(&kinds));
@@ -440,6 +518,11 @@ impl Table {
             .setDraggingSourceOperationMask_forLocal(NSDragOperation::Copy, true);
         self.view
             .setDraggingSourceOperationMask_forLocal(NSDragOperation::Copy, false);
+    }
+
+    /// Rows drag out to the Finder as file promises; `f` gets each row's name and folder.
+    pub fn promise_files(&self, f: Promised) {
+        self.source.ivars().borrow_mut().on_promise = Some(f);
     }
 
     /// The folder the rows are in, so local rows drag out to Finder as files.
