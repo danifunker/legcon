@@ -142,6 +142,10 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      # macOS ships a current OpenSSH sshd: key login, strict key exchange, exec, SFTP, a terminal.
+      - name: SSH against the system's OpenSSH
+        run: cargo test -p lc-ssh --test local_openssh -- --ignored
+
       - name: Build the AppKit window, lc and the pretend servers the flows start
         run: |
           cargo build --workspace --bins --examples

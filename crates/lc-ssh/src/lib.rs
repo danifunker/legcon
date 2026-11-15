@@ -92,6 +92,8 @@ pub struct Negotiated {
     pub host_key: String,
     pub cipher: String,
     pub mac: String,
+    /// Strict key exchange (the Terrapin countermeasure) is on.
+    pub strict: bool,
 }
 
 impl Negotiated {

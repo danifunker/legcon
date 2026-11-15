@@ -137,6 +137,10 @@ pub struct Link {
     channels: HashMap<u32, Chan>,
     next_id: u32,
     closed: bool,
+    /// Strict key exchange (OpenSSH's Terrapin countermeasure): both sides offered it.
+    strict: bool,
+    /// Inside the first key exchange, where strict mode allows no stray messages.
+    first_kex: bool,
 }
 
 pub type Shared = Arc<Mutex<Link>>;
@@ -211,6 +215,8 @@ impl Link {
             channels: HashMap::new(),
             next_id: 0,
             closed: false,
+            strict: false,
+            first_kex: true,
         };
         link.kex(None)?;
         Ok(link)
@@ -287,7 +293,9 @@ impl Link {
         self.inp.cipher.apply(&mut rest);
         pkt.extend_from_slice(&rest);
         if let Some(m) = &self.inp.mac {
-            if m.sign(self.inp.seq, &pkt) != self.rbuf[total..total + mac_len] {
+            use subtle::ConstantTimeEq;
+            let want = m.sign(self.inp.seq, &pkt);
+            if !bool::from(want.ct_eq(&self.rbuf[total..total + mac_len])) {
                 return Err(bad("a packet from the server failed its integrity check"));
             }
         }
@@ -341,13 +349,17 @@ impl Link {
 
     // Key exchange.
 
-    fn kexinit() -> Vec<u8> {
+    fn kexinit(first: bool) -> Vec<u8> {
         let mut p = vec![msg::KEXINIT];
         let mut cookie = [0u8; 16];
         OsRng.fill_bytes(&mut cookie);
         p.extend_from_slice(&cookie);
         let mut kex = crypto::KEX.to_vec();
-        kex.push("ext-info-c");
+        if first {
+            // Only in the first KEXINIT, as both markers are defined.
+            kex.push("ext-info-c");
+            kex.push("kex-strict-c-v00@openssh.com");
+        }
         put_name_list(&mut p, &kex);
         put_name_list(&mut p, crypto::HOST_KEY);
         for _ in 0..2 {
@@ -381,21 +393,34 @@ impl Link {
 
     /// Run a key exchange; `theirs` is the server's KEXINIT when it started one.
     fn kex(&mut self, theirs: Option<Vec<u8>>) -> Result<()> {
-        let i_c = Self::kexinit();
+        let first = self.session_id.is_none();
+        let i_c = Self::kexinit(first);
         self.send(&i_c)?;
+        let mut stray = false;
         let i_s = match theirs {
             Some(p) => p,
             None => loop {
                 let p = self.recv_raw()?;
                 match p.first().copied() {
                     Some(msg::KEXINIT) => break p,
-                    Some(msg::IGNORE | msg::DEBUG) => {}
+                    Some(msg::IGNORE | msg::DEBUG) => stray = true,
                     _ => return Err(bad("the server did not start the key exchange")),
                 }
             },
         };
+        if i_s.len() < 17 {
+            return Err(bad("the server's key exchange offer is cut short"));
+        }
         let mut r = Reader::new(&i_s[17..]);
         let kex = r.name_list()?;
+        if first {
+            self.strict = kex.iter().any(|k| k == "kex-strict-s-v00@openssh.com");
+            if self.strict && stray {
+                return Err(bad(
+                    "strict key exchange: the server sent a message before its offer",
+                ));
+            }
+        }
         let host = r.name_list()?;
         let (c_cs, c_sc, m_cs, m_sc) = (
             r.name_list()?,
@@ -459,7 +484,15 @@ impl Link {
             let group = self.expect(msg::GEX_GROUP, "the key exchange")?;
             let mut r = Reader::new(&group[1..]);
             let (pp, g) = (r.string()?.to_vec(), r.string()?.to_vec());
-            let dh = Dh::new(BigUint::from_bytes_be(&pp), &BigUint::from_bytes_be(&g));
+            let (p_n, g_n) = (BigUint::from_bytes_be(&pp), BigUint::from_bytes_be(&g));
+            // The sizes asked for: a smaller group is weak, a far larger one a stall.
+            if !(1024..=8192).contains(&p_n.bits()) || g_n <= BigUint::from(1u8) || g_n >= p_n {
+                return Err(bad(format!(
+                    "the server offered an unusable Diffie-Hellman group ({} bits)",
+                    p_n.bits()
+                )));
+            }
+            let dh = Dh::new(p_n, &g_n);
             let mut p = vec![msg::GEX_INIT];
             put_mpint(&mut p, &dh.e.to_bytes_be());
             self.send(&p)?;
@@ -546,7 +579,8 @@ impl Link {
                 &derive(b'E', crypto::mac_key_len(&algs.mac_out)),
             )?),
             block: bs_o,
-            seq: self.out.seq,
+            // Strict mode restarts the counts at each NEWKEYS, so no message can be slipped in.
+            seq: if self.strict { 0 } else { self.out.seq },
         };
         self.out = out;
         self.expect(msg::NEWKEYS, "the key exchange")?;
@@ -562,13 +596,15 @@ impl Link {
                 &derive(b'F', crypto::mac_key_len(&algs.mac_in)),
             )?),
             block: bs_i,
-            seq: self.inp.seq,
+            seq: if self.strict { 0 } else { self.inp.seq },
         };
         self.inp = inp;
+        self.first_kex = false;
         self.negotiated.kex = algs.kex;
         self.negotiated.host_key = algs.host_key;
         self.negotiated.cipher = algs.cipher_out;
         self.negotiated.mac = algs.mac_out;
+        self.negotiated.strict = self.strict;
         Ok(())
     }
 
@@ -578,6 +614,11 @@ impl Link {
             let p = self.recv_raw()?;
             match p.first().copied() {
                 Some(t) if t == want => return Ok(p),
+                Some(msg::IGNORE | msg::DEBUG) if self.strict && self.first_kex => {
+                    return Err(bad(format!(
+                        "strict key exchange: the server sent a stray message during {during}"
+                    )))
+                }
                 Some(msg::IGNORE | msg::DEBUG) => {}
                 Some(msg::EXT_INFO) => self.ext_info(&p)?,
                 Some(msg::DISCONNECT) => {

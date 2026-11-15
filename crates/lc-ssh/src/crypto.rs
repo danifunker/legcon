@@ -361,7 +361,7 @@ pub fn verify_host(blob: &[u8], sig: &[u8], h: &[u8]) -> Result<()> {
         }
         b"ssh-rsa" => {
             let (e, n) = (mp(&mut k)?, mp(&mut k)?);
-            let key = rsa::RsaPublicKey::new(n, e).map_err(|_| wrong())?;
+            let key = rsa::RsaPublicKey::new_with_max_size(n, e, 16384).map_err(|_| wrong())?;
             let (scheme, digest) = match sig_kind.as_slice() {
                 b"ssh-rsa" => (rsa::Pkcs1v15Sign::new::<Sha1>(), Hash::Sha1.digest(h)),
                 b"rsa-sha2-256" => (rsa::Pkcs1v15Sign::new::<Sha256>(), Hash::Sha256.digest(h)),
