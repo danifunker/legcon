@@ -377,6 +377,37 @@ fn putty(text: &str) -> Result<KeyPair> {
     }
 }
 
+/// The key in a private key file, ready to sign a login (any format [`import`] reads).
+pub fn signer_file(path: &std::path::Path) -> Result<crate::crypto::Signer> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| bad(format!("cannot read the key file {}: {e}", path.display())))?;
+    signer(&text)
+}
+
+/// The key in a private key file's text, ready to sign a login.
+pub fn signer(text: &str) -> Result<crate::crypto::Signer> {
+    use crate::crypto::Signer;
+    let pem = import(text)?.private_pem;
+    if pem.contains("-----BEGIN RSA PRIVATE KEY-----") {
+        use rsa::pkcs1::DecodeRsaPrivateKey;
+        let k = rsa::RsaPrivateKey::from_pkcs1_pem(&pem)
+            .map_err(|e| bad(format!("not a valid RSA key: {e}")))?;
+        return Ok(Signer::Rsa(Box::new(k)));
+    }
+    let v = der_ints(&pem_body(&pem, "DSA PRIVATE KEY")?)?;
+    if v.len() < 6 {
+        return Err(bad("not a valid DSA key"));
+    }
+    let n = |b: &[u8]| rsa::BigUint::from_bytes_be(b);
+    let c = dsa::Components::from_components(n(&v[1]), n(&v[2]), n(&v[3]))
+        .map_err(|e| bad(format!("not a valid DSA key: {e}")))?;
+    let vk = dsa::VerifyingKey::from_components(c, n(&v[4]))
+        .map_err(|e| bad(format!("not a valid DSA key: {e}")))?;
+    let k = dsa::SigningKey::from_components(vk, n(&v[5]))
+        .map_err(|e| bad(format!("not a valid DSA key: {e}")))?;
+    Ok(Signer::Dsa(Box::new(k)))
+}
+
 /// A private key file's text as a key pair legcon can log in with (traditional PEM).
 pub fn import(text: &str) -> Result<KeyPair> {
     if text.starts_with("PuTTY-User-Key-File-") {

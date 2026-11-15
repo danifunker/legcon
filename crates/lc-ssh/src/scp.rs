@@ -8,12 +8,11 @@
 use std::io::{Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::transport::Channel;
+use crate::SshSession;
 use lc_core::rcp::{self, shell_error};
 use lc_core::shellfile::{self, Append, Tail};
 use lc_core::{Entry, Error, RemotePath, Result};
-use ssh2::Channel;
-
-use crate::{ssh_err, SshSession};
 
 /// Single-quote for the Bourne shell.
 pub fn sq(b: &[u8]) -> Vec<u8> {
@@ -49,7 +48,9 @@ impl Write for ChannelLink {
 
 impl rcp::Link for ChannelLink {
     fn close_write(&mut self) -> std::io::Result<()> {
-        self.0.send_eof().map_err(std::io::Error::other)
+        self.0
+            .send_eof()
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
     fn end(&mut self) {
         let _ = self.0.send_eof();
@@ -65,15 +66,6 @@ pub type ScpReader = rcp::Receiver<ChannelLink>;
 pub type ScpWriter = rcp::Sender<ChannelLink>;
 
 impl SshSession {
-    fn exec_channel(&mut self, cmd: &[u8]) -> Result<Channel> {
-        let mut ch = self.session.channel_session().map_err(ssh_err)?;
-        let cmd = std::str::from_utf8(cmd).map_err(|_| {
-            Error::Unsupported("a name here has characters SSH exec cannot send".into())
-        })?;
-        ch.exec(cmd).map_err(ssh_err)?;
-        Ok(ch)
-    }
-
     /// Run a shell command that must succeed; its output.
     fn sh(&mut self, what: &str, cmd: &[u8]) -> Result<Vec<u8>> {
         let mut full = b"LC_ALL=C; export LC_ALL; ".to_vec();

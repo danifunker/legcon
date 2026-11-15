@@ -1,16 +1,20 @@
 //! SSH-2 for legcon (docs/PLAN.md §4.1, D19): shells, single commands and SFTP v3.
 //!
-//! The transport is libssh2 through the `ssh2` crate, built with the pre-2005 algorithms switched
-//! on (`.cargo/config.toml`): `diffie-hellman-group1-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`,
-//! `arcfour`, `hmac-md5`, `hmac-sha1`. libssh2 prefers the modern ones, so an old algorithm is
+//! Pure Rust (D19, revised 2026-11-15): the transport, login and channels are our own code
+//! ([`transport`]) over RustCrypto ([`crypto`]), so nothing links OpenSSL or any C library. The
+//! pre-2005 algorithms (`diffie-hellman-group1-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`,
+//! `arcfour`, `hmac-md5`, `hmac-sha1`) are offered after the modern ones, so an old algorithm is
 //! only used when the server offers nothing newer; [`SshSession::negotiated`] says which won.
 //! SFTP is our own code ([`sftp`]) so file names stay bytes in the machine's character set.
 
+pub mod crypto;
 pub mod keyfile;
 pub mod keys;
 mod scp;
 pub mod sftp;
 pub mod ssh1;
+pub mod transport;
+pub mod wire;
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -22,14 +26,12 @@ use lc_core::{
     Charset, ConnState, Connection, Entry, EntryKind, Error, ExecResult, FileCaps, FileSession,
     PathStyle, Pty, PtyWriter, RemotePath, Result, ShellCaps, ShellSession, Timestamp, WriteMode,
 };
-use ssh2::{Channel, ErrorCode, HashType, MethodType, Session};
+use sha2::Digest as _;
+use transport::{lock, Channel, Link, Shared};
 
 use sftp::{flag, Attrs, Sftp, CHUNK};
 
 pub const PORT: u16 = 22;
-
-/// libssh2's "would block" code, returned by every call on a non-blocking session.
-const EAGAIN: i32 = -37;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -109,42 +111,6 @@ impl Negotiated {
     }
 }
 
-fn ssh_err(e: ssh2::Error) -> Error {
-    match e.code() {
-        ErrorCode::Session(-9) => Error::Timeout(Duration::from_secs(0)),
-        ErrorCode::Session(-18) => Error::Auth(e.message().to_string()),
-        ErrorCode::Session(-8) | ErrorCode::Session(-5) => Error::Protocol(format!(
-            "no algorithm in common with the server ({})",
-            e.message()
-        )),
-        _ => Error::Protocol(e.message().to_string()),
-    }
-}
-
-/// Retry a call on a non-blocking session until it stops saying "would block".
-fn again<T>(f: impl FnMut() -> std::result::Result<T, ssh2::Error>) -> Result<T> {
-    again_for(None, f)
-}
-
-/// `again`, giving up after `limit` (for replies a server may never send).
-fn again_for<T>(
-    limit: Option<Duration>,
-    mut f: impl FnMut() -> std::result::Result<T, ssh2::Error>,
-) -> Result<T> {
-    let end = limit.map(|l| std::time::Instant::now() + l);
-    loop {
-        match f() {
-            Err(e) if e.code() == ErrorCode::Session(EAGAIN) => {
-                if end.is_some_and(|end| std::time::Instant::now() >= end) {
-                    return Err(Error::Protocol("the server did not answer in time".into()));
-                }
-                std::thread::sleep(Duration::from_millis(2))
-            }
-            r => return r.map_err(ssh_err),
-        }
-    }
-}
-
 fn hex_md5(h: &[u8]) -> String {
     h.iter()
         .map(|b| format!("{b:02x}"))
@@ -166,23 +132,9 @@ fn b64(data: &[u8]) -> String {
     s
 }
 
-struct Answer(String);
-
-impl ssh2::KeyboardInteractivePrompt for Answer {
-    fn prompt<'a>(
-        &mut self,
-        _user: &str,
-        _instructions: &str,
-        prompts: &[ssh2::Prompt<'a>],
-    ) -> Vec<String> {
-        prompts.iter().map(|_| self.0.clone()).collect()
-    }
-}
-
 /// A logged-in SSH connection: SFTP for files, channels for commands and a terminal.
 pub struct SshSession {
-    session: Session,
-    tcp: TcpStream,
+    link: Shared,
     sftp: Option<Sftp<Channel>>,
     /// The server has no SFTP (or it is turned off): files go through SCP and the shell.
     shell_files: bool,
@@ -214,65 +166,38 @@ pub fn connect(
         }
     })?;
     tcp.set_nodelay(true)?;
-    let mut session = Session::new().map_err(ssh_err)?;
-    session.set_timeout(opts.timeout.as_millis() as u32);
-    session.set_tcp_stream(tcp.try_clone()?);
-    session.handshake().map_err(|e| match e.code() {
-        ErrorCode::Session(-9) => Error::Timeout(opts.timeout),
-        ErrorCode::Session(-13) | ErrorCode::Session(-43) => Error::Protocol(
-            "the server closed the connection during the handshake (is it SSH-1 only?)".into(),
-        ),
-        _ => ssh_err(e),
-    })?;
-    let (blob, _) = session
-        .host_key()
+    let mut link = Link::handshake(tcp, opts.timeout)?;
+    let key = link
+        .host_key
+        .clone()
         .ok_or_else(|| Error::Protocol("the server sent no host key".into()))?;
-    let blob = blob.to_vec();
-    let key = HostKey {
-        algorithm: sftp::Cursor::new(&blob)
-            .bytes()
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .unwrap_or_default(),
-        md5: session
-            .host_key_hash(HashType::Md5)
-            .map(hex_md5)
-            .unwrap_or_default(),
-        sha256: session
-            .host_key_hash(HashType::Sha256)
-            .map(|h| format!("SHA256:{}", b64(h)))
-            .unwrap_or_default(),
-        blob,
-    };
-    let method = |t| session.methods(t).unwrap_or("").to_string();
-    let negotiated = Negotiated {
-        banner: session.banner().unwrap_or("").to_string(),
-        kex: method(MethodType::Kex),
-        host_key: method(MethodType::HostKey),
-        cipher: method(MethodType::CryptCs),
-        mac: method(MethodType::MacCs),
-    };
-    let bye = |s: &Session| {
-        let _ = s.disconnect(None, "legcon: host key not accepted", None);
-    };
+    let negotiated = link.negotiated.clone();
     if let Err(e) = verify(&key) {
-        bye(&session);
+        let _ = link.disconnect("legcon: host key not accepted");
         return Err(e);
     }
-    let methods = session.auth_methods(user).unwrap_or("").to_string();
+    let (mut done, methods) = link.auth_methods(user)?;
+    let has = |m: &str| methods.iter().any(|x| x == m);
     let mut key_error = None;
-    if let (Some(k), true) = (&auth.key, methods.contains("publickey")) {
-        if let Err(e) = session.userauth_pubkey_file(user, Some(&k.public), &k.private, None) {
-            key_error = Some(e.message().to_string());
+    if let (false, Some(k), true) = (done, &auth.key, has("publickey")) {
+        match keyfile::signer_file(&k.private).and_then(|s| link.auth_key(user, &s)) {
+            Ok(true) => done = true,
+            Ok(false) => key_error = Some("the server did not take the key".to_string()),
+            Err(e) => key_error = Some(e.to_string()),
         }
     }
-    if !session.authenticated() {
+    if !done {
         let result = match &auth.password {
             Some(password) => {
-                let mut r = session.userauth_password(user, password);
-                if r.is_err() && methods.contains("keyboard-interactive") {
-                    r = session.userauth_keyboard_interactive(user, &mut Answer(password.clone()));
+                let mut ok = has("password") && link.auth_password(user, password)?;
+                if !ok && has("keyboard-interactive") {
+                    ok = link.auth_keyboard(user, password)?;
                 }
-                r.map_err(|e| e.message().to_string())
+                if ok {
+                    Ok(())
+                } else {
+                    Err("the password was not accepted".to_string())
+                }
             }
             None => Err(key_error
                 .clone()
@@ -283,23 +208,35 @@ pub fn connect(
                 Some(k) if auth.password.is_some() => format!("{e}; the key was refused too ({k})"),
                 _ => e,
             };
-            bye(&session);
+            let _ = link.disconnect("legcon: login failed");
             return Err(Error::Auth(if methods.is_empty() {
                 e
             } else {
-                format!("{e} (the server offers: {methods})")
+                format!("{e} (the server offers: {})", methods.join(","))
             }));
         }
     }
     Ok(SshSession {
-        session,
-        tcp,
+        link: Arc::new(Mutex::new(link)),
         sftp: None,
         shell_files: !opts.sftp,
         opts: opts.clone(),
         negotiated,
         closed: false,
     })
+}
+
+/// The fingerprints of a host key blob.
+pub(crate) fn host_key_of(blob: &[u8]) -> HostKey {
+    HostKey {
+        algorithm: sftp::Cursor::new(blob)
+            .bytes()
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .unwrap_or_default(),
+        md5: hex_md5(&md5::Md5::digest(blob)),
+        sha256: format!("SHA256:{}", b64(&sha2::Sha256::digest(blob))),
+        blob: blob.to_vec(),
+    }
 }
 
 impl SshSession {
@@ -324,13 +261,15 @@ impl SshSession {
             return Err(Error::NotConnected);
         }
         if self.sftp.is_none() && !self.shell_files {
-            let mut ch = self.session.channel_session().map_err(ssh_err)?;
-            match ch.subsystem("sftp") {
-                Ok(()) => self.sftp = Some(Sftp::start(ch)?),
-                Err(_) => {
-                    let _ = ch.close();
-                    self.shell_files = true;
-                }
+            let id = lock(&self.link).open_session()?;
+            let mut name = Vec::new();
+            wire::put_string(&mut name, b"sftp");
+            let mut ch = Channel::new(Arc::clone(&self.link), id);
+            if lock(&self.link).request(id, "subsystem", &name, true)? {
+                self.sftp = Some(Sftp::start(ch)?);
+            } else {
+                let _ = ch.close();
+                self.shell_files = true;
             }
         }
         Ok(!self.shell_files)
@@ -385,41 +324,71 @@ impl SshSession {
         if self.closed {
             return Err(Error::NotConnected);
         }
-        let mut ch = self.session.channel_session().map_err(ssh_err)?;
-        // libssh2's exec takes a &str, so a command in Latin-1 or MacRoman cannot be sent as is.
-        let cmd = std::str::from_utf8(command).map_err(|_| {
-            Error::Unsupported("this command has characters SSH exec cannot send here".into())
-        })?;
-        ch.exec(cmd).map_err(ssh_err)?;
+        let mut ch = self.exec_channel(command)?;
         let mut output = Vec::new();
         let mut errors = Vec::new();
         ch.read_to_end(&mut output)?;
-        ch.stderr().read_to_end(&mut errors)?;
-        let _ = ch.wait_close();
+        let mut buf = [0u8; 4096];
+        loop {
+            match ch.read_stderr(&mut buf)? {
+                0 => break,
+                n => errors.extend_from_slice(&buf[..n]),
+            }
+        }
+        let exit_status = ch.wait_close()?;
         Ok(ExecResult {
             output,
             errors,
-            exit_status: ch.exit_status().ok(),
+            exit_status: exit_status.map(|s| s as i32),
         })
+    }
+
+    /// A channel running `command` (bytes as they are: names stay in the machine's charset).
+    pub(crate) fn exec_channel(&mut self, command: &[u8]) -> Result<Channel> {
+        let mut link = lock(&self.link);
+        let id = link.open_session()?;
+        let mut data = Vec::new();
+        wire::put_string(&mut data, command);
+        if !link.request(id, "exec", &data, true)? {
+            let _ = link.close(id, Duration::from_secs(1));
+            return Err(Error::Protocol(
+                "the server would not run the command".into(),
+            ));
+        }
+        drop(link);
+        Ok(Channel::new(Arc::clone(&self.link), id))
     }
 
     /// Open an interactive terminal; the connection then belongs to it.
     pub fn into_pty(self, term: &str, cols: u16, rows: u16) -> Result<Pty> {
-        let mut ch = self.session.channel_session().map_err(ssh_err)?;
-        ch.request_pty(term, None, Some((cols.into(), rows.into(), 0, 0)))
-            .map_err(ssh_err)?;
-        ch.shell().map_err(ssh_err)?;
-        self.session.set_blocking(false);
-        let shared = Arc::new(Mutex::new(ch));
+        let mut link = lock(&self.link);
+        let id = link.open_session()?;
+        let mut pty = Vec::new();
+        wire::put_string(&mut pty, term.as_bytes());
+        for v in [u32::from(cols), u32::from(rows), 0, 0] {
+            wire::put_u32(&mut pty, v);
+        }
+        wire::put_string(&mut pty, &[0]);
+        if !link.request(id, "pty-req", &pty, true)? {
+            return Err(Error::Protocol(
+                "the server would not give a terminal".into(),
+            ));
+        }
+        if !link.request(id, "shell", &[], true)? {
+            return Err(Error::Protocol("the server would not start a shell".into()));
+        }
+        let tcp = link.tcp()?;
+        drop(link);
         Ok(Pty {
             reader: Box::new(PtyReader {
-                ch: Arc::clone(&shared),
-                tcp: self.tcp.try_clone()?,
+                link: Arc::clone(&self.link),
+                id,
+                tcp,
                 poll: self.opts.poll,
             }),
             writer: Box::new(PtyWriterImpl {
-                ch: shared,
-                session: self.session.clone(),
+                link: Arc::clone(&self.link),
+                id,
                 closed: false,
             }),
         })
@@ -435,52 +404,45 @@ impl SshSession {
             let _ = ch.send_eof();
             let _ = ch.close();
         }
-        self.session
-            .disconnect(
-                Some(ssh2::DisconnectCode::ByApplication),
-                "legcon: logged off",
-                None,
-            )
-            .map_err(ssh_err)
+        lock(&self.link).disconnect("legcon: logged off")
     }
 }
 
-fn lock(m: &Mutex<Channel>) -> std::sync::MutexGuard<'_, Channel> {
-    m.lock().unwrap_or_else(|p| p.into_inner())
-}
-
 struct PtyReader {
-    ch: Arc<Mutex<Channel>>,
+    link: Shared,
+    id: u32,
     tcp: TcpStream,
     poll: Duration,
 }
 
 impl Read for PtyReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut spun = false;
+        let other = |e: Error| match e {
+            Error::Io(e) => e,
+            e => std::io::Error::other(e.to_string()),
+        };
         loop {
             {
-                let ch = lock(&self.ch);
-                for stream in [ch.stream(0), ch.stderr()].iter_mut() {
-                    match stream.read(buf) {
-                        Ok(0) => {}
-                        Ok(n) => return Ok(n),
-                        Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                        Err(e) => return Err(e),
+                let mut link = lock(&self.link);
+                for ext in [false, true] {
+                    match link.take(self.id, buf, ext).map_err(other)? {
+                        Some(0) | None => {}
+                        Some(n) => return Ok(n),
                     }
                 }
-                if ch.eof() {
+                if link.eof(self.id).map_err(other)? {
                     return Ok(0);
                 }
+                if link.buffered() {
+                    link.pump().map_err(other)?;
+                    continue;
+                }
             }
-            // Nothing decrypted yet: wait for the socket rather than spinning.
-            if spun {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+            // Wait for the socket without holding the link, so the writer can send meanwhile.
             self.tcp.set_read_timeout(Some(self.poll))?;
             match self.tcp.peek(&mut [0u8; 1]) {
                 Ok(0) => return Ok(0),
-                Ok(_) => spun = true,
+                Ok(_) => lock(&self.link).pump().map_err(other)?,
                 Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
                     return Err(ErrorKind::TimedOut.into())
                 }
@@ -491,43 +453,34 @@ impl Read for PtyReader {
 }
 
 struct PtyWriterImpl {
-    ch: Arc<Mutex<Channel>>,
-    session: Session,
+    link: Shared,
+    id: u32,
     closed: bool,
 }
 
 impl PtyWriter for PtyWriterImpl {
-    fn send(&mut self, mut bytes: &[u8]) -> Result<()> {
-        while !bytes.is_empty() {
-            match lock(&self.ch).write(bytes) {
-                Ok(n) => bytes = &bytes[n..],
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                Err(e) => return Err(e.into()),
-            }
-            if !bytes.is_empty() {
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }
-        Ok(())
+    fn send(&mut self, bytes: &[u8]) -> Result<()> {
+        lock(&self.link).write(self.id, bytes)
     }
 
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
-        again(|| lock(&self.ch).request_pty_size(cols.into(), rows.into(), None, None))
+        let mut data = Vec::new();
+        for v in [u32::from(cols), u32::from(rows), 0, 0] {
+            wire::put_u32(&mut data, v);
+        }
+        lock(&self.link)
+            .request(self.id, "window-change", &data, false)
+            .map(drop)
     }
 
     fn close(&mut self) -> Result<()> {
         if std::mem::replace(&mut self.closed, true) {
             return Ok(());
         }
+        let mut link = lock(&self.link);
         // Dropbear sometimes never answers the channel close; log off regardless.
-        let _ = again_for(Some(Duration::from_secs(2)), || lock(&self.ch).close());
-        again(|| {
-            self.session.disconnect(
-                Some(ssh2::DisconnectCode::ByApplication),
-                "legcon: logged off",
-                None,
-            )
-        })
+        let _ = link.close(self.id, Duration::from_secs(2));
+        link.disconnect("legcon: logged off")
     }
 }
 
@@ -595,7 +548,7 @@ impl Connection for SshSession {
     }
 
     fn disconnect(&mut self, timeout: Duration) -> Result<()> {
-        self.session.set_timeout(timeout.as_millis() as u32);
+        lock(&self.link).set_timeout(timeout);
         self.log_off()
     }
 }

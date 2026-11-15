@@ -2,7 +2,7 @@
 //! shell commands that install it the way each server family expects.
 //!
 //! Private keys are written as traditional unencrypted PEM (`RSA PRIVATE KEY`, `DSA PRIVATE KEY`),
-//! the one form every libssh2 backend reads. RSA 2048 suits OpenSSH 2.5 and later and SSH.com 2.x;
+//! the form legcon's SSH login reads. RSA 2048 suits OpenSSH 2.5 and later and SSH.com 2.x;
 //! DSA 1024 is for servers that only take `ssh-dss` user keys (OpenSSH before 2.5, early SSH.com).
 
 use std::path::Path;
