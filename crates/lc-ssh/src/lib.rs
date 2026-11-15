@@ -122,10 +122,22 @@ fn ssh_err(e: ssh2::Error) -> Error {
 }
 
 /// Retry a call on a non-blocking session until it stops saying "would block".
-fn again<T>(mut f: impl FnMut() -> std::result::Result<T, ssh2::Error>) -> Result<T> {
+fn again<T>(f: impl FnMut() -> std::result::Result<T, ssh2::Error>) -> Result<T> {
+    again_for(None, f)
+}
+
+/// `again`, giving up after `limit` (for replies a server may never send).
+fn again_for<T>(
+    limit: Option<Duration>,
+    mut f: impl FnMut() -> std::result::Result<T, ssh2::Error>,
+) -> Result<T> {
+    let end = limit.map(|l| std::time::Instant::now() + l);
     loop {
         match f() {
             Err(e) if e.code() == ErrorCode::Session(EAGAIN) => {
+                if end.is_some_and(|end| std::time::Instant::now() >= end) {
+                    return Err(Error::Protocol("the server did not answer in time".into()));
+                }
                 std::thread::sleep(Duration::from_millis(2))
             }
             r => return r.map_err(ssh_err),
@@ -507,7 +519,8 @@ impl PtyWriter for PtyWriterImpl {
         if std::mem::replace(&mut self.closed, true) {
             return Ok(());
         }
-        let _ = again(|| lock(&self.ch).close());
+        // Dropbear sometimes never answers the channel close; log off regardless.
+        let _ = again_for(Some(Duration::from_secs(2)), || lock(&self.ch).close());
         again(|| {
             self.session.disconnect(
                 Some(ssh2::DisconnectCode::ByApplication),

@@ -185,18 +185,34 @@ fn scp_over_ssh1() {
 #[test]
 #[ignore = "needs the lab container (lab/lab.sh up)"]
 fn nfs_unfs3() {
+    nfs(3, "nfs");
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn nfs2_user_server() {
+    nfs(2, "nfs2");
+}
+
+fn nfs(version: u32, tag: &str) {
     let opts = lc_nfs::Options {
         uid: 1000,
         gid: 1000,
         portmap_port: 10111,
+        version: Some(version),
         ..Default::default()
     };
     let s = lc_nfs::connect(&host(), &opts).unwrap();
+    assert!(
+        s.describe().starts_with(&format!("NFSv{version} ")),
+        "{}",
+        s.describe()
+    );
     exercise(
         Box::new(s),
         PathStyle::Unix,
         &["home", "lab", "upload"],
-        "nfs",
+        tag,
     );
 }
 

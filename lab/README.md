@@ -20,7 +20,8 @@ Dockerfile.
 | SSH-2 | OpenSSH 9.2 with the old algorithms added back | 10022 |
 | SSH-2 | Dropbear 2022.83 | 10222 |
 | **SSH-1** | OpenSSH 7.3p1 built with SSH-1 against OpenSSL 1.0.2u, `Protocol 1` only | 10200 |
-| NFS v3 | unfs3 0.11 (portmapper on 10111; NFS 12049, mountd 12048) | 10111 |
+| NFS v3 | unfs3 0.11 (portmapper on 10111; NFS 12049, mountd v3 12048) | 10111 |
+| NFS v2 | nfs-user-server 2.2beta47, the old Linux user-space server, built against libtirpc (NFS 12149, mountd v1 12148) | 10111 |
 | AFP over TCP | Netatalk 4.6 (AFP 2.x and 3.x; guest and cleartext logins) | 10548 |
 | HTTP | Apache 2.4, folder index pages | 10080 |
 | Gopher | Gophernicus 3.1 | 10070 |
@@ -47,7 +48,7 @@ lab/lab.sh down
 Then, from the repository root:
 
 ```sh
-cargo test --test lab_unix90s -- --ignored                 # protocol round trips, 17 tests
+cargo test --test lab_unix90s -- --ignored                 # protocol round trips, 18 tests
 python regression-tests/run_flows.py --lab lab.toml        # the same through the Win32 GUI
 ```
 
@@ -62,7 +63,10 @@ does the same through the window. `LEGCON_LAB_HOST` points the tests at another 
   ports (and WSL's forwarding to Windows) rewrite the source port, so those tests run only when
   the client reaches the container directly (`LEGCON_LAB_RSH=1`), as in a pipeline job that runs
   next to it.
-- **NFS** is v3 only (unfs3); v2 needs a kernel server, which a container cannot run portably.
+- **NFS**: both servers register with the one portmapper, so unfs3 is built without MOUNT v1
+  (legcon's NFSv2 client mounts with v1). A client that asks for v3 gets unfs3, v2 gets
+  nfs-user-server; both export the same folders. From Windows through WSL only TCP gets through
+  (WSL forwards TCP to `localhost`, not UDP), so there NFS is tested over TCP; on Linux both work.
 - **Windows FTP listings** (IIS, NT 3.5's FTP server) have no FOSS equivalent; they are covered by
   recorded listings in `lc-ftp`'s tests and by real NT machines.
 
@@ -75,3 +79,5 @@ does the same through the window. `LEGCON_LAB_HOST` points the tests at another 
 - rexec and rsh: command output was lost behind NAT-like relays because legcon half-closed the
   connection after sending the command.
 - Gopher: names included Gophernicus's date and size columns.
+- SSH: closing a Dropbear terminal could hang for good (Dropbear does not always answer the
+  channel close); legcon now waits two seconds, then logs off.

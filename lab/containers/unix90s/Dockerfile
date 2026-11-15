@@ -20,7 +20,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential ca-certificates curl flex bison pkg-config libtirpc-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl -fsSL https://github.com/unfs3/unfs3/releases/download/unfs3-0.11.0/unfs3-0.11.0.tar.gz | tar xz
-RUN cd unfs3-0.11.0 && ./configure --prefix=/opt/unfs3 && make && make install
+# MOUNT v1 belongs to the NFSv2 server below; unfs3 keeps MOUNT v3 only.
+RUN cd unfs3-0.11.0 && sed -i '/MOUNTVERS1/d' daemon.c \
+ && ./configure --prefix=/opt/unfs3 && make && make install
+
+# --- NFS v2 in user space: the old Linux nfs-user-server (Universal NFS Server 2.2beta47) ---
+FROM debian:bookworm-slim AS nfs2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl patch libtirpc-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl -fsSL http://archive.debian.org/debian/pool/main/n/nfs-user-server/nfs-user-server_2.2beta47.orig.tar.gz | tar xz \
+ && curl -fsSL http://archive.debian.org/debian/pool/main/n/nfs-user-server/nfs-user-server_2.2beta47-25.diff.gz \
+        | gunzip | patch -d nfs-server-2.2beta47 -p1 -s
+COPY nfs2/tirpc.h /src/tirpc.h
+# Built against libtirpc (glibc dropped Sun RPC), whose svctcp_create does not listen() on a bound
+# socket; the configure questions are answered on the command line.
+RUN cd nfs-server-2.2beta47 && sed -i '/^#include <rpc\/rpc.h>$/r /src/tirpc.h' system.h \
+ && sed -i 's|^\([[:space:]]*\)transp = svctcp_create(sock, 0, 0);|\1if (sock != RPC_ANYSOCK) listen(sock, 64);\n&|' rpcmisc.c \
+ && grep -q 'listen(sock, 64)' rpcmisc.c \
+ && CFLAGS="-DHAVE_XDRPROC_T -DTIME_WITH_SYS_TIME -O2 -w -fcommon -std=gnu89 -I/usr/include/tirpc" LIBS="-ltirpc" \
+        ./BUILD --batch --devtab=no --multi=no --ugidd=no --nis=no --hosts-access=no \
+        --log-mounts=no --exports-uid=0 --exports-gid=0 >/dev/null \
+ && make LDFLAGS= && mkdir -p /opt/nfs2/sbin && cp rpc.nfsd rpc.mountd /opt/nfs2/sbin/
 
 # --- AFP over TCP: Netatalk (keeps the classic-Mac AFP 2.x support of the 2.x line) ---
 FROM debian:bookworm-slim AS netatalk
@@ -39,7 +60,8 @@ RUN cd netatalk-4.6.0 && CFLAGS="-include bsd/string.h" LDFLAGS="-lbsd" \
 
 # --- ProFTPD from source (Debian's package conflicts with vsftpd's) ---
 FROM debian:bookworm-slim AS proftpd
-RUN apt-get update && apt-get install -y --no-install-recommends         build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl -fsSL https://github.com/proftpd/proftpd/archive/refs/tags/v1.3.8c.tar.gz | tar xz
 RUN cd proftpd-1.3.8c && ./configure --prefix=/opt/proftpd --disable-ipv6 && make -j"$(nproc)" && make install
@@ -55,11 +77,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ssh1 /opt/ssh1 /opt/ssh1
 COPY --from=unfs3 /opt/unfs3 /opt/unfs3
+COPY --from=nfs2 /opt/nfs2 /opt/nfs2
 COPY --from=proftpd /opt/proftpd /opt/proftpd
 COPY --from=netatalk /opt/netatalk /opt/netatalk
 COPY rootfs/ /
 RUN sh /lab/setup.sh
 # FTP 21 / 2121 (+ passive 30000-30009), Telnet 23, rexec 512, rlogin 513, rsh 514, SMB 139 / 445,
-# SSH 22, Dropbear 2222, SSH-1 2200, portmapper 111, NFS 12049, mountd 12048, AFP 548, HTTP 80, Gopher 70.
-EXPOSE 21 2121 23 512 513 514 139 445 22 2222 2200 111 12049 12048 548 80 70
+# SSH 22, Dropbear 2222, SSH-1 2200, portmapper 111, NFSv3 12049 / mountd 12048,
+# NFSv2 12149 / mountd v1 12148, AFP 548, HTTP 80, Gopher 70.
+EXPOSE 21 2121 23 512 513 514 139 445 22 2222 2200 111 12049 12048 12149 12148 548 80 70
 CMD ["/lab/start.sh"]

@@ -20,6 +20,10 @@ fi
 log "portmapper and NFS (unfs3)"
 rpcbind -w
 /opt/unfs3/sbin/unfsd -e /etc/exports.unfs3 -n 12049 -m 12048
+log "NFS v2 (nfs-user-server): nfsd 12149, mountd v1 12148"
+# -r: overlayfs has device major 0, which the server would take for an NFS mount and refuse.
+/opt/nfs2/sbin/rpc.mountd -r -f /etc/exports.nfs2 -P 12148
+/opt/nfs2/sbin/rpc.nfsd -r -f /etc/exports.nfs2 -P 12149
 
 log "FTP: vsftpd on 21, ProFTPD on 2121"
 mkdir -p /var/run/vsftpd/empty

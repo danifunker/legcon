@@ -4,7 +4,7 @@ set -eu
 
 # Files copied from a Windows checkout arrive world-writable; servers refuse those.
 chmod 755 /lab/*.sh
-chmod 644 /etc/vsftpd.lab.conf /etc/proftpd/lab.conf /etc/inetd.lab.conf.in /etc/samba/smb.conf     /etc/ssh/sshd_config.lab /opt/ssh1/etc/sshd_config.lab /etc/exports.unfs3 /etc/afp.lab.conf     /etc/apache2/sites-available/lab.conf
+chmod 644 /etc/vsftpd.lab.conf /etc/proftpd/lab.conf /etc/inetd.lab.conf.in /etc/samba/smb.conf     /etc/ssh/sshd_config.lab /opt/ssh1/etc/sshd_config.lab /etc/exports.unfs3 /etc/exports.nfs2 /etc/afp.lab.conf     /etc/apache2/sites-available/lab.conf
 
 # The test login (lab-only, documented in lab/README.md).
 useradd -m -u 1000 -s /bin/bash lab

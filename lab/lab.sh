@@ -14,6 +14,7 @@ PORTS=(
   10139:139 10445:445
   10022:22 10222:2222 10200:2200
   10111:111 10111:111/udp 12049:12049 12049:12049/udp 12048:12048 12048:12048/udp
+  12149:12149 12149:12149/udp 12148:12148 12148:12148/udp
   10548:548 10080:80 10070:70
 )
 
@@ -24,6 +25,8 @@ SERVICES=(
   "dropbear ssh 10222" "ssh1 ssh 10200" "nfs nfs 10111" "netatalk afp 10548"
   "apache http 10080" "gophernicus gopher 10070"
 )
+# Checked by `status` only: the NFSv2 server shares the portmapper with unfs3.
+EXTRA=("nfs2 nfs 12149")
 
 up() {
   local args=()
@@ -40,7 +43,7 @@ up() {
 
 status() {
   local bad=0
-  for s in "${SERVICES[@]}"; do
+  for s in "${SERVICES[@]}" "${EXTRA[@]}"; do
     set -- $s
     if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$3" 2>/dev/null; then
       printf '%-12s %-7s %s  up\n' "$1" "$2" "$3"
