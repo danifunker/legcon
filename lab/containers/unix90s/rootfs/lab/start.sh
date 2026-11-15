@@ -14,11 +14,12 @@ for t in rsa dsa; do
   [ -f /opt/vssh/etc/ssh_host_${t}_key ] || /opt/vssh/bin/ssh-keygen -q -t $t -N '' -f /opt/vssh/etc/ssh_host_${t}_key
 done
 
-# rexecd and rshd refuse clients whose address has no name; name every address on our /24.
+# rexecd and rshd refuse clients whose address has no name; name every address on our /24, and
+# on Docker Desktop's VM network, where a Mac's or Windows' connections come from (LAB_CLIENT_NETS).
 net=$(ip -4 -o addr show eth0 | awk '{print $4}' | cut -d. -f1-3)
-if [ -n "$net" ]; then
-  for i in $(seq 1 254); do echo "$net.$i lab-client-$i"; done >> /etc/hosts
-fi
+for n in $net ${LAB_CLIENT_NETS:-192.168.65}; do
+  for i in $(seq 1 254); do echo "$n.$i lab-client-${n//./-}-$i"; done >> /etc/hosts
+done
 
 log "portmapper and NFS (unfs3)"
 rpcbind -w

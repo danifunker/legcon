@@ -18,6 +18,9 @@ RUN cd openssh-7.3p1 && ./configure --prefix=/opt/ssh1 --sysconfdir=/opt/ssh1/et
 # Modern glibc has arc4random but not arc4random_stir, and modern Perl rejects defined(@x).
 FROM ssh1 AS vssh
 RUN curl -fsSLO https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-3.4p1.tar.gz  && tar xzf openssh-3.4p1.tar.gz
+# Its 2002 config.guess knows no aarch64: today's from autotools-dev, on every architecture.
+RUN apt-get update && apt-get install -y --no-install-recommends autotools-dev && rm -rf /var/lib/apt/lists/* \
+ && cp /usr/share/misc/config.guess /usr/share/misc/config.sub openssh-3.4p1/
 RUN cd openssh-3.4p1 && perl -pi -e 's/defined\s*\(([\@%][\w:]+)\)/$1/g' fixpaths  && ac_cv_func_arc4random=no CFLAGS="-O2 -fcommon" ./configure --prefix=/opt/vssh         --sysconfdir=/opt/vssh/etc --with-ssl-dir=/opt/ssl1 --without-pam         --with-privsep-path=/var/empty  && make -j"$(nproc)" && make install-nokeys
 
 # --- NFS v3 in user space: unfs3 ---
