@@ -6,10 +6,6 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 IMAGE="${LAB_IMAGE:-legcon-lab/unix90s:dev}"
-# The image is amd64 only; Apple silicon runs it emulated (Docker Desktop: Rosetta).
-if [ "$(uname -s)-$(uname -m)" = Darwin-arm64 ]; then
-  export DOCKER_DEFAULT_PLATFORM="${DOCKER_DEFAULT_PLATFORM:-linux/amd64}"
-fi
 NAME="${LAB_NAME:-legcon-lab-unix90s}"
 
 # host port -> container port. High host ports keep clear of the host's own SMB, SSH and FTP.

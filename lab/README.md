@@ -91,6 +91,9 @@ does the same through the window. `LEGCON_LAB_HOST` points the tests at another 
 
 ## The published image (D43)
 
+The image is published for amd64 and arm64 under one tag; Docker pulls the one for its machine, so
+Apple-silicon Macs and ARM Linux run the lab natively.
+
 The image is built once and kept: the pipeline pulls the exact tag in `lab/IMAGE` and never builds
 or publishes it. Changing the container is its own step: edit `containers/unix90s`, run the
 **lab-image** workflow by hand (Actions > lab-image > Run workflow), which builds the image, runs the
