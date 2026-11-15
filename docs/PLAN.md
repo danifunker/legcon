@@ -358,6 +358,7 @@ converts to the chosen local form, and converts back on upload. The fork code is
 | D37 | **SSH-1 is our own code** (`lc_ssh::ssh1`, 2026-11-14): protocol 1.5 for SSH 1.2.x, F-Secure 1.x and OpenSSH with `Protocol 1` only; libssh2 has no SSH-1. Connecting reads the server's version line first: `SSH-1.x` (not `1.99`) gets SSH-1, everything else SSH-2. 3DES in SSH-1's three-CBC mode (the cipher every SSH-1 server has), password and RSA key login (SSH-1 identity files), host keys checked like SSH-2's (`rsa1` keys). SSH-1 runs one command per connection, so files go over SCP and `/bin/sh -c` commands with a connection each, and the terminal is its own connection. "Set up key login" on an SSH-1 machine makes an SSH-1 RSA 1024 key and adds it to `~/.ssh/authorized_keys`. Not supported: Blowfish, DES, IDEA, compression, TIS / Kerberos logins, rhosts-RSA. |
 | D38 | **The lab is containers of FOSS servers** (2026-11-14): `lab/containers/unix90s`, one Debian 12 image with every protocol legcon speaks (vsftpd, ProFTPD, inetutils telnetd, netkit rsh / rlogin / rexec, Samba with SMB1, OpenSSH, Dropbear, OpenSSH 7.3 as an SSH-1-only server, unfs3 for NFSv3 and the old nfs-user-server for NFSv2, Netatalk 4, Apache, Gophernicus), driven by `lab/lab.sh` with plain `docker` (no compose), built and tested by `.github/workflows/lab.yml` and published to the GitHub Container Registry from main. `tests/lab_unix90s.rs` (`--ignored`) and `regression-tests/flows/lab.toml` (`run_flows.py --lab`) test legcon against it, the second through the GUI. Containers replace the earlier disk-image idea: they are thrown away after each run and pulled from a registry. Windows FTP listings stay with recorded fixtures and real NT machines (no FOSS server writes them). |
 | D39 | **No folder trees; a Places menu instead** (2026-11-14). The trees only ever showed the trail to the current folder, which the path line already shows, and took a third of each pane. Each pane's header has a **Places** button (Ctrl+Shift+1 / 2) opening a menu. Local: Home, the OS's own user folders (user folder, Desktop, Documents, Downloads), the drives, **Pinned** folders (app-wide, `settings.json`) and **Recent** ones (copied to or from, or gone to; 8 kept), Pin / Unpin this folder, and Go to folder.... Remote: the login folder, the top level, the machine's own Pinned and Recent folders (`machines.json`), Pin / Unpin and Go to folder... (absolute or relative, as the machine spells paths). The home folder stops being a fence (D16). The menu is a controller `Effect::Menu`, so every shell draws it natively. Explorer's Quick Access pins: later. |
+| D40 | **rsh trust is set up and checked from legcon** (2026-11-15, §4.2). When rsh refuses the file connection, legcon says from which address and port it came and offers **Set up rsh trust** (log in once over rexec, FTP or Telnet with the password, add the address the server sees and this computer's name to `~/.rhosts`, `chmod 600`, try rsh again), **Check** (ask the server over rexec or Telnet, via `netstat`, which address and port it sees, changing nothing), and **Use FTP instead** (another file service the machine has, moved ahead of rsh). A source port changed on the way (NAT, container port publishing, QEMU user networking) is named as the cause, since no `.rhosts` can fix it. Also in the tab menu and as `lc rsh-trust MACHINE [--check]`. rsh commands keep stderr apart (a temporary file on the server, sent after the output) with the exit status, still with nothing connecting back (D26); rsh and SSH without SFTP resume both ways with `dd` from an offset and `cat >>`. |
 | D19 | **SSH is libssh2** through the `ssh2` crate, because the target is SSH servers from 2005 and earlier (§4.1). Revised in phase 4 (2026-11-13): on Windows libssh2 uses its WinCNG backend (no OpenSSL to build); its pre-2005 algorithms (`diffie-hellman-group1-sha1`, `group14-sha1`, `gex-sha1`, `ssh-dss`, `ssh-rsa`, `3des-cbc`, `arcfour`, `hmac-md5`, `hmac-sha1`) are compile-time opt-ins, switched on in `.cargo/config.toml`; Blowfish and CAST are not available with WinCNG. libssh2 prefers modern algorithms, so the old ones are used only when the server offers nothing newer. **SFTP v3 is our own code** over an ssh2 channel: ssh2's SFTP turns names into `Path`s, which must be UTF-8 on Windows. Host keys are kept per machine (`host_key`), learned on first connect; a changed key asks Accept / Accept once / Cancel before any password is sent. |
 | D15 | **Licence: MIT for the protocol crates and `lc-core`, AGPL-3.0 for the app** (2026-11-13). |
 
@@ -437,8 +438,21 @@ them:
 - **Telnet** instead of rlogin for an interactive shell.
 - **FTP** instead of rcp for files.
 - rsh's **second connection** (the server connects back to the client for stderr, also from a
-  low port, and it fails behind NAT) is skipped: legcon sends port `0`, which merges stderr into
-  the output.
+  low port, and it fails behind NAT) is skipped: legcon sends port `0`. A command's stderr goes to
+  a temporary file on the server instead and comes back after its output, with the exit status,
+  so the two stay apart without the server connecting back (D40).
+
+**When rsh is refused** (D40), legcon shows the address and port it connected from and offers:
+- **Set up rsh trust**: one login over rexec, FTP or Telnet with the password; the lines `.rhosts`
+  needs (the address the server sees, and this computer's name) are added if missing, the file is
+  made private (`chmod 600`), and rsh is tried again. Every command runs under `/bin/sh` on one
+  line, so a csh login shell does not matter.
+- **Check**: over rexec or Telnet, the server's `netstat -an` says which address and port it sees.
+  A different port means something in between (a NAT router, a container's published port, an
+  emulator's user-mode networking) rewrites it, and rsh cannot work whatever `.rhosts` says.
+- **Use FTP instead** (or whichever other file service the machine has).
+
+The same actions are in the tab menu, and `lc rsh-trust MACHINE [--check]` does them from the CLI.
 
 No elevated helper process is needed on any platform.
 
@@ -519,8 +533,8 @@ it, and walks them through it rather than leaving it to manuals.
   A machine setting, **Don't check host keys**, skips the check entirely for lab machines; the
   machine header shows it as part of the security badge. Nothing here is global.
 - **Plaintext protocols** (FTP, Telnet, rsh, SMB with LM auth): when the machine also offers SSH,
-  legcon says so and offers to switch; for rsh, an optional walkthrough sets up `.rhosts` for this
-  computer only, with what that trusts spelled out.
+  legcon says so and offers to switch; for rsh, **Set up rsh trust** adds this computer alone to
+  `~/.rhosts` (D40), never `+ +`.
 
 ## 6. Reuse from rusty-backup
 
@@ -631,6 +645,8 @@ sidecar records it); New folder / Rename on the remote side follow that machine'
 **Phase 5 progress (2026-11-13):** `lc-nfs` (D32): v2 and v3 browse (READDIRPLUS, or READDIR plus LOOKUP), read, write (v3 FILE_SYNC), overwrite (truncate), create, mkdir, rename, delete, and UMNT on disconnect; errors say what to change (read-only export, uid without access, a server that wants a reserved port). Tested against a pretend server (UDP; v3, and v2-only) and a TCP framing test, from the CLI (`lc machines add NAME ADDR -s nfs --uid N --gid N`) and the Win32 shell. Not yet: following symlinks (shown as links), NFS over TCP against a real server, a real SunOS / IRIX / Linux server, and a uid / gid field in the GUI (the machines file and the CLI only).
 
 **rsh / rlogin / rcp (2026-11-13, D33):** `lc-rcmd::rsh`. Both connect from a reserved source port (1023 downwards; a clear message on Linux without the capability), with the machine's `local_user` (default: its user) as the name `.rhosts` trusts. rsh is a file service (rcp for contents, `ls -laL` / `mkdir` / `mv` / `rm` through `/bin/sh -c`, whatever the login shell, with the exit status echoed since rsh reports none) and a line-mode terminal; rlogin is a real terminal with the window size sent. The rcp protocol moved to `lc-core::rcp`, shared with SCP. Tested against pretend rshd / rlogind servers (Rust tests) and a pretend rshd running real commands. Not yet: a real 1990s rshd.
+
+**rsh refusals and trust (2026-11-15, D40):** the refusal question (Set up rsh trust, Check, Use FTP instead), the trust setup over rexec, FTP and Telnet (`model::rsh_trust`), stderr and the exit status kept apart in rsh commands, and resume over rsh and SSH without SFTP (`lc-core::shellfile`). The lab now has `rcp`, `netstat` and a second login (`lab2`, csh, no `.rhosts`), and the rsh tests run inside the lab container's network, where the reserved port arrives intact (locally and in the lab workflow): rsh file transfers, resume, names with quotes, `$`, backquotes, leading spaces and Latin-1, and trust set up over each of the three services all work against netkit rshd. Not yet: a real 1990s rshd (IRIX 5.3 next); transfers in the app do not resume yet on any protocol, so resume is only reachable through the protocol layer.
 
 **HTTP/1.0 and Gopher (2026-11-13, D33):** `lc-http`, own code, read-only file services. HTTP: a folder is the links on its index page that point directly inside it (Apache / NCSA `Index of` pages give dates and sizes too), files are GETs with `Range` for resuming, one request per connection, Basic auth when the machine has a user, redirects followed, HTTP/0.9 answers accepted. Gopher: menus are folders, paths are chains of display names, items on other hosts and info / search / Telnet lines are left out, text files lose their closing `.` line. Tested against pretend servers, a local index page and the live gopher.floodgap.com. Not yet: WebDAV and PUT, following links to other hosts.
 

@@ -244,6 +244,11 @@ impl AppController {
                 out.push(Effect::Message(e));
             }
         }
+        if let Some(services) = tab.take_services_change() {
+            if let Err(e) = self.machines.set_services(&id, services) {
+                out.push(Effect::Message(e));
+            }
+        }
         if let Some(k) = tab.take_host_key_change() {
             if let Err(e) = self.machines.set_host_key(&id, k) {
                 out.push(Effect::Message(e));

@@ -609,7 +609,7 @@ impl FileSession for SshSession {
         FileCaps {
             random_read: sftp,
             random_write: sftp,
-            resume_upload: sftp,
+            resume_upload: true,
             rename: true,
             delete: true,
             mkdir: true,
@@ -670,7 +670,10 @@ impl FileSession for SshSession {
 
     fn open_read(&mut self, path: &RemotePath, at: u64) -> Result<Box<dyn Read + Send + '_>> {
         if !self.use_sftp()? {
-            return Ok(Box::new(self.scp_read(path, at)?));
+            if at > 0 {
+                return Ok(Box::new(self.sh_tail(path, at)?));
+            }
+            return Ok(Box::new(self.scp_read(path)?));
         }
         let raw = self.path(path);
         let sftp = self.sftp()?;
@@ -709,7 +712,7 @@ impl FileSession for SshSession {
             return self.open_write(path, mode);
         }
         if matches!(mode, WriteMode::Resume(n) if n > 0) {
-            return Err(Error::Unsupported("SCP cannot continue an upload".into()));
+            return Ok(Box::new(self.sh_append(path, size)?));
         }
         Ok(Box::new(self.scp_write(path, size)?))
     }

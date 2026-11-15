@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lc_core::rcp::{self, shell_error};
+use lc_core::shellfile::{self, Append, Tail};
 use lc_core::{Entry, Error, RemotePath, Result};
 use ssh2::Channel;
 
@@ -47,6 +48,9 @@ impl Write for ChannelLink {
 }
 
 impl rcp::Link for ChannelLink {
+    fn close_write(&mut self) -> std::io::Result<()> {
+        self.0.send_eof().map_err(std::io::Error::other)
+    }
     fn end(&mut self) {
         let _ = self.0.send_eof();
         let _ = self.0.wait_close();
@@ -155,12 +159,28 @@ impl SshSession {
         self.sh(&path.to_string(), &cmd).map(drop)
     }
 
-    /// Read a file with `scp -f`; `at` bytes are skipped, since SCP cannot seek.
-    pub(crate) fn scp_read(&mut self, path: &RemotePath, at: u64) -> Result<ScpReader> {
+    /// Read a file with `scp -f`.
+    pub(crate) fn scp_read(&mut self, path: &RemotePath) -> Result<ScpReader> {
         let mut cmd = b"scp -f ".to_vec();
         cmd.extend_from_slice(&self.qpath(path));
         let ch = self.exec_channel(&cmd)?;
-        rcp::receive(ChannelLink(ch), &path.to_string(), at)
+        rcp::receive(ChannelLink(ch), &path.to_string(), 0)
+    }
+
+    /// Read a file from byte `at` on with `dd`, since SCP would send the skipped bytes too.
+    pub(crate) fn sh_tail(&mut self, path: &RemotePath, at: u64) -> Result<Tail<ChannelLink>> {
+        let ch = self.exec_channel(&shellfile::tail_command(&self.path(path), at))?;
+        shellfile::tail(ChannelLink(ch), &path.to_string(), at)
+    }
+
+    /// Append `size` bytes to a file with `cat >>`, since SCP cannot.
+    pub(crate) fn sh_append(
+        &mut self,
+        path: &RemotePath,
+        size: u64,
+    ) -> Result<Append<ChannelLink>> {
+        let ch = self.exec_channel(&shellfile::append_command(&self.path(path)))?;
+        shellfile::append(ChannelLink(ch), size, &path.to_string())
     }
 
     /// Write a file of `size` bytes with `scp -t`.

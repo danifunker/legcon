@@ -110,6 +110,32 @@ pub fn set_up_key_login(
     Ok(s)
 }
 
+/// Check rsh on `machine`, and with `install` add this computer to its `~/.rhosts`; the report.
+pub fn rsh_trust(
+    machines: &MachinesController,
+    machine: &str,
+    password: Option<String>,
+    install: bool,
+) -> Result<String, String> {
+    let m = machines
+        .get(machine)
+        .ok_or_else(|| format!("No machine called {machine}."))?
+        .clone();
+    let password = match password {
+        Some(p) => Some(p),
+        None => m.password.resolve(&m.id)?,
+    };
+    let job = crate::model::rsh_trust::rsh_trust(&m, password, install, Arc::new(NoNotify));
+    let r = finish(job);
+    let failed = !matches!(&r, Ok(t) if t.rsh.is_ok());
+    let text = super::connection::rsh_report(&m.name, r);
+    if failed {
+        Err(text)
+    } else {
+        Ok(text)
+    }
+}
+
 /// What `address` offers, found without logging in.
 pub fn probe(address: &str) -> Result<super::machines::ProbeSummary, String> {
     let r = crate::model::probe::probe(address, None).map_err(|e| format!("{e:#}"))?;

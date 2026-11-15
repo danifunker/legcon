@@ -104,6 +104,15 @@ impl PtyWriter for Writer {
 
 /// Connect to `host:port` and start negotiating; the session's terminal is ready to use.
 pub fn connect(host: &str, port: u16, opts: &Options) -> Result<Pty> {
+    connect_with_local(host, port, opts).map(|(pty, _)| pty)
+}
+
+/// [`connect`], also giving our end of the connection (address and port).
+pub fn connect_with_local(
+    host: &str,
+    port: u16,
+    opts: &Options,
+) -> Result<(Pty, std::net::SocketAddr)> {
     let addr = (host, port)
         .to_socket_addrs()?
         .next()
@@ -117,6 +126,7 @@ pub fn connect(host: &str, port: u16, opts: &Options) -> Result<Pty> {
     })?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(opts.poll))?;
+    let local = stream.local_addr()?;
     let mut nvt = Nvt::new(&opts.term, opts.cols, opts.rows);
     let hello = nvt.greeting();
     let nvt = Arc::new(Mutex::new(nvt));
@@ -131,8 +141,11 @@ pub fn connect(host: &str, port: u16, opts: &Options) -> Result<Pty> {
         nvt,
         pending: Vec::new(),
     };
-    Ok(Pty {
-        reader: Box::new(reader),
-        writer: Box::new(writer),
-    })
+    Ok((
+        Pty {
+            reader: Box::new(reader),
+            writer: Box::new(writer),
+        },
+        local,
+    ))
 }

@@ -17,6 +17,7 @@ pub mod memory;
 pub mod path;
 pub mod rcp;
 pub mod session;
+pub mod shellfile;
 
 pub use charset::Charset;
 pub use entry::{Entry, EntryKind, TimePrecision, Timestamp};

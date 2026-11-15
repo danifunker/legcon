@@ -14,6 +14,10 @@ pub trait Link: Read + Write + Send {
     fn end(&mut self) {}
     /// The copy was cut short.
     fn abort(&mut self) {}
+    /// No more input for the command (end of file), while its output can still be read.
+    fn close_write(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// What a failed command or copy said, as the error the user sees.

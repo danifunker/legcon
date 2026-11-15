@@ -23,6 +23,40 @@ use crate::Options;
 pub const RSH_PORT: u16 = 514;
 pub const RLOGIN_PORT: u16 = 513;
 
+/// What this computer says when it will not hand out a port below 1024.
+pub const NO_LOW_PORT: &str = "this computer will not let legcon use a source port below 1024, \
+     which rsh and rlogin need (on Linux: setcap cap_net_bind_service=+ep on legcon)";
+
+/// Why rsh would not let us in, as the user can act on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Untrusted {
+    /// This computer would not give legcon a source port below 1024.
+    NoLowPort,
+    /// The server refused; `local` is the address and port we connected from.
+    Refused { local: SocketAddr, said: String },
+}
+
+impl std::fmt::Display for Untrusted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Untrusted::NoLowPort => f.write_str(NO_LOW_PORT),
+            Untrusted::Refused { local, said } => {
+                let said = if said.is_empty() {
+                    "the server closed the connection".to_string()
+                } else {
+                    said.clone()
+                };
+                write!(
+                    f,
+                    "{said}. rsh trusts .rhosts / hosts.equiv on the server; this computer came from {} port {}",
+                    local.ip(),
+                    local.port()
+                )
+            }
+        }
+    }
+}
+
 /// Connect from a reserved port, trying 1023 downwards as `rresvport()` does.
 pub fn dial_reserved(host: &str, port: u16, opts: &Options) -> Result<TcpStream> {
     let addr: SocketAddr = (host, port)
@@ -41,11 +75,7 @@ pub fn dial_reserved(host: &str, port: u16, opts: &Options) -> Result<TcpStream>
         match s.bind(&SockAddr::from(any)) {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-                return Err(Error::Denied(
-                    "this computer will not let legcon use a source port below 1024, which rsh \
-                     and rlogin need (on Linux: setcap cap_net_bind_service=+ep on legcon)"
-                        .into(),
-                ))
+                return Err(Error::Denied(NO_LOW_PORT.into()))
             }
             Err(e) => {
                 last = Some(e);
@@ -72,25 +102,45 @@ pub fn dial_reserved(host: &str, port: u16, opts: &Options) -> Result<TcpStream>
     })))
 }
 
-/// Read the 0 that means "accepted", or the refusal line after a 1.
-fn accepted(s: &mut TcpStream, what: &str) -> Result<()> {
+/// Read the 0 that means "accepted"; a refusal line after a 1, or a close, is `Untrusted`.
+fn accepted(s: &mut TcpStream) -> Result<std::result::Result<(), Untrusted>> {
+    let local = s.local_addr()?;
     let mut b = [0u8; 1];
-    if s.read(&mut b)? == 0 {
-        return Err(Error::Protocol(format!(
-            "{what}: the server closed the connection (is this computer in its .rhosts?)"
-        )));
-    }
-    if b[0] == 0 {
-        return Ok(());
+    let refused = |said: String| Ok(Err(Untrusted::Refused { local, said }));
+    match s.read(&mut b) {
+        Ok(0) => return refused(String::new()),
+        Err(e) if e.kind() == ErrorKind::ConnectionReset => return refused(String::new()),
+        Err(e) => return Err(e.into()),
+        Ok(_) if b[0] == 0 => return Ok(Ok(())),
+        Ok(_) => {}
     }
     let mut line = Vec::new();
     while s.read(&mut b).unwrap_or(0) == 1 && b[0] != b'\n' {
         line.push(b[0]);
     }
-    let text = String::from_utf8_lossy(&line).trim().to_string();
-    Err(Error::Auth(format!(
-        "{text} (rsh trusts .rhosts / hosts.equiv on the server, and this computer's name)"
-    )))
+    refused(String::from_utf8_lossy(&line).trim().to_string())
+}
+
+/// Start `command` under rsh, telling a trust problem apart from any other failure.
+pub fn try_start(
+    host: &str,
+    port: u16,
+    local_user: &[u8],
+    remote_user: &[u8],
+    command: &[u8],
+    opts: &Options,
+) -> Result<std::result::Result<TcpStream, Untrusted>> {
+    let mut s = match dial_reserved(host, port, opts) {
+        Err(Error::Denied(m)) if m == NO_LOW_PORT => return Ok(Err(Untrusted::NoLowPort)),
+        r => r?,
+    };
+    let mut req = b"0\0".to_vec();
+    for part in [local_user, remote_user, command] {
+        req.extend_from_slice(part);
+        req.push(0);
+    }
+    s.write_all(&req)?;
+    Ok(accepted(&mut s)?.map(|()| s))
 }
 
 /// Start `command` under rsh; the stream gives its output, errors included.
@@ -102,33 +152,17 @@ pub fn start(
     command: &[u8],
     opts: &Options,
 ) -> Result<TcpStream> {
-    let mut s = dial_reserved(host, port, opts)?;
-    let mut req = b"0\0".to_vec();
-    for part in [local_user, remote_user, command] {
-        req.extend_from_slice(part);
-        req.push(0);
-    }
-    s.write_all(&req)?;
-    accepted(&mut s, "rsh")?;
-    Ok(s)
+    try_start(host, port, local_user, remote_user, command, opts)?
+        .map_err(|u| Error::Auth(format!("rsh: {u}")))
 }
 
-/// Single-quote for the Bourne shell.
-pub fn sq(b: &[u8]) -> Vec<u8> {
-    let mut v = b"'".to_vec();
-    for &c in b {
-        if c == b'\'' {
-            v.extend_from_slice(b"'\\''");
-        } else {
-            v.push(c);
-        }
-    }
-    v.push(b'\'');
-    v
-}
+pub use lc_core::shellfile::sq;
+use lc_core::shellfile::{self, under_sh};
 
 /// The end-of-command marker file commands print with their exit status.
 const MARK: &[u8] = b"@legcon-status:";
+/// Where a command's errors start, in [`Rsh::exec_bytes`]'s output.
+const ERRORS: &[u8] = b"@legcon-errors:\n";
 
 /// An rsh connection as the link an rcp copy runs over.
 pub struct RshLink(TcpStream);
@@ -149,6 +183,9 @@ impl Write for RshLink {
 }
 
 impl rcp::Link for RshLink {
+    fn close_write(&mut self) -> std::io::Result<()> {
+        self.0.shutdown(Shutdown::Write)
+    }
     fn end(&mut self) {
         let _ = self.0.shutdown(Shutdown::Write);
         let _ = self.0.read_to_end(&mut Vec::new());
@@ -179,6 +216,19 @@ impl Rsh {
         charset: Charset,
         opts: &Options,
     ) -> Result<Rsh> {
+        Self::check(host, port, local_user, remote_user, charset, opts)?
+            .map_err(|u| Error::Auth(format!("rsh: {u}")))
+    }
+
+    /// Like [`Rsh::connect`], with a trust problem kept apart from other failures.
+    pub fn check(
+        host: &str,
+        port: u16,
+        local_user: &str,
+        remote_user: &str,
+        charset: Charset,
+        opts: &Options,
+    ) -> Result<std::result::Result<Rsh, Untrusted>> {
         let enc = |t: &str| charset.encode(t).unwrap_or_else(|| t.as_bytes().to_vec());
         let r = Rsh {
             host: host.to_string(),
@@ -189,8 +239,19 @@ impl Rsh {
             opts: opts.clone(),
             closed: false,
         };
-        r.run(b"true")?;
-        Ok(r)
+        let mut s = match try_start(
+            &r.host,
+            r.port,
+            &r.local_user,
+            &r.remote_user,
+            b"true",
+            &r.opts,
+        )? {
+            Ok(s) => s,
+            Err(u) => return Ok(Err(u)),
+        };
+        let _ = s.read_to_end(&mut Vec::new());
+        Ok(Ok(r))
     }
 
     fn stream(&self, command: &[u8]) -> Result<TcpStream> {
@@ -230,9 +291,7 @@ impl Rsh {
         inner.extend_from_slice(b" 2>&1; echo \"");
         inner.extend_from_slice(MARK);
         inner.extend_from_slice(b"$?\"");
-        let mut full = b"exec /bin/sh -c ".to_vec();
-        full.extend_from_slice(&sq(&inner));
-        let out = self.run(&full)?;
+        let out = self.run(&under_sh(&inner))?;
         let at = out
             .windows(MARK.len())
             .rposition(|w| w == MARK)
@@ -246,6 +305,19 @@ impl Rsh {
         }
     }
 
+    /// Run a command with its errors kept apart: they go to a file on the server and come back
+    /// after the output, so the server never connects back to us; the exit status follows.
+    pub fn exec_bytes(&self, command: &[u8]) -> Result<ExecResult> {
+        let mut inner = b"e=/tmp/.legcon-err.$$; ( ".to_vec();
+        inner.extend_from_slice(command);
+        inner.extend_from_slice(b" ) 2>$e; s=$?; echo; echo '");
+        inner.extend_from_slice(ERRORS.trim_ascii_end());
+        inner.extend_from_slice(b"'; cat $e 2>/dev/null; rm -f $e; echo \"");
+        inner.extend_from_slice(MARK);
+        inner.extend_from_slice(b"$s\"");
+        Ok(split_exec(&self.run(&under_sh(&inner))?))
+    }
+
     fn path(&self, p: &RemotePath) -> Vec<u8> {
         let t = p.to_string();
         self.charset.encode(&t).unwrap_or_else(|| t.into_bytes())
@@ -256,6 +328,32 @@ impl Rsh {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0)
+    }
+}
+
+/// Take [`Rsh::exec_bytes`]'s output apart: output, errors, exit status.
+fn split_exec(out: &[u8]) -> ExecResult {
+    let Some(at) = out.windows(MARK.len()).rposition(|w| w == MARK) else {
+        return ExecResult {
+            output: out.to_vec(),
+            errors: Vec::new(),
+            exit_status: None,
+        };
+    };
+    let status = String::from_utf8_lossy(&out[at + MARK.len()..])
+        .trim()
+        .parse()
+        .ok();
+    let body = &out[..at];
+    let (output, errors) = match body.windows(ERRORS.len()).rposition(|w| w == ERRORS) {
+        // The echo before the marker added a newline to the output.
+        Some(e) => (&body[..e.saturating_sub(1)], &body[e + ERRORS.len()..]),
+        None => (body, &[][..]),
+    };
+    ExecResult {
+        output: output.to_vec(),
+        errors: errors.to_vec(),
+        exit_status: status,
     }
 }
 
@@ -290,11 +388,7 @@ impl ShellSession for Rsh {
             .charset
             .encode(command)
             .unwrap_or_else(|| command.as_bytes().to_vec());
-        Ok(ExecResult {
-            output: self.run(&c)?,
-            errors: Vec::new(),
-            exit_status: None,
-        })
+        self.exec_bytes(&c)
     }
 
     fn open_pty(&mut self, _term: &str, _cols: u16, _rows: u16) -> Result<Pty> {
@@ -310,7 +404,7 @@ impl FileSession for Rsh {
         FileCaps {
             random_read: false,
             random_write: false,
-            resume_upload: false,
+            resume_upload: true,
             rename: true,
             delete: true,
             mkdir: true,
@@ -353,7 +447,16 @@ impl FileSession for Rsh {
         Ok(e)
     }
 
+    /// rcp from the start; from an offset, `dd` (rcp would send the skipped bytes too).
     fn open_read(&mut self, path: &RemotePath, at: u64) -> Result<Box<dyn Read + Send + '_>> {
+        if at > 0 {
+            let s = self.stream(&shellfile::tail_command(&self.path(path), at))?;
+            return Ok(Box::new(shellfile::tail(
+                RshLink(s),
+                &path.to_string(),
+                at,
+            )?));
+        }
         let mut cmd = b"rcp -f ".to_vec();
         cmd.extend_from_slice(&sq(&self.path(path)));
         let s = self.stream(&cmd)?;
@@ -377,7 +480,13 @@ impl FileSession for Rsh {
         size: u64,
     ) -> Result<Box<dyn Write + Send + '_>> {
         if matches!(mode, WriteMode::Resume(n) if n > 0) {
-            return Err(Error::Unsupported("rcp cannot continue an upload".into()));
+            // rcp cannot append; `cat >>` can. `size` is what is left to send.
+            let s = self.stream(&shellfile::append_command(&self.path(path)))?;
+            return Ok(Box::new(shellfile::append(
+                RshLink(s),
+                size,
+                &path.to_string(),
+            )?));
         }
         let parent = path
             .parent()
@@ -438,10 +547,14 @@ impl FileSession for Rsh {
                 .encode(line)
                 .unwrap_or_else(|| line.as_bytes().to_vec()),
         );
-        let mut full = b"exec /bin/sh -c ".to_vec();
-        full.extend_from_slice(&sq(&cmd));
-        let out = self.run(&full)?;
-        Ok(self.charset.decode(&out).trim_end().to_string())
+        let r = self.exec_bytes(&cmd)?;
+        let mut text = self.charset.decode(&r.output);
+        text.push_str(&self.charset.decode(&r.errors));
+        let mut text = text.trim_end().to_string();
+        if let Some(n) = r.exit_status.filter(|&n| n != 0) {
+            text.push_str(&format!("\n[exit status {n}]"));
+        }
+        Ok(text)
     }
 }
 
@@ -526,5 +639,18 @@ mod tests {
             [0xff, 0xff, b's', b's', 0, 24, 0, 80, 0, 0, 0, 0]
         );
         assert_eq!(sq(b"it's"), b"'it'\\''s'");
+    }
+
+    #[test]
+    fn exec_output_errors_and_status_come_apart() {
+        let r = split_exec(b"out1\nout2\n\n@legcon-errors:\noops\n@legcon-status:3\n");
+        assert_eq!(r.output, b"out1\nout2\n");
+        assert_eq!(r.errors, b"oops\n");
+        assert_eq!(r.exit_status, Some(3));
+        let r = split_exec(b"no newline\n@legcon-errors:\n@legcon-status:0\n");
+        assert_eq!(
+            (r.output.as_slice(), r.exit_status),
+            (&b"no newline"[..], Some(0))
+        );
     }
 }

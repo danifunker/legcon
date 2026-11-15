@@ -1,7 +1,8 @@
 //! legcon against real FOSS servers in the lab container (lab/README.md), not pretend ones.
 //! Start it first (`lab/lab.sh up`), then: cargo test --test lab_unix90s -- --ignored
 //! LEGCON_LAB_HOST names the container's host (127.0.0.1); the ports are lab.sh's.
-//! LEGCON_LAB_RSH=1 also runs rsh / rlogin, which need the client's reserved port to arrive intact.
+//! LEGCON_LAB_RSH=1 also runs rsh / rlogin, which need the client's reserved port to arrive intact;
+//! LEGCON_LAB_NATIVE=1 uses the container's own ports, for running inside its network.
 
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
@@ -13,6 +14,26 @@ const PASSWORD: &str = "lab";
 
 fn host() -> String {
     std::env::var("LEGCON_LAB_HOST").unwrap_or_else(|_| "127.0.0.1".into())
+}
+
+/// A lab port as `lab.sh` publishes it; with LEGCON_LAB_NATIVE=1 (tests run inside the lab
+/// container's network, where rsh's reserved port arrives intact) the container's own port.
+fn p(published: u16) -> u16 {
+    const NATIVE: [(u16, u16); 6] = [
+        (10021, 21),
+        (10022, 22),
+        (10023, 23),
+        (10512, 512),
+        (10513, 513),
+        (10514, 514),
+    ];
+    if std::env::var("LEGCON_LAB_NATIVE").is_err() {
+        return published;
+    }
+    NATIVE
+        .iter()
+        .find(|(p, _)| *p == published)
+        .map_or(published, |(_, n)| *n)
 }
 
 fn names(fs: &mut dyn FileSession, dir: &RemotePath) -> Vec<String> {
@@ -382,7 +403,7 @@ fn rsh_and_rlogin() {
     }
     let s = lc_rcmd::rsh::Rsh::connect(
         &host(),
-        10514,
+        p(10514),
         USER,
         USER,
         Default::default(),
@@ -395,4 +416,240 @@ fn rsh_and_rlogin() {
         &["home", "lab", "upload"],
         "rsh",
     );
+}
+
+// --- rsh trust, resume over a shell, awkward names ---
+
+/// The client's reserved port reaches the lab's rshd intact (no port rewriting in between).
+fn rsh_direct() -> bool {
+    std::env::var("LEGCON_LAB_RSH").is_ok()
+}
+
+/// A command as `lab2` (csh, no .rhosts) over rexec; its output.
+fn lab2(cmd: &[u8]) -> String {
+    let r =
+        lc_rcmd::Rexec::connect(&host(), p(10512), b"lab2", b"lab2", &Default::default()).unwrap();
+    String::from_utf8_lossy(&r.run(cmd).unwrap()).into_owned()
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn rsh_trust_over_rexec_ftp_and_telnet() {
+    use legcon::model::machines::{Machine, Service, ServiceKind};
+    for (kind, port) in [
+        (ServiceKind::Ftp, p(10021)),
+        (ServiceKind::Rexec, p(10512)),
+        (ServiceKind::Telnet, p(10023)),
+    ] {
+        lab2(b"rm -f .rhosts");
+        let mut m = Machine::new("lab2", &host());
+        m.user = "lab2".into();
+        m.services = vec![
+            Service {
+                kind: ServiceKind::Rsh,
+                port: p(10514),
+            },
+            Service { kind, port },
+        ];
+        let run = |install: bool| {
+            let job = legcon::model::rsh_trust::rsh_trust(
+                &m,
+                Some("lab2".into()),
+                install,
+                std::sync::Arc::new(legcon::model::job::NoNotify),
+            );
+            let snap = job.wait();
+            job.take_result()
+                .unwrap_or_else(|| panic!("{kind:?}: {:?}", snap.status))
+        };
+        let r = run(true);
+        assert_eq!(r.via, Some(kind));
+        assert!(
+            !r.added.is_empty() && r.already.is_empty(),
+            "{kind:?}: {r:?}"
+        );
+        let rhosts = lab2(b"cat .rhosts; ls -l .rhosts");
+        for l in &r.added {
+            assert!(rhosts.contains(l.as_str()), "{kind:?}: {l} not in {rhosts}");
+        }
+        assert!(rhosts.contains("-rw-------"), "{kind:?}: {rhosts}");
+        let seen = r.seen.unwrap();
+        if kind != ServiceKind::Ftp {
+            assert!(
+                seen.server.is_some(),
+                "{kind:?}: the server did not say what it sees"
+            );
+        }
+        if rsh_direct() {
+            assert!(!seen.port_rewritten(), "{kind:?}: {seen:?}");
+            assert_eq!(r.rsh, Ok(()), "{kind:?}");
+        } else if seen.port_rewritten() {
+            assert!(
+                r.rsh.is_err(),
+                "{kind:?}: rsh got in through a rewritten port?"
+            );
+        }
+        if !rsh_direct() && kind != ServiceKind::Ftp {
+            // A second setup finds its lines there and adds nothing.
+            let again = run(true);
+            assert!(again.added.is_empty(), "{kind:?}: {again:?}");
+            assert_eq!(again.already, r.added, "{kind:?}");
+        }
+    }
+    lab2(b"rm -f .rhosts");
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn the_machine_says_where_we_come_from() {
+    let seen =
+        lc_rcmd::seen_via_rexec(&host(), p(10512), b"lab", b"lab", &Default::default()).unwrap();
+    let server = seen.server.expect("netstat shows our connection");
+    if rsh_direct() {
+        assert_eq!(server, seen.local);
+    }
+    eprintln!("we: {}, the machine sees: {server}", seen.local);
+}
+
+/// Upload in two parts (the second appended), then read back from several offsets.
+fn resume_round_trip(fs: &mut dyn FileSession, label: &str) {
+    let data: Vec<u8> = (0..5000u32).map(|i| (i * 13 % 251) as u8).collect();
+    let file = RemotePath::parse(
+        PathStyle::Unix,
+        &format!(
+            "/home/lab/upload/lc-resume-{label}-{}.bin",
+            std::process::id()
+        ),
+    );
+    {
+        let mut w = fs.open_write_sized(&file, WriteMode::Create, 1234).unwrap();
+        w.write_all(&data[..1234]).unwrap();
+    }
+    {
+        let mut w = fs
+            .open_write_sized(&file, WriteMode::Resume(1234), (data.len() - 1234) as u64)
+            .unwrap_or_else(|e| panic!("{label}: resume upload: {e}"));
+        w.write_all(&data[1234..])
+            .unwrap_or_else(|e| panic!("{label}: resume upload: {e}"));
+    }
+    assert_eq!(fs.stat(&file).unwrap().size, Some(5000), "{label}");
+    for at in [0usize, 700, 1024, 4999] {
+        let mut back = Vec::new();
+        fs.open_read(&file, at as u64)
+            .unwrap_or_else(|e| panic!("{label}: read from {at}: {e}"))
+            .read_to_end(&mut back)
+            .unwrap();
+        assert!(
+            back == data[at..],
+            "{label}: from {at}: {} bytes",
+            back.len()
+        );
+    }
+    let missing = file.parent().unwrap().join("lc-no-such-file");
+    assert!(
+        matches!(fs.open_read(&missing, 10), Err(lc_core::Error::NotFound(_))),
+        "{label}: a missing file"
+    );
+    fs.remove(&file).unwrap();
+}
+
+/// Names a shell would mangle, round trip: upload, list, stat, download, rename, delete.
+fn awkward_names(fs: &mut dyn FileSession, label: &str, latin1: bool) {
+    let work = RemotePath::parse(
+        PathStyle::Unix,
+        &format!("/home/lab/upload/lc-names-{label}-{}", std::process::id()),
+    );
+    fs.mkdir(&work).unwrap();
+    let mut names = vec![
+        "it's here.txt".to_string(),
+        "dollar $HOME.txt".into(),
+        "back`tick`.txt".into(),
+        "semi;colon & amp.txt".into(),
+        "star *.txt".into(),
+        "-dash.txt".into(),
+        "double \"quote\".txt".into(),
+        "back\\slash.txt".into(),
+        "  two spaces".into(),
+    ];
+    if latin1 {
+        names.push("caf\u{e9} 2.txt".into());
+    }
+    for name in &names {
+        let file = work.join(name);
+        {
+            let mut w = fs
+                .open_write_sized(&file, WriteMode::Create, 3)
+                .unwrap_or_else(|e| panic!("{label}: upload {name:?}: {e}"));
+            w.write_all(b"abc").unwrap();
+        }
+        let listed = names_in(fs, &work);
+        assert!(listed.contains(name), "{label}: {name:?} not in {listed:?}");
+        assert_eq!(fs.stat(&file).unwrap().size, Some(3), "{label}: {name:?}");
+        let mut back = Vec::new();
+        fs.open_read(&file, 0)
+            .unwrap()
+            .read_to_end(&mut back)
+            .unwrap();
+        assert_eq!(back, b"abc", "{label}: {name:?}");
+        let moved = work.join(&format!("{name}.2"));
+        fs.rename(&file, &moved)
+            .unwrap_or_else(|e| panic!("{label}: rename {name:?}: {e}"));
+        fs.remove(&moved)
+            .unwrap_or_else(|e| panic!("{label}: delete {name:?}: {e}"));
+    }
+    assert!(names_in(fs, &work).is_empty(), "{label}: left behind");
+    fs.remove(&work).unwrap();
+}
+
+fn names_in(fs: &mut dyn FileSession, dir: &RemotePath) -> Vec<String> {
+    fs.list(dir)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .filter(|n| n != "." && n != "..")
+        .collect()
+}
+
+#[test]
+#[ignore = "needs the lab container (lab/lab.sh up)"]
+fn resume_and_awkward_names_over_shell_commands() {
+    let opts = lc_ssh::Options {
+        sftp: false,
+        ..Default::default()
+    };
+    let mut s = lc_ssh::connect(
+        &host(),
+        p(10022),
+        USER,
+        &password_auth(),
+        &opts,
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    resume_round_trip(&mut s, "ssh-shell");
+    awkward_names(&mut s, "ssh-shell", false);
+    s.disconnect(Duration::from_secs(5)).unwrap();
+    if !rsh_direct() {
+        eprintln!(
+            "rsh part skipped: rsh needs the client's reserved source port to reach the server"
+        );
+        return;
+    }
+    let mut r = lc_rcmd::rsh::Rsh::connect(
+        &host(),
+        p(10514),
+        USER,
+        USER,
+        Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
+    resume_round_trip(&mut r, "rsh");
+    awkward_names(&mut r, "rsh", true);
+    let e = lc_core::ShellSession::exec(&mut r, "echo out; echo err >&2; exit 3").unwrap();
+    assert_eq!(
+        (e.output.as_slice(), e.errors.as_slice()),
+        (&b"out\n"[..], &b"err\n"[..])
+    );
+    assert_eq!(e.exit_status, Some(3));
 }

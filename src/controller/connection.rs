@@ -19,9 +19,10 @@ use crate::model::term::TermSession;
 use crate::model::transfer::{self, Direction, Pick, Summary};
 
 use crate::model::local::{list_dir, LocalEntry};
-use crate::model::machines::{Machine, Password};
+use crate::model::machines::{Machine, Password, Service};
 use crate::model::names;
 use crate::model::places::{self, Place};
+use crate::model::rsh_trust::{self, rsh_trust, TrustReport, Untrusted};
 use crate::model::session::Sessions;
 use crate::model::settings::add_recent;
 use crate::model::ssh::{set_up_key_login, take_note, KeyNote, KeySetup, KeySlot};
@@ -32,6 +33,17 @@ enum Login {
     Files,
     Shell,
     Setup,
+    /// rsh trust: set it up (`true`) or only look.
+    Rsh(bool),
+}
+
+/// What a button in the "rsh refused" question does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RshChoice {
+    SetUp,
+    Check,
+    Use(ServiceKind),
+    Close,
 }
 pub use crate::model::term::{TermRun, TermScreen, DEFAULT_BG, DEFAULT_FG};
 
@@ -142,6 +154,12 @@ pub enum Action {
     SetUpKeyLogin,
     /// After key login works: stop saving the password (0) or keep it.
     KeyLoginPasswordAnswered(usize),
+    /// Add this computer to `~/.rhosts` over rexec, FTP or Telnet, then try rsh (PLAN.md 4.2).
+    SetUpRshTrust,
+    /// Ask the server, over rexec or Telnet, where it sees this computer come from.
+    CheckRsh,
+    /// The answer to "rsh refused": an index into the buttons it showed.
+    RshRefusedAnswered(usize),
     CancelTransfers,
     NewFolder(Side),
     NewFolderAnswered(Option<String>),
@@ -364,6 +382,11 @@ pub struct ConnectionController {
     key_login_changed: Option<(PathBuf, bool)>,
     /// Where login keys are made (`keys` in the config folder).
     keys_dir: PathBuf,
+    rsh_job: Option<Job<TrustReport>>,
+    /// The buttons of the "rsh refused" question being shown.
+    rsh_choices: Vec<RshChoice>,
+    /// The machine's services after "Use FTP instead", once, for the machine store.
+    services_changed: Option<Vec<Service>>,
     shell: Option<TermSession>,
     shell_open: Option<Job<TermSession>>,
     shell_close: Option<Job<()>>,
@@ -374,6 +397,62 @@ pub struct ConnectionController {
     ops: Vec<(Side, Job<()>)>,
     console: Vec<String>,
     console_job: Option<Job<String>>,
+}
+
+/// What an rsh check or setup on `name` found, in words (the tab and `lc rsh-trust`).
+pub(crate) fn rsh_report(name: &str, r: Result<TrustReport, String>) -> String {
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => return format!("{name}: rsh: {e}"),
+    };
+    if r.via.is_none() && r.rsh.is_ok() {
+        return format!("rsh already works on {name}; nothing was changed.");
+    }
+    let via = r.via.map_or("", |k| k.label());
+    let mut lines = Vec::new();
+    if !r.added.is_empty() {
+        lines.push(format!(
+            "Added to ~/.rhosts on {name} (over {via}): {}.",
+            r.added.join(", ")
+        ));
+    }
+    if !r.already.is_empty() {
+        lines.push(format!("Already in ~/.rhosts: {}.", r.already.join(", ")));
+    }
+    if let Some(seen) = r.seen {
+        match seen.server {
+            Some(server) if seen.port_rewritten() => lines.push(format!(
+                "{name} sees this computer as {} port {}, but it connected from port {}. Something in between changes the source port (a NAT router, a container's port publishing, or an emulator's user-mode networking such as QEMU's), so rsh's port below 1024 never arrives and rsh is refused whatever .rhosts says. Use bridged networking, or rexec, Telnet or FTP.",
+                server.ip(),
+                server.port(),
+                seen.local.port()
+            )),
+            Some(server) => lines.push(format!(
+                "{name} sees this computer as {} port {}, as it connected; the port arrives intact.",
+                server.ip(),
+                server.port()
+            )),
+            None if r.via.is_some_and(rsh_trust::can_look) => lines.push(format!(
+                "{name} did not list its connections (no netstat), so the address it sees is not known; this computer connected from {}.",
+                seen.local.ip()
+            )),
+            None => lines.push(format!(
+                "{via} cannot ask {name} what it sees; .rhosts names {}, the address this computer connected from.",
+                seen.local.ip()
+            )),
+        }
+    }
+    let rewritten = r.seen.is_some_and(|s| s.port_rewritten());
+    lines.push(match &r.rsh {
+        Ok(()) => "rsh works now. Connect to use it.".to_string(),
+        Err(_) if rewritten => {
+            "rsh is still refused, and will be until the port arrives intact.".to_string()
+        }
+        Err(e) => format!(
+            "rsh is still refused: {e}. If the server checks names, its own DNS or /etc/hosts must name this computer; /etc/hosts.equiv, inetd or a tcp wrapper (hosts.allow) may also stop it."
+        ),
+    });
+    lines.join("\n\n")
 }
 
 impl ConnectionController {
@@ -426,6 +505,9 @@ impl ConnectionController {
             key_setup_note: KeySlot::default(),
             key_login_changed: None,
             keys_dir: crate::model::config::dir().join("keys"),
+            rsh_job: None,
+            rsh_choices: Vec::new(),
+            services_changed: None,
             shell: None,
             shell_open: None,
             shell_close: None,
@@ -535,6 +617,14 @@ impl ConnectionController {
         match login {
             Login::Files => self.connect(password),
             Login::Shell => self.open_shell(password),
+            Login::Rsh(install) => {
+                self.rsh_job = Some(rsh_trust(
+                    &self.machine,
+                    password,
+                    install,
+                    Arc::clone(&self.notify),
+                ))
+            }
             Login::Setup => {
                 self.key_setup = Some(set_up_key_login(
                     &self.machine,
@@ -581,6 +671,148 @@ impl ConnectionController {
             Err(ask) => return vec![*ask],
         }
         Vec::new()
+    }
+
+    /// The machine has rsh and a service to log in with a password, so `.rhosts` can be set up.
+    pub fn can_set_up_rsh_trust(&self) -> bool {
+        self.has(ServiceKind::Rsh)
+            && rsh_trust::via(&self.machine).is_some()
+            && self.rsh_job.is_none()
+    }
+
+    /// The machine has rsh and rexec or Telnet, so the server can say what it sees.
+    pub fn can_check_rsh(&self) -> bool {
+        self.can_set_up_rsh_trust()
+            && rsh_trust::via(&self.machine).is_some_and(rsh_trust::can_look)
+    }
+
+    fn has(&self, kind: ServiceKind) -> bool {
+        self.machine.services.iter().any(|s| s.kind == kind)
+    }
+
+    fn start_rsh(&mut self, install: bool) -> Vec<Effect> {
+        let ok = if install {
+            self.can_set_up_rsh_trust()
+        } else {
+            self.can_check_rsh()
+        };
+        if !ok {
+            return Vec::new();
+        }
+        match self.password_for(Login::Rsh(install), true) {
+            Ok(p) => self.log_in(Login::Rsh(install), p),
+            Err(ask) => return vec![*ask],
+        }
+        Vec::new()
+    }
+
+    /// The machine's services after a change made here, once, for the machine store.
+    pub(crate) fn take_services_change(&mut self) -> Option<Vec<Service>> {
+        self.services_changed.take()
+    }
+
+    /// rsh refused the file connection: say why, and offer the ways on.
+    fn rsh_refused(&mut self, why: Untrusted) -> Effect {
+        let name = &self.machine.name;
+        let mut choices = Vec::new();
+        let mut message = match &why {
+            Untrusted::NoLowPort => format!(
+                "{name}: rsh needs a source port below 1024, and {}.",
+                rsh_trust::NO_LOW_PORT
+            ),
+            Untrusted::Refused { local, said } => {
+                let said = if said.is_empty() {
+                    "it closed the connection".to_string()
+                } else {
+                    format!("it said \"{said}\"")
+                };
+                if self.can_set_up_rsh_trust() {
+                    choices.push(RshChoice::SetUp);
+                }
+                if self.can_check_rsh() {
+                    choices.push(RshChoice::Check);
+                }
+                format!(
+                    "{name} would not let rsh in: {said}.\n\nrsh has no password: the server must list this computer in ~/.rhosts (or /etc/hosts.equiv), and the connection must arrive from a port below 1024. This computer connected from {} port {}.",
+                    local.ip(),
+                    local.port()
+                )
+            }
+        };
+        let others: Vec<ServiceKind> = self
+            .machine
+            .services
+            .iter()
+            .map(|s| s.kind)
+            .filter(|k| k.serves_files() && *k != ServiceKind::Rsh)
+            .collect();
+        if let Some(&k) = others.first() {
+            choices.push(RshChoice::Use(k));
+        }
+        if choices.contains(&RshChoice::SetUp) {
+            let via = rsh_trust::via(&self.machine).map_or("", |k| k.label());
+            message += &format!(
+                "\n\nSet up rsh trust logs in once over {via} with the password, adds this computer to ~/.rhosts and tries rsh again."
+            );
+        }
+        if choices.contains(&RshChoice::Check) {
+            message +=
+                " Check asks the server which address and port it sees, without changing anything.";
+        }
+        if let Some(k) = others.first() {
+            message += &format!(
+                "\n\n{name} also has {}; it can serve the files instead.",
+                k.label()
+            );
+        }
+        choices.push(RshChoice::Close);
+        let labels = choices
+            .iter()
+            .map(|c| match c {
+                RshChoice::SetUp => "Set up rsh trust".to_string(),
+                RshChoice::Check => "Check".to_string(),
+                RshChoice::Use(k) => format!("Use {} instead", k.label()),
+                RshChoice::Close => "Close".to_string(),
+            })
+            .collect();
+        let dismiss = choices.len() - 1;
+        self.rsh_choices = choices;
+        Effect::Choose(super::ChoiceSpec {
+            purpose: "conn.rsh.refused",
+            title: "rsh refused".into(),
+            message,
+            choices: labels,
+            dismiss,
+        })
+    }
+
+    fn rsh_refused_answered(&mut self, i: usize) -> Vec<Effect> {
+        match std::mem::take(&mut self.rsh_choices).get(i) {
+            Some(RshChoice::SetUp) => self.start_rsh(true),
+            Some(RshChoice::Check) => self.start_rsh(false),
+            Some(&RshChoice::Use(kind)) => {
+                let services = &mut self.machine.services;
+                if let (Some(from), Some(to)) = (
+                    services.iter().position(|s| s.kind == kind),
+                    services.iter().position(|s| s.kind == ServiceKind::Rsh),
+                ) {
+                    if from > to {
+                        let s = services.remove(from);
+                        services.insert(to, s);
+                    }
+                }
+                self.services_changed = Some(self.machine.services.clone());
+                if !self.can_connect() {
+                    return Vec::new();
+                }
+                match self.password_for(Login::Files, kind.needs_password()) {
+                    Ok(p) => self.connect(p),
+                    Err(ask) => return vec![*ask],
+                }
+                Vec::new()
+            }
+            Some(RshChoice::Close) | None => Vec::new(),
+        }
     }
 
     /// The key set up for this machine, and whether to stop saving its password, once.
@@ -1359,6 +1591,7 @@ impl ConnectionController {
             self.connect_job.as_ref().map(|j| j.snapshot()),
             self.list_job.as_ref().map(|j| j.snapshot()),
             self.disconnect_job.as_ref().map(|j| j.snapshot()),
+            self.rsh_job.as_ref().map(|j| j.snapshot()),
         ]
         .into_iter()
         .flatten()
@@ -1814,6 +2047,9 @@ impl Controller for ConnectionController {
             Action::Copy(from, names) => return self.copy(from, names),
             Action::HostKeyAnswered(choice) => self.host_key_answered(choice),
             Action::SetUpKeyLogin => return self.start_key_setup(),
+            Action::SetUpRshTrust => return self.start_rsh(true),
+            Action::CheckRsh => return self.start_rsh(false),
+            Action::RshRefusedAnswered(i) => return self.rsh_refused_answered(i),
             Action::KeyLoginPasswordAnswered(choice) => {
                 // The key itself was stored when the setup finished; this only drops the password.
                 if let (0, Some(key)) = (choice, self.machine.key_file.clone()) {
@@ -1981,6 +2217,11 @@ impl Controller for ConnectionController {
                 Err(e) if changed => self.remote_error = Some(format!("Could not connect: {e}")),
                 Err(e) => {
                     self.remote_error = Some(format!("Could not connect: {e}"));
+                    if let Some(why) = self.sessions.take_rsh_note(&self.machine.id) {
+                        out.push(self.rsh_refused(why));
+                        return out;
+                    }
+                    self.remote_error = Some(format!("Could not connect: {e}"));
                     out.push(Effect::Message(format!(
                         "{}: could not connect: {e}",
                         self.machine.name
@@ -2050,6 +2291,10 @@ impl Controller for ConnectionController {
         }
         if refresh.1 && self.list_job.is_none() {
             self.list_remote();
+        }
+        if let Some(r) = self.rsh_job.as_ref().and_then(job_outcome) {
+            self.rsh_job = None;
+            out.push(Effect::Message(rsh_report(&self.machine.name, r)));
         }
         if let Some(r) = self.key_setup.as_ref().and_then(job_outcome) {
             self.key_setup = None;
@@ -2176,6 +2421,80 @@ mod tests {
         c.apply(Action::HostKeyAnswered(0));
         assert_eq!(c.take_host_key_change().as_deref(), Some("ssh-dss BBBB"));
         settle(&mut c);
+    }
+
+    #[test]
+    fn rsh_refusal_offers_trust_a_check_and_another_service() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.machine.services = [ServiceKind::Rsh, ServiceKind::Rexec, ServiceKind::Ftp]
+            .into_iter()
+            .map(|kind| Service {
+                kind,
+                port: kind.default_port(),
+            })
+            .collect();
+        c.machine.password = Password::Saved("pw".into());
+        let why = Untrusted::Refused {
+            local: "192.168.1.10:1023".parse().unwrap(),
+            said: "Permission denied.".into(),
+        };
+        let Effect::Choose(q) = c.rsh_refused(why) else {
+            panic!("not a question")
+        };
+        assert_eq!(
+            q.choices,
+            ["Set up rsh trust", "Check", "Use FTP instead", "Close"]
+        );
+        assert!(
+            q.message.contains("192.168.1.10 port 1023"),
+            "{}",
+            q.message
+        );
+        assert!(q.message.contains("over rexec"), "{}", q.message);
+        // Use FTP: it moves before rsh, is saved, and a connect starts.
+        c.apply(Action::RshRefusedAnswered(2));
+        let kinds: Vec<_> = c
+            .take_services_change()
+            .unwrap()
+            .iter()
+            .map(|s| s.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [ServiceKind::Ftp, ServiceKind::Rsh, ServiceKind::Rexec]
+        );
+        assert!(c.connect_job.is_some());
+        // A computer that hands out no low port gets only the other service.
+        let Effect::Choose(q) = c.rsh_refused(Untrusted::NoLowPort) else {
+            panic!("not a question")
+        };
+        assert_eq!(q.choices, ["Use FTP instead", "Close"]);
+    }
+
+    #[test]
+    fn rsh_report_explains_a_rewritten_port() {
+        let seen = lc_rcmd::Seen {
+            local: "192.168.1.10:51000".parse().unwrap(),
+            server: Some("172.17.0.1:40112".parse().unwrap()),
+        };
+        let r = TrustReport {
+            via: Some(ServiceKind::Rexec),
+            seen: Some(seen),
+            added: vec!["172.17.0.1 dani".into()],
+            already: Vec::new(),
+            rsh: Err("closed".into()),
+        };
+        let text = rsh_report("irix", Ok(r));
+        assert!(
+            text.contains("Added to ~/.rhosts on irix (over rexec): 172.17.0.1 dani."),
+            "{text}"
+        );
+        assert!(text.contains("changes the source port"), "{text}");
+        assert!(
+            text.contains("will be until the port arrives intact"),
+            "{text}"
+        );
     }
 
     #[test]

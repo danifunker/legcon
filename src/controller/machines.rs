@@ -280,6 +280,21 @@ impl MachinesController {
         }
     }
 
+    /// A machine's services in a new order (the first that serves files is used for them).
+    pub fn set_services(
+        &mut self,
+        id: &str,
+        services: Vec<crate::model::machines::Service>,
+    ) -> Result<(), String> {
+        match self.store.get_mut(id) {
+            Some(m) if m.services != services => {
+                m.services = services;
+                self.save()
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Remember the SSH host key a machine showed (learned, or accepted after a change).
     pub fn set_host_key(&mut self, id: &str, key: String) -> Result<(), String> {
         match self.store.get_mut(id) {

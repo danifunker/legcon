@@ -34,6 +34,16 @@ jobs:
       - name: Lab tests
         run: cargo test --test lab_unix90s -- --ignored --test-threads=1
 
+      # rsh needs the client's reserved source port, which Docker's published ports rewrite; so the
+      # rsh tests also run as root in a container sharing the lab container's network.
+      - name: rsh lab tests, inside the lab's network
+        run: |
+          bin=$(cargo test --test lab_unix90s --no-run --message-format=json \
+            | jq -r 'select(.executable != null and .target.name == "lab_unix90s") | .executable')
+          docker run --rm --network container:legcon-lab-unix90s -v "$bin":/lab_tests:ro \
+            -e LEGCON_LAB_HOST=127.0.0.1 -e LEGCON_LAB_NATIVE=1 -e LEGCON_LAB_RSH=1 ubuntu:24.04 \
+            /lab_tests --ignored --test-threads=1 rsh the_machine_says resume
+
       - name: Server logs on failure
         if: failure()
         run: bash lab/lab.sh logs

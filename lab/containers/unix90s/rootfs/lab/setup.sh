@@ -10,6 +10,9 @@ chmod 644 /etc/vsftpd.lab.conf /etc/proftpd/lab.conf /etc/inetd.lab.conf.in /etc
 useradd -m -u 1000 -s /bin/bash lab
 echo 'lab:lab' | chpasswd
 printf 'lab\nlab\n' | smbpasswd -a -s lab
+# A second login with csh (as on many 1990s Unixes) and no .rhosts: rsh trust is set up by tests.
+useradd -m -u 1001 -s /bin/csh lab2
+echo 'lab2:lab2' | chpasswd
 
 # Fixtures: the same tree in the lab user's home, over every protocol.
 H=/home/lab

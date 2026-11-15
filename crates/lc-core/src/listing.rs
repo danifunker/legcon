@@ -232,7 +232,15 @@ pub fn parse_unix(line: &[u8], cs: Charset, now: i64) -> Option<Entry> {
     })?;
     let (unix, precision) = ls_date(f[at].1, f[at + 1].1, f[at + 2].1, now)?;
     let size = num(f[at - 1].1);
-    let name_at = f.get(at + 3)?.0;
+    f.get(at + 3)?;
+    // One space follows the date; any more belong to the name ("  two spaces").
+    let (d_at, d) = f[at + 2];
+    let end = d_at + d.len();
+    let name_at = if line.get(end) == Some(&b' ') {
+        end + 1
+    } else {
+        f[at + 3].0
+    };
     let mut raw = &line[name_at..];
     let mut target = None;
     if kind == EntryKind::Link {
@@ -383,6 +391,24 @@ mod tests {
             year_of(days_from_civil(1999, 12, 31) * 86_400 + 86_399),
             1999
         );
+    }
+
+    #[test]
+    fn names_keep_their_leading_spaces() {
+        let e = parse_unix(
+            b"-rw-r--r--   1 lab  lab  3 Nov 15 10:40   two spaces",
+            Charset::Latin1,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(e.name, "  two spaces");
+        let e = parse_unix(
+            b"-rw-r--r-- 1 lab lab 3 Mar 16  1999 plain",
+            Charset::Latin1,
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(e.name, "plain");
     }
 
     #[test]

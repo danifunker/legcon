@@ -262,13 +262,14 @@ impl Nvt {
         out
     }
 
-    /// Keystrokes for the wire: IAC doubled; a CR becomes CR LF, or CR NUL when sending binary.
+    /// Keystrokes for the wire: IAC doubled; a CR becomes CR LF, and stays a lone CR in binary
+    /// (RFC 856: no CR stuffing there, so a NUL after it would reach the program as a key).
     pub fn encode(&self, input: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(input.len() + 2);
         for &b in input {
             match b {
                 IAC => out.extend([IAC, IAC]),
-                b'\r' if self.binary_out() => out.extend([b'\r', 0]),
+                b'\r' if self.binary_out() => out.push(b'\r'),
                 b'\r' => out.extend(*b"\r\n"),
                 _ => out.push(b),
             }
@@ -341,6 +342,10 @@ mod tests {
             n.encode(&[b'l', b's', b'\r', IAC]),
             [b'l', b's', b'\r', b'\n', IAC, IAC]
         );
+        let mut n = Nvt::new("vt100", 80, 24);
+        n.receive(&[IAC, DO, BINARY]);
+        assert!(n.binary_out());
+        assert_eq!(n.encode(b"ls\r"), b"ls\r");
     }
 
     #[test]

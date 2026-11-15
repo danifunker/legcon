@@ -70,10 +70,10 @@ RUN cd proftpd-1.3.8c && ./configure --prefix=/opt/proftpd --disable-ipv6 && mak
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        vsftpd openbsd-inetd inetutils-telnetd rsh-server samba \
+        vsftpd openbsd-inetd inetutils-telnetd rsh-server rsh-client samba \
         openssh-server dropbear-bin rpcbind libtirpc3 apache2 gophernicus \
         libgcrypt20 libevent-2.1-7 libdb5.3 libiniparser1 libacl1 libattr1 libtalloc2 libsqlite3-0 \
-        libwolfssl35 libbsd0 procps iproute2 netbase \
+        libwolfssl35 libbsd0 procps iproute2 net-tools csh netbase \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=ssh1 /opt/ssh1 /opt/ssh1
 COPY --from=unfs3 /opt/unfs3 /opt/unfs3

@@ -234,3 +234,21 @@ ui = [
   { op = "expect_row", id = "local.list", name = "readme.txt", timeout = 60 },
 ]
 expect_files = ["readme.txt"]
+
+[[case]]
+id = "flow.lab.rsh-trust"
+description = "rsh is refused (WSL / Docker rewrite the source port); Set up rsh trust adds ~/.rhosts over rexec and says why rsh still fails"
+lab = true
+machines = [{ id = "lab2-rsh", name = "lab2-rsh", address = "127.0.0.1", user = "lab2", password = "b64:bGFiMg==", services = [{ kind = "rsh", port = 10514 }, { kind = "rexec", port = 10512 }, { kind = "ftp", port = 10021 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "lab2-rsh" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "wait_dialog", timeout = 30 },
+  { op = "expect_text", text = "would not let rsh in" },
+  { op = "press", name = "Set up rsh trust" },
+  { op = "wait_dialog", timeout = 60 },
+  { op = "expect_text", text = "lab2-rsh sees this computer as", timeout = 30 },
+  { op = "expect_text", text = "changes the source port" },
+  { op = "press", name = "OK" },
+]

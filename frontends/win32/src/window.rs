@@ -584,6 +584,7 @@ fn run(effects: Vec<Effect>) {
                     "conn.keylogin.password" => {
                         conn_action(conn::Action::KeyLoginPasswordAnswered(i))
                     }
+                    "conn.rsh.refused" => conn_action(conn::Action::RshRefusedAnswered(i)),
                     _ => {}
                 }
             }
@@ -1179,13 +1180,14 @@ fn draw_tab(d: &DRAWITEMSTRUCT) {
 }
 
 fn tab_menu(tab: usize) {
-    let Some((hwnd, id, current, keys)) = with(|s| {
+    let Some((hwnd, id, current, keys, rsh)) = with(|s| {
         let t = s.app.tab(tab.checked_sub(FIRST_CONN)?)?;
         Some((
             s.window,
             t.machine_id().to_string(),
             t.color(),
             t.can_set_up_key_login(),
+            (t.can_set_up_rsh_trust(), t.can_check_rsh()),
         ))
     })
     .flatten() else {
@@ -1215,6 +1217,21 @@ fn tab_menu(tab: usize) {
             MF_STRING | MF_GRAYED
         };
         let _ = AppendMenuW(menu, flags, 98, windows::core::PCWSTR(key_label.as_ptr()));
+        let grey = |on: bool| if on { MF_STRING } else { MF_STRING | MF_GRAYED };
+        let rsh_label = ui::wide("Set up rsh trust...");
+        let _ = AppendMenuW(
+            menu,
+            grey(rsh.0),
+            96,
+            windows::core::PCWSTR(rsh_label.as_ptr()),
+        );
+        let check_label = ui::wide("Check rsh from the machine's side");
+        let _ = AppendMenuW(
+            menu,
+            grey(rsh.1),
+            95,
+            windows::core::PCWSTR(check_label.as_ptr()),
+        );
         let settings = ui::wide("Settings...");
         let _ = AppendMenuW(
             menu,
@@ -1244,6 +1261,11 @@ fn tab_menu(tab: usize) {
             conn::Action::SetUpKeyLogin,
         )),
         97 => dispatch(app::Action::EditMachine(id)),
+        96 => dispatch(app::Action::Conn(
+            tab - FIRST_CONN,
+            conn::Action::SetUpRshTrust,
+        )),
+        95 => dispatch(app::Action::Conn(tab - FIRST_CONN, conn::Action::CheckRsh)),
         c if (100..100 + TabColor::ALL.len()).contains(&c) => {
             dispatch(app::Action::SetColor(id, TabColor::ALL[c - 100]))
         }

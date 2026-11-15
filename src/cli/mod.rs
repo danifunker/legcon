@@ -45,6 +45,16 @@ enum Command {
         #[command(subcommand)]
         command: KeysCommand,
     },
+    /// Let rsh in: add this computer to the machine's ~/.rhosts over rexec, FTP or Telnet.
+    RshTrust {
+        machine: String,
+        /// Only ask the machine which address and port it sees; change nothing.
+        #[arg(long)]
+        check: bool,
+        /// Use this password instead of the saved one (not stored).
+        #[arg(long)]
+        password: Option<String>,
+    },
     /// Make a login key for a machine, install it over SSH, and check that it works.
     KeyLogin {
         machine: String,
@@ -276,6 +286,15 @@ fn run(command: Command, dir: &std::path::Path) -> Result<(), String> {
             let p = cli_ops::probe(&address)?;
             print!("{}", p.message());
             println!();
+            Ok(())
+        }
+        Command::RshTrust {
+            machine,
+            check,
+            password,
+        } => {
+            let text = cli_ops::rsh_trust(&open()?, &machine, password, !check)?;
+            println!("{text}");
             Ok(())
         }
         Command::KeyLogin { machine, password } => {

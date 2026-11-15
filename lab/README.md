@@ -26,7 +26,8 @@ Dockerfile.
 | HTTP | Apache 2.4, folder index pages | 10080 |
 | Gopher | Gophernicus 3.1 | 10070 |
 
-The login is user `lab`, password `lab`, on every service. These are lab-only credentials, kept in
+The login is user `lab`, password `lab`, on every service. A second login, `lab2` / `lab2`, has
+csh as its shell and no `.rhosts`, for setting up rsh trust. These are lab-only credentials, kept in
 this repository on purpose; never reuse them. The lab user's home holds the same fixture tree for
 every protocol: `readme.txt`, `notes/`, `folder with spaces/`, a deep path, a 1 MB file, a
 read-only file, a symlink, a Latin-1 name (`caf\xe9.txt`), and names Windows cannot hold
@@ -62,11 +63,15 @@ does the same through the window. `LEGCON_LAB_HOST` points the tests at another 
 - **rsh and rlogin** check that the client connects from a port below 1024. Docker's published
   ports (and WSL's forwarding to Windows) rewrite the source port, so those tests run only when
   the client reaches the container directly (`LEGCON_LAB_RSH=1`), as in a pipeline job that runs
-  next to it.
+  next to it. Without it, the rsh trust test checks that legcon notices the rewritten port.
 - **NFS**: both servers register with the one portmapper, so unfs3 is built without MOUNT v1
   (legcon's NFSv2 client mounts with v1). A client that asks for v3 gets unfs3, v2 gets
   nfs-user-server; both export the same folders. From Windows through WSL only TCP gets through
   (WSL forwards TCP to `localhost`, not UDP), so there NFS is tested over TCP; on Linux both work.
+- **FTP through Docker's port proxy**: after a download refused for a missing file, the next
+  upload sometimes arrives empty (it looks as if the proxy keeps the refused data connection and
+  the server takes it for the next transfer). Inside the container's network it never happens;
+  legcon lists a folder rather than guessing at a file where it can.
 - **Windows FTP listings** (IIS, NT 3.5's FTP server) have no FOSS equivalent; they are covered by
   recorded listings in `lc-ftp`'s tests and by real NT machines.
 

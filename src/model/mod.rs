@@ -11,6 +11,7 @@ pub mod names;
 pub mod places;
 pub mod probe;
 pub mod rate_tracker;
+pub mod rsh_trust;
 pub mod secrets;
 pub mod session;
 pub mod settings;

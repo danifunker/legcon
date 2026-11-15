@@ -30,7 +30,12 @@ struct Slot {
     trace: Option<Trace>,
     /// What the last SSH connect found out about the host key.
     key_note: super::ssh::KeySlot,
+    /// Why the last rsh connect was refused.
+    rsh_note: RshSlot,
 }
+
+/// Where a connect leaves why rsh refused it, for the view to offer a way on.
+pub type RshSlot = Arc<Mutex<Option<lc_rcmd::rsh::Untrusted>>>;
 
 /// A protocol's trace lines, as `> sent`, `< received` or `  note`.
 type Trace = Arc<Mutex<Vec<lc_ftp::Trace>>>;
@@ -95,6 +100,13 @@ impl Sessions {
         note
     }
 
+    /// Why the last rsh connect to the machine was refused, once.
+    pub fn take_rsh_note(&self, machine: &str) -> Option<lc_rcmd::rsh::Untrusted> {
+        let slot = lock_status(&self.slots).get(machine)?.rsh_note.clone();
+        let note = lock_status(&slot).take();
+        note
+    }
+
     fn set_state(&self, machine: &str, state: ConnState) {
         lock_status(&self.slots)
             .entry(machine.to_string())
@@ -141,11 +153,11 @@ impl Sessions {
         let me = self.clone();
         let machine = machine.clone();
         me.set_state(&machine.id, ConnState::Connecting);
-        let note = lock_status(&me.slots)
-            .entry(machine.id.clone())
-            .or_default()
-            .key_note
-            .clone();
+        let (note, rsh_note) = {
+            let mut slots = lock_status(&me.slots);
+            let slot = slots.entry(machine.id.clone()).or_default();
+            (slot.key_note.clone(), slot.rsh_note.clone())
+        };
         let label = format!("Connect to {}", machine.name);
         Job::spawn(label, notify, move |ctx| {
             let result = (|| {
@@ -158,7 +170,7 @@ impl Sessions {
                     service.kind.label()
                 ));
                 let (mut session, trace) =
-                    open_file_session(&machine, service.kind, password, &note)?;
+                    open_file_session(&machine, service.kind, password, &note, &rsh_note)?;
                 let home = session.home()?;
                 Ok::<_, anyhow::Error>((service.kind, session, home, trace))
             })();
@@ -237,6 +249,7 @@ fn open_file_session(
     kind: ServiceKind,
     password: Option<String>,
     note: &super::ssh::KeySlot,
+    rsh_note: &RshSlot,
 ) -> anyhow::Result<(Box<dyn FileSession>, Option<Trace>)> {
     match kind {
         ServiceKind::Demo => Ok((Box::new(demo_machine()), None)),
@@ -308,7 +321,7 @@ fn open_file_session(
                 .iter()
                 .find(|s| s.kind == ServiceKind::Rsh)
                 .map_or(lc_rcmd::rsh::RSH_PORT, |s| s.port);
-            let session = lc_rcmd::rsh::Rsh::connect(
+            let checked = lc_rcmd::rsh::Rsh::check(
                 &machine.address,
                 port,
                 machine.local_user.as_deref().unwrap_or(&machine.user),
@@ -316,7 +329,14 @@ fn open_file_session(
                 lc_core::Charset::from_label(&machine.charset).unwrap_or_default(),
                 &lc_rcmd::Options::default(),
             )?;
-            Ok((Box::new(session), None))
+            match checked {
+                Ok(session) => Ok((Box::new(session), None)),
+                Err(u) => {
+                    let text = format!("rsh: {u}");
+                    *lock_status(rsh_note) = Some(u);
+                    bail!(text)
+                }
+            }
         }
         ServiceKind::Afp => {
             let port = machine
