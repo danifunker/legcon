@@ -36,6 +36,8 @@ out=${1:-"$shell/target/$profile"}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 plist_version=${version:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$shell/Cargo.toml" | head -1)}
+# macOS 11 (Big Sur) on Intel and Apple silicon alike (D44).
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 
 app="$out/legcon.app"
 rm -rf "$app"
@@ -44,17 +46,14 @@ if [ "$universal" = 1 ]; then
     arch=universal
     slices=
     for t in aarch64-apple-darwin x86_64-apple-darwin; do
-        # Intel back to High Sierra; Apple silicon starts at macOS 11 anyway.
-        case $t in x86_64-*) min=10.13 ;; *) min=11.0 ;; esac
-        (cd "$shell" && MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-$min}" cargo build $flag --target "$t")
+        (cd "$shell" && cargo build $flag --target "$t")
         slices="$slices $shell/target/$t/$profile/legcon"
     done
     # shellcheck disable=SC2086
     lipo -create -output "$app/Contents/MacOS/legcon" $slices
 else
     arch=$(uname -m)
-    case $arch in x86_64) min=10.13 ;; *) min=11.0 ;; esac
-    (cd "$shell" && MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-$min}" cargo build $flag)
+    (cd "$shell" && cargo build $flag)
     cp "$shell/target/$profile/legcon" "$app/Contents/MacOS/legcon"
 fi
 # Nothing outside the system: anything else would be missing on a user's Mac.

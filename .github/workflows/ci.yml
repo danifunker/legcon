@@ -184,7 +184,7 @@ jobs:
 
   # Release builds, once the lab, Windows and macOS pass: the Win32 window and lc for Windows x64,
   # x86 (Windows 10) and ARM64 (Windows 11); the AppKit legcon.app and lc for macOS, universal
-  # (Intel from 10.13, Apple silicon from 11); lc for Linux. Each is kept as a workflow artifact.
+  # (macOS 11 and later); lc for Linux. Each is kept as a workflow artifact.
   build:
     name: build (${{ matrix.target }})
     needs: [unix90s, windows, macos]
@@ -285,10 +285,11 @@ jobs:
             # It starts on this runner (x64 Windows runs x86; the ARM runner runs ARM64).
             dist/lc.exe --help > /dev/null
           elif [ "$RUNNER_OS" = macOS ]; then
-            # Both architectures (Intel back to macOS 10.13); the bundle script signs, notarizes
-            # and packages the app.
-            MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --bin lc --target aarch64-apple-darwin
-            MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release --bin lc --target x86_64-apple-darwin
+            # Both architectures, macOS 11 and later; the bundle script signs, notarizes and
+            # packages the app.
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+            cargo build --release --bin lc --target aarch64-apple-darwin
+            cargo build --release --bin lc --target x86_64-apple-darwin
             lipo -create -output dist/lc target/aarch64-apple-darwin/release/lc target/x86_64-apple-darwin/release/lc
             if [ -n "$MACOS_SIGN_IDENTITY" ] && [ "$MACOS_SIGN_IDENTITY" != "-" ]; then
               codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/lc

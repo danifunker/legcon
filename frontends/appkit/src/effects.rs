@@ -99,9 +99,7 @@ pub fn confirm(
     a.addButtonWithTitle(&ns("Cancel"));
     if destructive {
         a.setAlertStyle(NSAlertStyle::Critical);
-        if objc2::available!(macos = 11.0) {
-            yes.setHasDestructiveAction(true);
-        }
+        yes.setHasDestructiveAction(true);
     }
     a.runModal() == NSAlertFirstButtonReturn
 }
