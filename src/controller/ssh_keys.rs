@@ -325,12 +325,15 @@ impl KeysController {
 
     fn start_next(&mut self) {
         while let Some((name, kind, comment)) = self.queued.pop_front() {
-            match keystore::generate_job(&self.dir, &name, kind, &comment, Arc::clone(&self.notify)) {
+            match keystore::generate_job(&self.dir, &name, kind, &comment, Arc::clone(&self.notify))
+            {
                 Ok(job) => {
                     self.making = Some(job);
                     return;
                 }
-                Err(e) => self.notes.push(format!("Could not make the key {name}: {e}")),
+                Err(e) => self
+                    .notes
+                    .push(format!("Could not make the key {name}: {e}")),
             }
         }
     }

@@ -548,10 +548,9 @@ impl Controller for AppController {
                     return vec![Effect::Message(format!("No machine called {id}."))];
                 };
                 // A machine with no password yet keeps one where the setup said.
-                let no_password = spec
-                    .fields
-                    .iter()
-                    .any(|f| f.id == ids::MS_PASSWORD && f.kind == FieldKind::Secret(String::new()));
+                let no_password = spec.fields.iter().any(|f| {
+                    f.id == ids::MS_PASSWORD && f.kind == FieldKind::Secret(String::new())
+                });
                 if no_password && self.settings.passwords_in_os_store {
                     if let Some(f) = spec.fields.iter_mut().find(|f| f.id == ids::MS_OS_STORE) {
                         f.kind = FieldKind::Check(true);
@@ -717,12 +716,19 @@ mod tests {
         assert_eq!(spec.purpose, super::super::setup::PURPOSE);
         let mut v = spec.initial();
         let home = work.path().join("Retro");
-        v.set(ids::SETUP_HOME, FieldValue::Text(home.display().to_string()));
+        v.set(
+            ids::SETUP_HOME,
+            FieldValue::Text(home.display().to_string()),
+        );
         v.set(ids::SETUP_PASSWORDS, FieldValue::Choice(1));
         for (id, _, _, _) in super::super::setup::STARTER_KEYS {
             v.set(id, FieldValue::Check(false));
         }
-        let pinned = spec.fields.iter().find(|f| f.id == ids::SETUP_PINS[0]).map(|f| f.id);
+        let pinned = spec
+            .fields
+            .iter()
+            .find(|f| f.id == ids::SETUP_PINS[0])
+            .map(|f| f.id);
         if let Some(id) = pinned {
             v.set(id, FieldValue::Check(true));
         }
@@ -737,7 +743,10 @@ mod tests {
         assert!(b.apply(Action::Start).is_empty(), "set up once");
         assert_eq!(b.home_folder(), Some(home.as_path()));
         assert!(b.settings.passwords_in_os_store);
-        assert_eq!(b.settings.pinned_places.len(), usize::from(pinned.is_some()));
+        assert_eq!(
+            b.settings.pinned_places.len(),
+            usize::from(pinned.is_some())
+        );
     }
 
     #[test]

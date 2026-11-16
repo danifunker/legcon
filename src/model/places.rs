@@ -101,7 +101,9 @@ pub fn emulator_folders() -> Vec<Place> {
 
 /// The folder an emulator prefs file's `extfs` line names, if it exists.
 fn extfs(prefs: &str) -> Option<PathBuf> {
-    let line = prefs.lines().find_map(|l| l.trim().strip_prefix("extfs "))?;
+    let line = prefs
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("extfs "))?;
     let path = PathBuf::from(line.trim());
     path.is_dir().then_some(path)
 }
@@ -124,7 +126,10 @@ mod tests {
     #[test]
     fn emulator_prefs_name_their_shared_folder() {
         let dir = tempfile::tempdir().unwrap();
-        let prefs = format!("disk /x.hfv\nextfs {}\nramsize 8388608\n", dir.path().display());
+        let prefs = format!(
+            "disk /x.hfv\nextfs {}\nramsize 8388608\n",
+            dir.path().display()
+        );
         assert_eq!(extfs(&prefs), Some(dir.path().to_path_buf()));
         assert_eq!(extfs("extfs /no/such/folder\n"), None);
         assert_eq!(extfs("rom /x.rom\n"), None);

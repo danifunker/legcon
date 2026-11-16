@@ -94,7 +94,8 @@ pub fn form(settings: &Settings, has_key: impl Fn(&str) -> bool) -> (FormSpec, O
         .unwrap_or_else(default_home)
         .display()
         .to_string();
-    let mut fields = vec![
+    let mut fields =
+        vec![
         field(ids::SETUP_SECTION_HOME, "Home", FieldKind::Heading, ""),
         field(
             ids::SETUP_HOME,
@@ -116,7 +117,12 @@ pub fn form(settings: &Settings, has_key: impl Fn(&str) -> bool) -> (FormSpec, O
         ));
         offered.push((*id, p.path));
     }
-    fields.push(field(ids::SETUP_SECTION_KEYS, "Keys", FieldKind::Heading, ""));
+    fields.push(field(
+        ids::SETUP_SECTION_KEYS,
+        "Keys",
+        FieldKind::Heading,
+        "",
+    ));
     for (id, name, _, what) in STARTER_KEYS {
         let made = has_key(name);
         fields.push(field(
@@ -229,7 +235,11 @@ mod tests {
         let (spec, offered) = form(&settings, |n| n == "legcon-dsa1024");
         assert!(spec.fields.iter().any(|f| f.id == ids::SETUP_HOME));
         // A key made already is not made again.
-        let dsa = spec.fields.iter().find(|f| f.id == ids::SETUP_KEY_DSA).unwrap();
+        let dsa = spec
+            .fields
+            .iter()
+            .find(|f| f.id == ids::SETUP_KEY_DSA)
+            .unwrap();
         assert_eq!(dsa.kind, FieldKind::Check(false));
         let mut v = spec.initial();
         assert!(spec.validate(&v).is_ok());
