@@ -18,6 +18,7 @@ fn main() {
     let auth = lc_ssh::Auth {
         password: Some(pw.clone()),
         key: None,
+        ..Default::default()
     };
     let mut seen = None;
     let t = Instant::now();

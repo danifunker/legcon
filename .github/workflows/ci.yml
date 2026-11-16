@@ -144,7 +144,7 @@ jobs:
 
       # macOS ships a current OpenSSH sshd: key login, strict key exchange, exec, SFTP, a terminal.
       - name: SSH against the system's OpenSSH
-        run: cargo test -p lc-ssh --test local_openssh -- --ignored
+        run: cargo test -p lc-ssh --test local_openssh -- --ignored --test-threads=1
 
       - name: Build the AppKit window, lc and the pretend servers the flows start
         run: |

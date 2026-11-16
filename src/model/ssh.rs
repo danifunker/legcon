@@ -52,6 +52,13 @@ fn options(machine: &Machine) -> lc_ssh::Options {
     }
 }
 
+fn traced(machine: &Machine, trace: Option<&lc_core::TraceLog>) -> lc_ssh::Options {
+    lc_ssh::Options {
+        trace: trace.cloned(),
+        ..options(machine)
+    }
+}
+
 /// Whether the file is an SSH-1 identity (SSH-1 servers take only those).
 pub fn is_ssh1_key(path: &Path) -> bool {
     std::fs::read(path)
@@ -70,10 +77,32 @@ fn auth(machine: &Machine, password: Option<String>, ssh1: bool) -> lc_ssh::Auth
             private: p.clone(),
             public: lc_ssh::keys::public_path(p),
         });
+    // With the user's own keys to try, no password means "ask when they are refused".
+    let own_keys = machine.use_agent && !ssh1;
     lc_ssh::Auth {
-        password: password.or_else(|| key.is_none().then(String::new)),
+        password: password.or_else(|| (key.is_none() && !own_keys).then(String::new)),
         key,
+        agent: own_keys,
+        user_keys: if own_keys { user_keys() } else { Vec::new() },
     }
+}
+
+/// The user's own unencrypted keys `ssh` tries by default, where they exist (read, never written).
+fn user_keys() -> Vec<PathBuf> {
+    let Some(dir) = dirs::home_dir().map(|h| h.join(".ssh")) else {
+        return Vec::new();
+    };
+    ["id_ed25519", "id_rsa", "id_dsa"]
+        .into_iter()
+        .map(|n| dir.join(n))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
+/// Whether a connect without a password failed only because no key got in, so asking for the
+/// password and trying again may work.
+pub fn keys_refused(error: &str) -> bool {
+    error.contains("no password and no key to log in with") || error.contains("the key was refused")
 }
 
 /// Whether the machine speaks only SSH-1, from its version line.
@@ -120,12 +149,23 @@ pub fn connect(
     password: Option<String>,
     note: &KeySlot,
 ) -> anyhow::Result<lc_ssh::SshSession> {
+    connect_traced(machine, port, password, note, None)
+}
+
+/// [`connect`], noting each step in `trace` for the Log tab.
+pub fn connect_traced(
+    machine: &Machine,
+    port: u16,
+    password: Option<String>,
+    note: &KeySlot,
+    trace: Option<&lc_core::TraceLog>,
+) -> anyhow::Result<lc_ssh::SshSession> {
     let s = lc_ssh::connect(
         &machine.address,
         port,
         &machine.user,
         &auth(machine, password, false),
-        &options(machine),
+        &traced(machine, trace),
         &mut verifier(machine, note),
     )?;
     let n = s.negotiated();
@@ -177,6 +217,7 @@ pub fn open_files(
     port: u16,
     password: Option<String>,
     note: &KeySlot,
+    trace: Option<&lc_core::TraceLog>,
 ) -> anyhow::Result<Box<dyn lc_core::FileSession>> {
     if speaks_ssh1(machine, port)? {
         let f = lc_ssh::ssh1::Ssh1Files::open(
@@ -188,9 +229,15 @@ pub fn open_files(
             &mut verifier(machine, note),
         )?;
         log_ssh1(machine, &f.info);
+        lc_core::trace::note(
+            trace,
+            format!("{} over SSH-1: files over SCP", f.info.banner),
+        );
         return Ok(Box::new(f));
     }
-    Ok(Box::new(connect(machine, port, password, note)?))
+    Ok(Box::new(connect_traced(
+        machine, port, password, note, trace,
+    )?))
 }
 
 /// A terminal over SSH-1 or SSH-2, whichever the machine speaks.
@@ -201,12 +248,18 @@ pub fn open_pty(
     note: &KeySlot,
     cols: u16,
     rows: u16,
+    trace: Option<&lc_core::TraceLog>,
 ) -> anyhow::Result<lc_core::Pty> {
     if speaks_ssh1(machine, port)? {
         let poll = options(machine).poll;
-        return Ok(connect1(machine, port, password, note)?.into_pty("vt100", cols, rows, poll)?);
+        let term = machine.terminal_type(None);
+        lc_core::trace::note(trace, format!("SSH-1 terminal {term}"));
+        return Ok(connect1(machine, port, password, note)?.into_pty(&term, cols, rows, poll)?);
     }
-    Ok(connect(machine, port, password, note)?.into_pty("vt100", cols, rows)?)
+    let s = connect_traced(machine, port, password, note, trace)?;
+    let term = machine.terminal_type(Some(&s.negotiated().banner));
+    log::info!("{}: terminal type {term}", machine.name);
+    Ok(s.into_pty(&term, cols, rows)?)
 }
 
 /// The machine's SSH port: its SSH service's, or 22.

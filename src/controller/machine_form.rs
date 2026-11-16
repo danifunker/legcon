@@ -45,6 +45,17 @@ fn kinds(files: bool, m: &Machine) -> Vec<ServiceKind> {
 /// The NFS version choices and what each stores.
 const NFS_VERSIONS: [(&str, Option<u32>); 3] = [("Auto", None), ("3", Some(3)), ("2", Some(2))];
 
+/// Terminal types a shell can ask for; the first is "pick one" (`Machine::terminal_type`).
+const TERMINALS: [&str; 7] = [
+    "Auto",
+    "vt100",
+    "vt220",
+    "ansi",
+    "xterm",
+    "xterm-256color",
+    "dumb",
+];
+
 fn choice(options: Vec<String>, selected: usize) -> FieldKind {
     FieldKind::Choice { options, selected }
 }
@@ -172,6 +183,12 @@ pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
             "Keys are made and imported on the Keys tab.",
         ),
         field(
+            ids::MS_USE_AGENT,
+            "Also log in as ssh does: ssh-agent and ~/.ssh keys",
+            FieldKind::Check(m.use_agent),
+            "Tried before the password, which is asked only if no key gets in. Read, never written.",
+        ),
+        field(
             ids::MS_HOST_KEY,
             "SSH host key",
             FieldKind::Info(host_key),
@@ -212,6 +229,15 @@ pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
             "Logout command",
             FieldKind::Text(m.logout_command.clone()),
             "Sent before a shell closes, such as exit or logout.",
+        ),
+        field(
+            ids::MS_TERMINAL,
+            "Terminal type",
+            choice(
+                TERMINALS.iter().map(|t| t.to_string()).collect(),
+                TERMINALS.iter().position(|t| *t == m.terminal).unwrap_or(0),
+            ),
+            "Auto: xterm-256color on modern SSH servers (colour prompts), vt100 on older ones.",
         ),
         field(
             ids::MS_UID,
@@ -352,7 +378,12 @@ pub fn apply(m: &mut Machine, v: &FormValues, keys: &[KeyInfo]) -> Result<(), St
     let home = v.text(ids::MS_HOME).trim();
     m.home_folder = (!home.is_empty()).then(|| home.into());
     m.logout_command = v.text(ids::MS_LOGOUT).trim().to_string();
+    m.terminal = match v.choice(ids::MS_TERMINAL) {
+        0 => String::new(),
+        i => TERMINALS.get(i).map_or_else(String::new, |t| t.to_string()),
+    };
     m.key_file = key;
+    m.use_agent = v.check(ids::MS_USE_AGENT);
     m.check_host_key = v.check(ids::MS_CHECK_HOST_KEY);
     if v.check(ids::MS_FORGET_HOST_KEY) {
         m.host_key = None;

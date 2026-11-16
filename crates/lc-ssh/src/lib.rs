@@ -7,6 +7,7 @@
 //! only used when the server offers nothing newer; [`SshSession::negotiated`] says which won.
 //! SFTP is our own code ([`sftp`]) so file names stay bytes in the machine's character set.
 
+pub mod agent;
 pub mod crypto;
 pub mod keyfile;
 pub mod keys;
@@ -43,6 +44,8 @@ pub struct Options {
     pub poll: Duration,
     /// Use SFTP when the server has it; off, files always go through SCP and shell commands.
     pub sftp: bool,
+    /// Where each step (key exchange, login, SFTP or SCP) is noted for the Log tab.
+    pub trace: Option<lc_core::TraceLog>,
 }
 
 /// A key pair on disk: traditional PEM private key, and its OpenSSH `.pub` line.
@@ -52,11 +55,16 @@ pub struct KeyFiles {
     pub public: PathBuf,
 }
 
-/// How to log in: a key is tried first when the server takes keys, then the password.
+/// How to log in: the machine's key first when the server takes keys, then (as `ssh` does) the
+/// keys in the user's ssh-agent and `user_keys`, then the password.
 #[derive(Debug, Clone, Default)]
 pub struct Auth {
     pub password: Option<String>,
     pub key: Option<KeyFiles>,
+    /// Try the keys the user's ssh-agent holds.
+    pub agent: bool,
+    /// Unencrypted private keys to try, such as `~/.ssh/id_ed25519`.
+    pub user_keys: Vec<PathBuf>,
 }
 
 impl Default for Options {
@@ -67,6 +75,7 @@ impl Default for Options {
             timeout: Duration::from_secs(60),
             poll: Duration::from_millis(250),
             sftp: true,
+            trace: None,
         }
     }
 }
@@ -156,6 +165,8 @@ pub fn connect(
     opts: &Options,
     verify: &mut dyn FnMut(&HostKey) -> Result<()>,
 ) -> Result<SshSession> {
+    let note = |t: String| lc_core::trace::note(opts.trace.as_ref(), t);
+    note(format!("Connecting to {host} port {port} (SSH)"));
     let addr = (host, port)
         .to_socket_addrs()?
         .next()
@@ -174,42 +185,89 @@ pub fn connect(
         .clone()
         .ok_or_else(|| Error::Protocol("the server sent no host key".into()))?;
     let negotiated = link.negotiated.clone();
+    note(format!("Server: {}", negotiated.banner));
+    note(format!(
+        "Key exchange {}, host key {} {}, cipher {}, MAC {}, strict key exchange {}",
+        negotiated.kex,
+        key.algorithm,
+        key.sha256,
+        negotiated.cipher,
+        negotiated.mac,
+        if negotiated.strict { "on" } else { "off" }
+    ));
+    if negotiated.weak() {
+        note("Old algorithms in use: the server offers nothing newer".into());
+    }
     if let Err(e) = verify(&key) {
+        note(format!("Host key not accepted: {e}"));
         let _ = link.disconnect("legcon: host key not accepted");
         return Err(e);
     }
+    note("Host key accepted".into());
     let (mut done, methods) = link.auth_methods(user)?;
+    note(format!(
+        "Logging in as {user}; the server takes: {}",
+        if done {
+            "no login (none needed)".to_string()
+        } else {
+            methods.join(", ")
+        }
+    ));
     let has = |m: &str| methods.iter().any(|x| x == m);
     let mut key_error = None;
     if let (false, Some(k), true) = (done, &auth.key, has("publickey")) {
+        note(format!("Trying the key {}", k.private.display()));
         match keyfile::signer_file(&k.private).and_then(|s| link.auth_key(user, &s)) {
             Ok(true) => done = true,
             Ok(false) => key_error = Some("the server did not take the key".to_string()),
             Err(e) => key_error = Some(e.to_string()),
         }
+        note(match &key_error {
+            None => "The key was accepted".to_string(),
+            Some(e) => format!("The key was refused: {e}"),
+        });
+    }
+    if !done && has("publickey") {
+        done = try_user_keys(&mut link, user, auth, &note)?;
     }
     if !done {
         let result = match &auth.password {
             Some(password) => {
-                let mut ok = has("password") && link.auth_password(user, password)?;
+                let mut ok = false;
+                if has("password") {
+                    note("Trying the password".into());
+                    ok = link.auth_password(user, password)?;
+                }
                 if !ok && has("keyboard-interactive") {
+                    note("Trying keyboard-interactive, answering with the password".into());
                     ok = link.auth_keyboard(user, password)?;
                 }
+                note(
+                    if ok {
+                        "The password was accepted"
+                    } else {
+                        "The password was refused"
+                    }
+                    .into(),
+                );
                 if ok {
                     Ok(())
                 } else {
                     Err("the password was not accepted".to_string())
                 }
             }
-            None => Err(key_error
-                .clone()
-                .unwrap_or_else(|| "no password and no key to log in with".into())),
+            // The wording callers look for to ask for a password and try again.
+            None => Err(match &key_error {
+                Some(k) => format!("no password and no key to log in with ({k})"),
+                None => "no password and no key to log in with".into(),
+            }),
         };
         if let Err(e) = result {
             let e = match key_error {
                 Some(k) if auth.password.is_some() => format!("{e}; the key was refused too ({k})"),
                 _ => e,
             };
+            note(format!("Login failed: {e}"));
             let _ = link.disconnect("legcon: login failed");
             return Err(Error::Auth(if methods.is_empty() {
                 e
@@ -218,6 +276,7 @@ pub fn connect(
             }));
         }
     }
+    note(format!("Logged in as {user}"));
     Ok(SshSession {
         link: Arc::new(Mutex::new(link)),
         sftp: None,
@@ -226,6 +285,61 @@ pub fn connect(
         negotiated,
         closed: false,
     })
+}
+
+/// How many of the user's own keys are offered at most.
+const MAX_OWN_KEYS: usize = 4;
+
+/// Log in with the user's own keys as `ssh` would: the agent's, then `user_keys`.
+fn try_user_keys(link: &mut Link, user: &str, auth: &Auth, note: &dyn Fn(String)) -> Result<bool> {
+    let mut tried: Vec<Vec<u8>> = Vec::new();
+    if auth.agent {
+        match agent::Agent::connect() {
+            None => note("No ssh-agent running".into()),
+            Some(mut a) => {
+                let mut ids = a.identities().unwrap_or_default();
+                // OpenSSH drops the connection after 6 failures (MaxAuthTries): leave the
+                // password a turn.
+                ids.truncate(MAX_OWN_KEYS);
+                note(format!("ssh-agent holds {} key(s)", ids.len()));
+                for id in ids {
+                    let (alg, flags) = id.algorithm(link.server_sig_algs());
+                    note(format!("Trying the agent's key {} ({alg})", id.comment));
+                    tried.push(id.blob.clone());
+                    let blob = id.blob.clone();
+                    let ok = link.auth_publickey(user, &alg, &id.blob, &mut |data| {
+                        a.sign(&blob, data, flags)
+                    })?;
+                    if ok {
+                        note(format!("The agent's key {} was accepted", id.comment));
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+    }
+    for path in auth
+        .user_keys
+        .iter()
+        .take(MAX_OWN_KEYS.saturating_sub(tried.len()))
+    {
+        let key = match keyfile::signer_file(path) {
+            Ok(k) => k,
+            Err(e) => {
+                note(format!("Skipping {}: {e}", path.display()));
+                continue;
+            }
+        };
+        if tried.contains(&key.blob()) {
+            continue;
+        }
+        note(format!("Trying the key {}", path.display()));
+        if link.auth_key(user, &key)? {
+            note(format!("The key {} was accepted", path.display()));
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The fingerprints of a host key blob.
@@ -266,12 +380,22 @@ impl SshSession {
             let id = lock(&self.link).open_session()?;
             let mut name = Vec::new();
             wire::put_string(&mut name, b"sftp");
-            let mut ch = Channel::new(Arc::clone(&self.link), id);
-            if lock(&self.link).request(id, "subsystem", &name, true)? {
-                self.sftp = Some(Sftp::start(ch)?);
-            } else {
-                let _ = ch.close();
-                self.shell_files = true;
+            let ch = Channel::new(Arc::clone(&self.link), id);
+            let accepted = lock(&self.link).request(id, "subsystem", &name, true)?;
+            // Accepted is not enough: an sshd naming a missing sftp-server closes it at once.
+            match accepted.then(|| Sftp::start(ch)) {
+                Some(Ok(sftp)) => {
+                    lc_core::trace::note(self.opts.trace.as_ref(), "Files over SFTP");
+                    self.sftp = Some(sftp);
+                }
+                _ => {
+                    let _ = lock(&self.link).close(id, Duration::from_secs(1));
+                    lc_core::trace::note(
+                        self.opts.trace.as_ref(),
+                        "No SFTP here (refused, or no sftp-server): files over SCP and shell commands",
+                    );
+                    self.shell_files = true;
+                }
             }
         }
         Ok(!self.shell_files)
@@ -381,6 +505,10 @@ impl SshSession {
         }
         let tcp = link.tcp()?;
         drop(link);
+        lc_core::trace::note(
+            self.opts.trace.as_ref(),
+            format!("Terminal {term}, {cols} x {rows}: shell started"),
+        );
         Ok(Pty {
             reader: Box::new(PtyReader {
                 link: Arc::clone(&self.link),

@@ -17,6 +17,7 @@ fn main() {
             private: key.into(),
             public: lc_ssh::keys::public_path(std::path::Path::new(key)),
         }),
+        ..Default::default()
     };
     let opts = lc_ssh::Options {
         timeout: Duration::from_secs(30),

@@ -42,13 +42,8 @@ impl Default for Options {
     }
 }
 
-/// One line of the protocol trace: what was sent (passwords masked) or received.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Trace {
-    Sent(String),
-    Received(String),
-    Note(String),
-}
+/// One line of the protocol trace (shared by every protocol through `lc-core`).
+pub use lc_core::Trace;
 
 /// A server reply: its code and its lines (the last carries the code too).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,13 +71,7 @@ struct Control {
 
 impl Control {
     fn note(&self, t: Trace) {
-        if let Ok(mut v) = self.trace.lock() {
-            // Keep the trace bounded; the Log tab shows the recent end.
-            if v.len() >= 2000 {
-                v.drain(..500);
-            }
-            v.push(t);
-        }
+        lc_core::trace::push(&self.trace, t);
     }
 
     fn send(&mut self, verb: &str, arg: Option<&str>) -> Result<()> {

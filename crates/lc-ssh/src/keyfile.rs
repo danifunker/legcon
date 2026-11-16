@@ -339,6 +339,41 @@ fn openssh_v1(text: &str) -> Result<KeyPair> {
     }
 }
 
+/// An unencrypted OpenSSH-format ed25519 key (`~/.ssh/id_ed25519`), for logging in with; other
+/// kinds are `None`, for [`import`].
+fn openssh_ed25519(text: &str) -> Result<Option<ed25519_dalek::SigningKey>> {
+    if !text.contains("-----BEGIN OPENSSH PRIVATE KEY-----") {
+        return Ok(None);
+    }
+    let data = pem_body(text, "OPENSSH PRIVATE KEY")?;
+    let Some(rest) = data.strip_prefix(&b"openssh-key-v1\0"[..]) else {
+        return Ok(None);
+    };
+    let mut c = Cursor::new(rest);
+    if c.bytes()? != b"none" {
+        return Err(passphrase());
+    }
+    c.bytes()?;
+    c.bytes()?;
+    c.u32()?;
+    c.bytes()?;
+    let private = c.bytes()?;
+    let mut p = Cursor::new(private);
+    if p.u32()? != p.u32()? {
+        return Err(bad("the OpenSSH key is damaged"));
+    }
+    if p.bytes()? != b"ssh-ed25519" {
+        return Ok(None);
+    }
+    p.bytes()?;
+    let sk = p.bytes()?;
+    let seed: [u8; 32] = sk
+        .get(..32)
+        .and_then(|s| s.try_into().ok())
+        .ok_or_else(|| bad("the ed25519 key is damaged"))?;
+    Ok(Some(ed25519_dalek::SigningKey::from_bytes(&seed)))
+}
+
 fn putty(text: &str) -> Result<KeyPair> {
     let mut alg = "";
     let mut public = String::new();
@@ -387,6 +422,9 @@ pub fn signer_file(path: &std::path::Path) -> Result<crate::crypto::Signer> {
 /// The key in a private key file's text, ready to sign a login.
 pub fn signer(text: &str) -> Result<crate::crypto::Signer> {
     use crate::crypto::Signer;
+    if let Some(k) = openssh_ed25519(text)? {
+        return Ok(Signer::Ed25519(Box::new(k)));
+    }
     let pem = import(text)?.private_pem;
     if pem.contains("-----BEGIN RSA PRIVATE KEY-----") {
         use rsa::pkcs1::DecodeRsaPrivateKey;

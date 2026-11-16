@@ -19,6 +19,7 @@ pub mod path;
 pub mod rcp;
 pub mod session;
 pub mod shellfile;
+pub mod trace;
 
 pub use charset::Charset;
 pub use checksum::Checksum;
@@ -29,3 +30,4 @@ pub use session::{
     ConnState, Connection, ExecResult, FileCaps, FileSession, MacExtras, Pty, PtyWriter, ShellCaps,
     ShellSession, WriteMode,
 };
+pub use trace::{Trace, TraceLog};

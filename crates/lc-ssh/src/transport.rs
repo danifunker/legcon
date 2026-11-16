@@ -39,6 +39,8 @@ pub mod msg {
     pub const USERAUTH_SUCCESS: u8 = 52;
     pub const USERAUTH_BANNER: u8 = 53;
     pub const USERAUTH_INFO_REQUEST: u8 = 60;
+    /// The same number answers a public key query (RFC 4252 7).
+    pub const USERAUTH_PK_OK: u8 = 60;
     pub const USERAUTH_INFO_RESPONSE: u8 = 61;
     pub const GLOBAL_REQUEST: u8 = 80;
     pub const REQUEST_FAILURE: u8 = 82;
@@ -718,11 +720,44 @@ impl Link {
 
     pub fn auth_key(&mut self, user: &str, key: &Signer) -> Result<bool> {
         let algorithm = key.algorithm(&self.server_sig_algs);
-        let blob = key.blob();
+        self.auth_publickey(user, algorithm, &key.blob(), &mut |data| {
+            key.sign(algorithm, data)
+        })
+    }
+
+    /// The algorithms the server says it verifies signatures with (`server-sig-algs`).
+    pub fn server_sig_algs(&self) -> &[String] {
+        &self.server_sig_algs
+    }
+
+    /// Public key login as OpenSSH does it: ask whether the server takes the key, and only
+    /// then have `sign` sign (an agent may prompt for that).
+    pub fn auth_publickey(
+        &mut self,
+        user: &str,
+        algorithm: &str,
+        blob: &[u8],
+        sign: &mut dyn FnMut(&[u8]) -> Result<Vec<u8>>,
+    ) -> Result<bool> {
+        let mut query = Vec::new();
+        put_bool(&mut query, false);
+        put_string(&mut query, algorithm.as_bytes());
+        put_string(&mut query, blob);
+        self.auth_request(user, "publickey", &query)?;
+        loop {
+            let p = self.recv()?;
+            match p[0] {
+                msg::USERAUTH_PK_OK => break,
+                msg::USERAUTH_FAILURE => return Ok(false),
+                msg::USERAUTH_SUCCESS => return Ok(true),
+                msg::USERAUTH_BANNER => {}
+                t => return Err(bad(format!("unexpected message {t} during key login"))),
+            }
+        }
         let mut rest = Vec::new();
         put_bool(&mut rest, true);
         put_string(&mut rest, algorithm.as_bytes());
-        put_string(&mut rest, &blob);
+        put_string(&mut rest, blob);
         let mut signed = Vec::new();
         put_string(&mut signed, self.session_id.as_deref().unwrap_or_default());
         put_u8(&mut signed, msg::USERAUTH_REQUEST);
@@ -730,7 +765,7 @@ impl Link {
         put_string(&mut signed, b"ssh-connection");
         put_string(&mut signed, b"publickey");
         signed.extend_from_slice(&rest);
-        put_string(&mut rest, &key.sign(algorithm, &signed)?);
+        put_string(&mut rest, &sign(&signed)?);
         self.auth_request(user, "publickey", &rest)?;
         Ok(self.auth_reply()?.0)
     }

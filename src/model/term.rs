@@ -151,6 +151,7 @@ impl TermSession {
         rows: u16,
         key_note: super::ssh::KeySlot,
         notify: Arc<dyn Notify>,
+        trace: Option<lc_core::TraceLog>,
     ) -> Job<TermSession> {
         let machine = machine.clone();
         let label = format!("Shell on {}", machine.name);
@@ -168,13 +169,20 @@ impl TermSession {
                     let opts = lc_telnet::Options {
                         cols,
                         rows,
+                        term: machine.terminal_type(None),
                         ..lc_telnet::Options::default()
                     };
                     lc_telnet::connect(&machine.address, service.port, &opts)?
                 }
-                ServiceKind::Ssh => {
-                    super::ssh::open_pty(&machine, service.port, password, &key_note, cols, rows)?
-                }
+                ServiceKind::Ssh => super::ssh::open_pty(
+                    &machine,
+                    service.port,
+                    password,
+                    &key_note,
+                    cols,
+                    rows,
+                    trace.as_ref(),
+                )?,
                 ServiceKind::Rexec => {
                     let cs = Charset::from_label(&machine.charset).unwrap_or_default();
                     let enc = |t: &str| cs.encode(t).unwrap_or_else(|| t.as_bytes().to_vec());
@@ -203,7 +211,7 @@ impl TermSession {
                         service.port,
                         &enc(local),
                         &enc(&machine.user),
-                        "vt100",
+                        &machine.terminal_type(None),
                         cols,
                         rows,
                         Duration::from_millis(250),

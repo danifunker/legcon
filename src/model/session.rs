@@ -65,6 +65,13 @@ impl Sessions {
             .and_then(|s| s.service)
     }
 
+    /// A machine's trace, kept across connections (and failed ones) for the Log tab.
+    pub fn trace_log(&self, machine: &str) -> lc_core::TraceLog {
+        let mut slots = lock_status(&self.slots);
+        let slot = slots.entry(machine.to_string()).or_default();
+        slot.trace.get_or_insert_with(Default::default).clone()
+    }
+
     /// The file connection's protocol trace, newest last, for the Log tab.
     pub fn trace(&self, machine: &str) -> Vec<String> {
         let Some(t) = lock_status(&self.slots)
@@ -158,6 +165,7 @@ impl Sessions {
             let slot = slots.entry(machine.id.clone()).or_default();
             (slot.key_note.clone(), slot.rsh_note.clone())
         };
+        let log = me.trace_log(&machine.id);
         let label = format!("Connect to {}", machine.name);
         Job::spawn(label, notify, move |ctx| {
             let result = (|| {
@@ -170,7 +178,7 @@ impl Sessions {
                     service.kind.label()
                 ));
                 let (mut session, trace) =
-                    open_file_session(&machine, service.kind, password, &note, &rsh_note)?;
+                    open_file_session(&machine, service.kind, password, &note, &rsh_note, &log)?;
                 let home = session.home()?;
                 Ok::<_, anyhow::Error>((service.kind, session, home, trace))
             })();
@@ -181,7 +189,10 @@ impl Sessions {
                     slot.state = ConnState::Connected;
                     slot.service = Some(kind);
                     slot.session = Some(Arc::new(Mutex::new(session)));
-                    slot.trace = trace;
+                    // FTP keeps its own trace; the others write to the machine's.
+                    if trace.is_some() {
+                        slot.trace = trace;
+                    }
                     Ok(home)
                 }
                 Err(e) => {
@@ -250,6 +261,7 @@ fn open_file_session(
     password: Option<String>,
     note: &super::ssh::KeySlot,
     rsh_note: &RshSlot,
+    log: &lc_core::TraceLog,
 ) -> anyhow::Result<(Box<dyn FileSession>, Option<Trace>)> {
     match kind {
         ServiceKind::Demo => Ok((Box::new(demo_machine()), None)),
@@ -289,7 +301,10 @@ fn open_file_session(
                 .iter()
                 .find(|s| s.kind == ServiceKind::Ssh)
                 .map_or(lc_ssh::PORT, |s| s.port);
-            Ok((super::ssh::open_files(machine, port, password, note)?, None))
+            Ok((
+                super::ssh::open_files(machine, port, password, note, Some(log))?,
+                None,
+            ))
         }
         ServiceKind::Nfs => {
             // NFS is found through the portmapper (111); another port names a portmapper there.

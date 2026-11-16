@@ -344,6 +344,7 @@ fn password_auth() -> lc_ssh::Auth {
     lc_ssh::Auth {
         password: Some(PASSWORD.into()),
         key: None,
+        ..Default::default()
     }
 }
 

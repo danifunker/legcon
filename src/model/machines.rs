@@ -279,6 +279,13 @@ pub struct Machine {
     /// Sent before a shell session closes (`exit`, `logout`); empty sends nothing.
     #[serde(default)]
     pub logout_command: String,
+    /// Log in over SSH as `ssh` does too: the keys in the user's ssh-agent and `~/.ssh`.
+    #[serde(default = "yes")]
+    pub use_agent: bool,
+    /// The terminal type a shell asks for (`vt100`, `xterm-256color`); empty picks one
+    /// ([`Machine::terminal_type`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub terminal: String,
     /// The SSH host key seen last time (`ssh-dss AAAA...`), learned on the first connection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_key: Option<String>,
@@ -309,6 +316,27 @@ pub struct Machine {
 
 fn yes() -> bool {
     true
+}
+
+impl Machine {
+    /// The terminal type a shell asks for: the machine's own setting, else `xterm-256color` for
+    /// a modern SSH server (OpenSSH 4 and later, Dropbear), whose shells colour their prompts only
+    /// for xterm-like terminals, and `vt100` for everything older, which knows nothing newer.
+    pub fn terminal_type(&self, ssh_banner: Option<&str>) -> String {
+        if !self.terminal.trim().is_empty() {
+            return self.terminal.trim().to_string();
+        }
+        let modern = ssh_banner.is_some_and(|b| {
+            let soft = b.split('-').nth(2).unwrap_or("");
+            let openssh = soft
+                .strip_prefix("OpenSSH_")
+                .and_then(|v| v.split(['.', 'p']).next())
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|major| major >= 4);
+            openssh || soft.starts_with("dropbear")
+        });
+        if modern { "xterm-256color" } else { "vt100" }.to_string()
+    }
 }
 
 /// A machine's tab colour, from a fixed palette.
@@ -393,6 +421,8 @@ impl Machine {
             layout: Layout::default(),
             color: TabColor::default(),
             logout_command: String::new(),
+            terminal: String::new(),
+            use_agent: true,
             host_key: None,
             check_host_key: true,
             key_file: None,
@@ -534,5 +564,23 @@ mod tests {
         let os: Password = serde_json::from_str("\"os\"").unwrap();
         assert_eq!(os, Password::Os);
         assert_eq!(serde_json::to_string(&Password::Os).unwrap(), "\"os\"");
+    }
+
+    #[test]
+    fn terminal_type_is_xterm_for_modern_ssh_and_vt100_before() {
+        let mut m = Machine::new("pi", "192.168.99.143");
+        assert_eq!(
+            m.terminal_type(Some("SSH-2.0-OpenSSH_8.6")),
+            "xterm-256color"
+        );
+        assert_eq!(
+            m.terminal_type(Some("SSH-2.0-dropbear_2022.83")),
+            "xterm-256color"
+        );
+        assert_eq!(m.terminal_type(Some("SSH-2.0-OpenSSH_3.4p1")), "vt100");
+        assert_eq!(m.terminal_type(Some("SSH-1.5-1.2.27")), "vt100");
+        assert_eq!(m.terminal_type(None), "vt100");
+        m.terminal = "vt220".into();
+        assert_eq!(m.terminal_type(Some("SSH-2.0-OpenSSH_9.2")), "vt220");
     }
 }

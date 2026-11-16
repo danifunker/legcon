@@ -397,6 +397,8 @@ pub fn verify_host(blob: &[u8], sig: &[u8], h: &[u8]) -> Result<()> {
 pub enum Signer {
     Rsa(Box<rsa::RsaPrivateKey>),
     Dsa(Box<dsa::SigningKey>),
+    /// An ed25519 key from `~/.ssh` (legcon makes none itself).
+    Ed25519(Box<ed25519_dalek::SigningKey>),
 }
 
 impl Signer {
@@ -418,6 +420,10 @@ impl Signer {
                     put_mpint(&mut b, &n.to_bytes_be());
                 }
             }
+            Signer::Ed25519(k) => {
+                put_string(&mut b, b"ssh-ed25519");
+                put_string(&mut b, k.verifying_key().as_bytes());
+            }
         }
         b
     }
@@ -426,6 +432,7 @@ impl Signer {
     pub fn algorithm(&self, server_sig_algs: &[String]) -> &'static str {
         match self {
             Signer::Dsa(_) => "ssh-dss",
+            Signer::Ed25519(_) => "ssh-ed25519",
             Signer::Rsa(_) if server_sig_algs.iter().any(|a| a == "rsa-sha2-512") => "rsa-sha2-512",
             Signer::Rsa(_) if server_sig_algs.iter().any(|a| a == "rsa-sha2-256") => "rsa-sha2-256",
             Signer::Rsa(_) => "ssh-rsa",
@@ -461,6 +468,10 @@ impl Signer {
                 out[20 - r.len()..20].copy_from_slice(&r);
                 out[40 - sv.len()..].copy_from_slice(&sv);
                 out
+            }
+            Signer::Ed25519(k) => {
+                use ed25519_dalek::Signer as _;
+                k.sign(data).to_bytes().to_vec()
             }
         };
         let mut b = Vec::new();

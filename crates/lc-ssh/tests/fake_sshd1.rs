@@ -24,6 +24,7 @@ fn password(p: &str) -> Auth {
     Auth {
         password: Some(p.into()),
         key: None,
+        ..Default::default()
     }
 }
 
@@ -120,6 +121,7 @@ fn an_ssh1_key_logs_in_without_a_password() {
             public: lc_ssh::keys::public_path(&path),
             private: path,
         }),
+        ..Default::default()
     };
     let r = Conn::open("127.0.0.1", port, "dani", &auth, &opts(), &mut |_| Ok(()))
         .unwrap()

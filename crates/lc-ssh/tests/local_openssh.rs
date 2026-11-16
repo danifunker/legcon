@@ -28,6 +28,10 @@ fn keygen(args: &[&str]) {
 }
 
 fn start(dir: &Path, port: u16) -> Sshd {
+    start_with(dir, port, None)
+}
+
+fn start_with(dir: &Path, port: u16, sftp_override: Option<&str>) -> Sshd {
     let d = dir.display();
     keygen(&["-t", "ed25519", "-f", &format!("{d}/host")]);
     keygen(&[
@@ -49,6 +53,7 @@ fn start(dir: &Path, port: u16) -> Sshd {
     .into_iter()
     .find(|p| Path::new(p).exists())
     .unwrap_or("internal-sftp");
+    let sftp = sftp_override.unwrap_or(sftp);
     let config = format!(
         "Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/host\nPidFile {d}/sshd.pid\n\
          AuthorizedKeysFile {d}/authorized_keys\nUsePAM no\nStrictModes no\n\
@@ -82,6 +87,7 @@ fn key_login_strict_kex_exec_sftp_and_terminal() {
             private: dir.path().join("user"),
             public: dir.path().join("user.pub"),
         }),
+        ..Default::default()
     };
     let mut seen = None;
     let mut s = lc_ssh::connect(
@@ -134,4 +140,144 @@ fn key_login_strict_kex_exec_sftp_and_terminal() {
         }
     }
     writer.close().unwrap();
+}
+
+/// An sshd that takes the sftp subsystem but has no sftp-server (embedded Linux often): files fall
+/// back to SCP and shell commands.
+#[test]
+#[ignore]
+fn a_missing_sftp_server_falls_back_to_scp() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = 22991;
+    let _sshd = start_with(dir.path(), port, Some("/no/such/sftp-server"));
+    let user = std::env::var("USER").unwrap();
+    let auth = lc_ssh::Auth {
+        password: None,
+        key: Some(lc_ssh::KeyFiles {
+            private: dir.path().join("user"),
+            public: dir.path().join("user.pub"),
+        }),
+        ..Default::default()
+    };
+    let log = lc_core::TraceLog::default();
+    let opts = lc_ssh::Options {
+        trace: Some(log.clone()),
+        ..Default::default()
+    };
+    let mut s = lc_ssh::connect("127.0.0.1", port, &user, &auth, &opts, &mut |_| Ok(())).unwrap();
+    let home = s.home().expect("home through the shell");
+    assert!(s.uses_scp());
+    // The Log tab can say what happened at each step.
+    let notes: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|t| format!("{t:?}"))
+        .collect();
+    for want in [
+        "Server: SSH-2.0-OpenSSH",
+        "Host key accepted",
+        "The key was accepted",
+        "Logged in as",
+        "No SFTP here",
+    ] {
+        assert!(
+            notes.iter().any(|n| n.contains(want)),
+            "{want} not in {notes:#?}"
+        );
+    }
+    std::fs::write(dir.path().join("probe.txt"), b"x").unwrap();
+    let listed = s
+        .list(&lc_core::RemotePath::parse(
+            lc_core::PathStyle::Unix,
+            &dir.path().display().to_string(),
+        ))
+        .unwrap();
+    assert!(listed.iter().any(|e| e.name == "probe.txt"), "{home}");
+}
+
+/// Logging in as `ssh` does: an ed25519 key held by a running ssh-agent, then one read from a
+/// file, as `~/.ssh/id_ed25519` would be.
+#[test]
+#[ignore]
+fn agent_and_ed25519_file_logins() {
+    let dir = tempfile::tempdir().unwrap();
+    let port = 22992;
+    let _sshd = start(dir.path(), port);
+    let d = dir.path().display().to_string();
+    keygen(&["-t", "ed25519", "-f", &format!("{d}/ed")]);
+    let mut keys = std::fs::read_to_string(dir.path().join("authorized_keys")).unwrap();
+    keys.push_str(&std::fs::read_to_string(dir.path().join("ed.pub")).unwrap());
+    std::fs::write(dir.path().join("authorized_keys"), keys).unwrap();
+    let user = std::env::var("USER").unwrap();
+
+    // The agent alone: its key is the only way in.
+    let sock = dir.path().join("agent.sock");
+    let mut agent = Command::new("ssh-agent")
+        .args(["-D", "-a"])
+        .arg(&sock)
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("ssh-agent");
+    let end = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() {
+        assert!(Instant::now() < end, "ssh-agent did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let added = Command::new("ssh-add")
+        .arg(dir.path().join("ed"))
+        .env("SSH_AUTH_SOCK", &sock)
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(added.success());
+    std::env::set_var("SSH_AUTH_SOCK", &sock);
+    let log = lc_core::TraceLog::default();
+    let opts = lc_ssh::Options {
+        trace: Some(log.clone()),
+        ..Default::default()
+    };
+    let auth = lc_ssh::Auth {
+        agent: true,
+        ..Default::default()
+    };
+    let r = lc_ssh::connect("127.0.0.1", port, &user, &auth, &opts, &mut |_| Ok(()));
+    let _ = agent.kill();
+    let _ = agent.wait();
+    let notes = format!("{:#?}", log.lock().unwrap());
+    let mut s = r.unwrap_or_else(|e| panic!("{e}: {notes}"));
+    assert!(notes.contains("The agent's key"), "{notes}");
+    assert_eq!(s.run(b"echo agent").unwrap().output, b"agent\n");
+
+    // The file alone, with no agent and no password.
+    std::env::remove_var("SSH_AUTH_SOCK");
+    let auth = lc_ssh::Auth {
+        user_keys: vec![dir.path().join("ed")],
+        ..Default::default()
+    };
+    let mut s = lc_ssh::connect(
+        "127.0.0.1",
+        port,
+        &user,
+        &auth,
+        &Default::default(),
+        &mut |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(s.run(b"echo file").unwrap().output, b"file\n");
+
+    // Nothing that gets in: the error says so in the words the app asks for a password on.
+    let auth = lc_ssh::Auth::default();
+    let e = lc_ssh::connect(
+        "127.0.0.1",
+        port,
+        &user,
+        &auth,
+        &Default::default(),
+        &mut |_| Ok(()),
+    )
+    .err()
+    .unwrap()
+    .to_string();
+    assert!(e.contains("no password and no key to log in with"), "{e}");
 }

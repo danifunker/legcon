@@ -1035,7 +1035,8 @@ impl ConnectionController {
         }
         // Telnet logs in on the screen, SSH may have a key; the others need the password up front.
         let kind = self.machine.command_service().map(|s| s.kind);
-        let key = kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some();
+        let key = kind == Some(ServiceKind::Ssh)
+            && (self.machine.key_file.is_some() || self.machine.use_agent);
         let needed = !key && kind.is_some_and(ServiceKind::needs_password);
         match self.password_for(Login::Shell, needed) {
             Ok(p) => self.open_shell(p),
@@ -1054,6 +1055,7 @@ impl ConnectionController {
             rows,
             Arc::clone(&self.shell_key_note),
             Arc::clone(&self.notify),
+            Some(self.sessions.trace_log(&self.machine.id)),
         ));
     }
 
@@ -1807,7 +1809,9 @@ impl Controller for ConnectionController {
     fn apply(&mut self, action: Action) -> Vec<Effect> {
         match action {
             Action::Swap => {
+                // The areas trade places and sizes: the one on top keeps the larger share.
                 self.layout.swapped = !self.layout.swapped;
+                self.layout.files_share = 1.0 - self.layout.files_share;
                 self.layout_changed = true;
             }
             Action::SetFilesShare(share) => self.set_share(share),
@@ -1877,8 +1881,9 @@ impl Controller for ConnectionController {
                     return Vec::new();
                 }
                 let kind = self.machine.file_service().map(|s| s.kind);
-                // No password for the demo or NFS, nor for SSH with a login key.
-                let key = kind == Some(ServiceKind::Ssh) && self.machine.key_file.is_some();
+                // No password for the demo or NFS, nor up front for SSH with keys to try.
+                let key = kind == Some(ServiceKind::Ssh)
+                    && (self.machine.key_file.is_some() || self.machine.use_agent);
                 let needed = !key && kind.is_some_and(ServiceKind::needs_password);
                 match self.password_for(Login::Files, needed) {
                     Ok(p) => self.connect(p),
@@ -2134,6 +2139,13 @@ impl Controller for ConnectionController {
                     self.go_remote(home);
                 }
                 Err(e) if changed => self.remote_error = Some(format!("Could not connect: {e}")),
+                // No key got in and no password was given: ask for it, as ssh does, then retry.
+                Err(e)
+                    if self.session_password.is_none() && crate::model::ssh::keys_refused(&e) =>
+                {
+                    self.asking_for = Login::Files;
+                    out.push(self.ask_password());
+                }
                 Err(e) => {
                     self.remote_error = Some(format!("Could not connect: {e}"));
                     if let Some(why) = self.sessions.take_rsh_note(&self.machine.id) {
@@ -2209,6 +2221,12 @@ impl Controller for ConnectionController {
             out.extend(self.key_note(note, Login::Shell));
             match r {
                 Ok(s) => self.shell = Some(s),
+                Err(e)
+                    if self.session_password.is_none() && crate::model::ssh::keys_refused(&e) =>
+                {
+                    self.asking_for = Login::Shell;
+                    out.push(self.ask_password());
+                }
                 Err(e) => self.shell_error = Some(format!("Could not open a shell: {e}")),
             }
         }
@@ -2547,6 +2565,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let mut c = tab(home.path());
         assert_eq!(c.take_layout_change(), None);
+        let before = c.layout().files_share;
+        c.apply(Action::Swap);
+        // The terminal comes up with the files' size, and swapping back restores both.
+        assert!((c.layout().files_share - (1.0 - before)).abs() < 1e-6);
+        c.apply(Action::Swap);
+        assert!(!c.layout().swapped);
+        assert!((c.layout().files_share - before).abs() < 1e-6);
         c.apply(Action::Swap);
         c.apply(Action::SetFilesShare(0.99));
         let l = c.take_layout_change().unwrap();
