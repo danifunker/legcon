@@ -617,8 +617,6 @@ impl PtyWriter for PtyWriterImpl {
 
 /// Requests kept in flight at once, as OpenSSH does: 64 of 32 KB fill a 2 MB window.
 const DEPTH: usize = 64;
-/// Data per write, so a WRITE and its header fit one 32 KB channel packet.
-const WRITE_CHUNK: usize = CHUNK as usize - 512;
 
 /// Reads a file through SFTP from an offset, reading ahead; closes the handle when dropped.
 struct FileReader<'a> {
@@ -700,11 +698,13 @@ impl Drop for FileReader<'_> {
     }
 }
 
-/// Writes a file through SFTP, not waiting for each write's answer; `flush` collects them.
+/// Writes a file through SFTP in whole, aligned 32 KB writes, not waiting for each one's
+/// answer; `flush` sends the rest and collects them.
 struct FileWriter<'a> {
     sftp: &'a mut Sftp<Channel>,
     handle: Vec<u8>,
     at: u64,
+    buf: Vec<u8>,
     inflight: VecDeque<u32>,
 }
 
@@ -714,8 +714,20 @@ impl<'a> FileWriter<'a> {
             sftp,
             handle,
             at,
+            buf: Vec::with_capacity(CHUNK as usize),
             inflight: VecDeque::new(),
         }
+    }
+
+    fn send(&mut self) -> Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let id = self.sftp.send_write(&self.handle, self.at, &self.buf)?;
+        self.inflight.push_back(id);
+        self.at += self.buf.len() as u64;
+        self.buf.clear();
+        self.collect(DEPTH - 1)
     }
 
     fn collect(&mut self, keep: usize) -> Result<()> {
@@ -738,24 +750,24 @@ impl<'a> FileWriter<'a> {
 
 impl Write for FileWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = buf.len().min(WRITE_CHUNK);
-        let id = self
-            .sftp
-            .send_write(&self.handle, self.at, &buf[..n])
-            .map_err(std::io::Error::other)?;
-        self.inflight.push_back(id);
-        self.at += n as u64;
-        self.collect(DEPTH - 1).map_err(std::io::Error::other)?;
+        let n = buf.len().min(CHUNK as usize - self.buf.len());
+        self.buf.extend_from_slice(&buf[..n]);
+        if self.buf.len() == CHUNK as usize {
+            self.send().map_err(std::io::Error::other)?;
+        }
         Ok(n)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.collect(0).map_err(std::io::Error::other)
+        self.send()
+            .and_then(|()| self.collect(0))
+            .map_err(std::io::Error::other)
     }
 }
 
 impl Drop for FileWriter<'_> {
     fn drop(&mut self) {
+        let _ = self.send();
         self.settle();
         let _ = self.sftp.close(&self.handle);
     }

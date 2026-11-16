@@ -79,6 +79,8 @@ fn io_err(e: std::io::Error, timeout: Duration) -> Error {
 struct Dir {
     cipher: Cipher,
     mac: Option<Mac>,
+    /// chacha20-poly1305, which replaces both.
+    aead: Option<crypto::ChaChaPoly>,
     block: usize,
     seq: u32,
 }
@@ -88,6 +90,7 @@ impl Dir {
         Dir {
             cipher: Cipher::None,
             mac: None,
+            aead: None,
             block: 8,
             seq: 0,
         }
@@ -231,7 +234,9 @@ impl Link {
             return Err(Error::NotConnected);
         }
         let bs = self.out.block.max(8);
-        let mut pad = bs - (5 + payload.len()) % bs;
+        // An AEAD leaves the length out of the padded part.
+        let counted = if self.out.aead.is_some() { 1 } else { 5 };
+        let mut pad = bs - (counted + payload.len()) % bs;
         if pad < 4 {
             pad += bs;
         }
@@ -243,6 +248,12 @@ impl Link {
         pkt.resize(at + pad, 0);
         // A user-space CSPRNG: a system call per packet slowed bulk transfers.
         rand::thread_rng().fill_bytes(&mut pkt[at..]);
+        if let Some(a) = &self.out.aead {
+            a.seal(self.out.seq, &mut pkt);
+            self.tcp.write_all(&pkt)?;
+            self.out.seq = self.out.seq.wrapping_add(1);
+            return Ok(());
+        }
         let mac = self.out.mac.as_ref().map(|m| m.sign(self.out.seq, &pkt));
         self.out.cipher.apply(&mut pkt);
         if let Some(m) = mac {
@@ -276,6 +287,9 @@ impl Link {
     /// The next packet's payload, as it came (transport messages included).
     fn recv_raw(&mut self) -> Result<Vec<u8>> {
         self.tcp.set_read_timeout(Some(self.timeout))?;
+        if self.inp.aead.is_some() {
+            return self.recv_aead();
+        }
         let bs = self.inp.block.max(8);
         self.fill(bs)?;
         let mut first = self.rbuf[..bs].to_vec();
@@ -309,6 +323,31 @@ impl Link {
             return Err(bad("a packet from the server has bad padding"));
         }
         Ok(pkt[5..4 + len - pad].to_vec())
+    }
+
+    fn recv_aead(&mut self) -> Result<Vec<u8>> {
+        self.fill(4)?;
+        let a = self.inp.aead.as_ref().expect("an AEAD");
+        let len = a.length(self.inp.seq, &self.rbuf[..4]) as usize;
+        if !(5..=MAX_LEN).contains(&len) || !len.is_multiple_of(8) {
+            return Err(bad(
+                "a packet from the server is malformed (wrong keys or a broken connection)",
+            ));
+        }
+        self.fill(4 + len + 16)?;
+        let a = self.inp.aead.as_ref().expect("an AEAD");
+        let (pkt, tag) = self.rbuf[..4 + len + 16].split_at_mut(4 + len);
+        if !a.open(self.inp.seq, pkt, tag) {
+            return Err(bad("a packet from the server failed its integrity check"));
+        }
+        self.inp.seq = self.inp.seq.wrapping_add(1);
+        let pad = self.rbuf[4] as usize;
+        if pad + 1 > len {
+            return Err(bad("a packet from the server has bad padding"));
+        }
+        let payload = self.rbuf[5..4 + len - pad].to_vec();
+        self.rbuf.drain(..4 + len + 16);
+        Ok(payload)
     }
 
     /// The next packet that is not transport chatter; a rekey runs on the way.
@@ -571,16 +610,29 @@ impl Link {
         let (kl_o, il_o, bs_o) = crypto::cipher_sizes(&algs.cipher_out);
         let (kl_i, il_i, bs_i) = crypto::cipher_sizes(&algs.cipher_in);
         let out = Dir {
-            cipher: Cipher::new(
-                &algs.cipher_out,
-                &derive(b'C', kl_o),
-                &derive(b'A', il_o),
-                true,
-            )?,
-            mac: Some(Mac::new(
-                &algs.mac_out,
-                &derive(b'E', crypto::mac_key_len(&algs.mac_out)),
-            )?),
+            cipher: if algs.cipher_out == crypto::CHACHA {
+                Cipher::None
+            } else {
+                Cipher::new(
+                    &algs.cipher_out,
+                    &derive(b'C', kl_o),
+                    &derive(b'A', il_o),
+                    true,
+                )?
+            },
+            mac: if algs.cipher_out == crypto::CHACHA {
+                None
+            } else {
+                Some(Mac::new(
+                    &algs.mac_out,
+                    &derive(b'E', crypto::mac_key_len(&algs.mac_out)),
+                )?)
+            },
+            aead: if algs.cipher_out == crypto::CHACHA {
+                Some(crypto::ChaChaPoly::new(&derive(b'C', 64))?)
+            } else {
+                None
+            },
             block: bs_o,
             // Strict mode restarts the counts at each NEWKEYS, so no message can be slipped in.
             seq: if self.strict { 0 } else { self.out.seq },
@@ -588,16 +640,29 @@ impl Link {
         self.out = out;
         self.expect(msg::NEWKEYS, "the key exchange")?;
         let inp = Dir {
-            cipher: Cipher::new(
-                &algs.cipher_in,
-                &derive(b'D', kl_i),
-                &derive(b'B', il_i),
-                false,
-            )?,
-            mac: Some(Mac::new(
-                &algs.mac_in,
-                &derive(b'F', crypto::mac_key_len(&algs.mac_in)),
-            )?),
+            cipher: if algs.cipher_in == crypto::CHACHA {
+                Cipher::None
+            } else {
+                Cipher::new(
+                    &algs.cipher_in,
+                    &derive(b'D', kl_i),
+                    &derive(b'B', il_i),
+                    false,
+                )?
+            },
+            mac: if algs.cipher_in == crypto::CHACHA {
+                None
+            } else {
+                Some(Mac::new(
+                    &algs.mac_in,
+                    &derive(b'F', crypto::mac_key_len(&algs.mac_in)),
+                )?)
+            },
+            aead: if algs.cipher_in == crypto::CHACHA {
+                Some(crypto::ChaChaPoly::new(&derive(b'D', 64))?)
+            } else {
+                None
+            },
             block: bs_i,
             seq: if self.strict { 0 } else { self.inp.seq },
         };
@@ -605,8 +670,12 @@ impl Link {
         self.first_kex = false;
         self.negotiated.kex = algs.kex;
         self.negotiated.host_key = algs.host_key;
+        self.negotiated.mac = if algs.cipher_out == crypto::CHACHA {
+            "built into the cipher".into()
+        } else {
+            algs.mac_out
+        };
         self.negotiated.cipher = algs.cipher_out;
-        self.negotiated.mac = algs.mac_out;
         self.negotiated.strict = self.strict;
         Ok(())
     }

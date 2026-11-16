@@ -5,7 +5,7 @@
 
 use aes::cipher::{
     generic_array::GenericArray, BlockDecryptMut, BlockEncryptMut, InnerIvInit, KeyInit, KeyIvInit,
-    StreamCipher,
+    StreamCipher, StreamCipherSeek,
 };
 use hmac::Hmac;
 use lc_core::{Error, Result};
@@ -35,6 +35,8 @@ pub const HOST_KEY: &[&str] = &[
     "ssh-dss",
 ];
 pub const CIPHER: &[&str] = &[
+    // First, as in OpenSSH: far lighter than AES for a server without AES instructions.
+    CHACHA,
     "aes128-ctr",
     "aes192-ctr",
     "aes256-ctr",
@@ -48,6 +50,9 @@ pub const CIPHER: &[&str] = &[
     "arcfour128",
     "arcfour",
 ];
+/// The OpenSSH AEAD cipher (PROTOCOL.chacha20poly1305): its MAC is built in.
+pub const CHACHA: &str = "chacha20-poly1305@openssh.com";
+
 pub const MAC: &[&str] = &[
     "hmac-sha2-256",
     "hmac-sha2-512",
@@ -124,6 +129,7 @@ pub fn cipher_sizes(name: &str) -> (usize, usize, usize) {
         "blowfish-cbc" | "cast128-cbc" => (16, 8, 8),
         "arcfour" | "arcfour128" => (16, 0, 8),
         "arcfour256" => (32, 0, 8),
+        CHACHA => (64, 0, 8),
         _ => (0, 0, 8),
     }
 }
@@ -194,6 +200,70 @@ impl Cipher {
             Cipher::Rc4x32(c) => c.apply_keystream(data),
             Cipher::Cbc(c) => c.apply(data),
         }
+    }
+}
+
+/// chacha20-poly1305@openssh.com for one direction: the length sealed with one key, the
+/// packet with the other, and a Poly1305 tag over both.
+pub struct ChaChaPoly {
+    main: [u8; 32],
+    header: [u8; 32],
+}
+
+impl ChaChaPoly {
+    pub fn new(key: &[u8]) -> Result<ChaChaPoly> {
+        if key.len() != 64 {
+            return Err(bad("bad cipher key length"));
+        }
+        let mut c = ChaChaPoly {
+            main: [0; 32],
+            header: [0; 32],
+        };
+        c.main.copy_from_slice(&key[..32]);
+        c.header.copy_from_slice(&key[32..]);
+        Ok(c)
+    }
+
+    fn stream(key: &[u8; 32], seq: u32) -> chacha20::ChaCha20Legacy {
+        let nonce = u64::from(seq).to_be_bytes();
+        chacha20::ChaCha20Legacy::new(key.into(), &nonce.into())
+    }
+
+    /// The packet length from its first four (sealed) bytes.
+    pub fn length(&self, seq: u32, sealed: &[u8]) -> u32 {
+        let mut len = [sealed[0], sealed[1], sealed[2], sealed[3]];
+        Self::stream(&self.header, seq).apply_keystream(&mut len);
+        u32::from_be_bytes(len)
+    }
+
+    fn tag(&self, seq: u32, data: &[u8]) -> [u8; 16] {
+        let mut key = [0u8; 32];
+        Self::stream(&self.main, seq).apply_keystream(&mut key);
+        poly1305::Poly1305::new((&key).into())
+            .compute_unpadded(data)
+            .into()
+    }
+
+    /// Encrypt a whole packet (length first) in place and append its tag.
+    pub fn seal(&self, seq: u32, pkt: &mut Vec<u8>) {
+        Self::stream(&self.header, seq).apply_keystream(&mut pkt[..4]);
+        let mut s = Self::stream(&self.main, seq);
+        s.seek(64u64);
+        s.apply_keystream(&mut pkt[4..]);
+        let tag = self.tag(seq, pkt);
+        pkt.extend_from_slice(&tag);
+    }
+
+    /// Check a sealed packet's tag, then decrypt all but its length in place.
+    pub fn open(&self, seq: u32, pkt: &mut [u8], tag: &[u8]) -> bool {
+        use subtle::ConstantTimeEq;
+        if !bool::from(self.tag(seq, pkt).ct_eq(tag)) {
+            return false;
+        }
+        let mut s = Self::stream(&self.main, seq);
+        s.seek(64u64);
+        s.apply_keystream(&mut pkt[4..]);
+        true
     }
 }
 
@@ -487,7 +557,7 @@ mod tests {
 
     #[test]
     fn ciphers_round_trip_across_packets() {
-        for name in CIPHER {
+        for name in CIPHER.iter().filter(|c| **c != CHACHA) {
             let (k, iv, block) = cipher_sizes(name);
             let key = vec![7u8; k];
             let iv = vec![9u8; iv];
@@ -502,6 +572,25 @@ mod tests {
                 assert_eq!(data, plain, "{name} round {round}");
             }
         }
+    }
+
+    #[test]
+    fn chacha20_poly1305_seals_opens_and_catches_tampering() {
+        let key: Vec<u8> = (0..64).collect();
+        let c = ChaChaPoly::new(&key).unwrap();
+        let plain: Vec<u8> = [&28u32.to_be_bytes()[..], &[4u8], &[1u8; 23], &[0u8; 4]].concat();
+        let mut pkt = plain.clone();
+        c.seal(5, &mut pkt);
+        assert_eq!(pkt.len(), plain.len() + 16);
+        assert_eq!(c.length(5, &pkt), 28);
+        let (body, tag) = pkt.split_at(plain.len());
+        let mut wrong = body.to_vec();
+        assert!(!c.open(6, &mut wrong, tag), "another sequence number");
+        wrong[10] ^= 1;
+        assert!(!c.open(5, &mut wrong, tag), "a changed byte");
+        let mut good = body.to_vec();
+        assert!(c.open(5, &mut good, tag));
+        assert_eq!(good[4..], plain[4..]);
     }
 
     #[test]
