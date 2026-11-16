@@ -577,6 +577,7 @@ fn run(effects: Vec<Effect>) {
                 );
                 match spec.purpose {
                     "conn.name" => conn_action(conn::Action::NewFolderAnswered(answer)),
+                    conn::RENAME_PURPOSE => conn_action(conn::Action::CopyRenameAnswered(answer)),
                     "remote.go_to" => conn_action(conn::Action::RemoteGoToAnswered(answer)),
                     "machines.add.address" => dispatch(app::Action::AddAddressAnswered(answer)),
                     "machines.add.name" => dispatch(app::Action::AddNameAnswered(answer)),

@@ -337,6 +337,7 @@ impl AppController {
         connection::QueuePrefs {
             ask_over: self.settings.queue_ask_over,
             checksum: self.settings.verify_checksum,
+            on_existing: self.settings.on_existing,
         }
     }
 

@@ -21,6 +21,8 @@ pub struct Settings {
     pub queue_ask_over: usize,
     /// Check each copy with a checksum where the machine can compute one, besides its size.
     pub verify_checksum: bool,
+    /// What the transfer queue and local copies do with files already there; `Ask` asks.
+    pub on_existing: super::queue::OnExisting,
     /// New passwords go to the OS credential store rather than `machines.json` (the setup's choice).
     pub passwords_in_os_store: bool,
     /// The setup has been through once (finished or skipped).
@@ -39,6 +41,7 @@ impl Default for Settings {
             pinned_places: Vec::new(),
             queue_ask_over: QUEUE_ASK_OVER,
             verify_checksum: true,
+            on_existing: super::queue::OnExisting::Ask,
             passwords_in_os_store: false,
             setup_done: false,
         }

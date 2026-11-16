@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{size_text, ConnState, ConnectionController, Group, Pending, Side, TermTab};
-use crate::controller::{ChoiceSpec, Effect};
+use crate::controller::{ChoiceSpec, Effect, TextSpec};
 use crate::model::job::{Cancelled, Job, Status};
+use crate::model::local;
 use crate::model::queue::{Id, OnExisting, Queue, State};
 use crate::model::transfer::{self, Copied, Direction, Mismatch, Plan, Summary, Verified};
 
@@ -18,6 +19,8 @@ pub struct QueuePrefs {
     /// Ask before adding more files than this; 0 never asks.
     pub ask_over: usize,
     pub checksum: bool,
+    /// What to do with targets already there without asking; `Ask` asks.
+    pub on_existing: OnExisting,
 }
 
 impl Default for QueuePrefs {
@@ -25,9 +28,28 @@ impl Default for QueuePrefs {
         QueuePrefs {
             ask_over: crate::model::settings::QUEUE_ASK_OVER,
             checksum: true,
+            on_existing: OnExisting::Ask,
         }
     }
 }
+
+/// The button for each "already there" choice, as both questions word it.
+pub(super) fn label(on: OnExisting, many: bool) -> &'static str {
+    match on {
+        OnExisting::Overwrite => "Overwrite",
+        OnExisting::IfDifferent => "Replace if different",
+        OnExisting::Resume => "Resume",
+        OnExisting::Rename if many => "Rename each...",
+        OnExisting::Rename => "Rename...",
+        OnExisting::Skip if many => "Skip them",
+        OnExisting::Skip => "Skip",
+        OnExisting::Ask => "Ask for each",
+    }
+}
+
+/// What Replace if different does, for the questions' text.
+const IF_DIFFERENT: &str = "Replace if different leaves a file that is the same (same size, then \
+the machine's own checksum where it makes one, else the same date).";
 
 /// What a Transfers button does; it acts on the selected rows where it needs any.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +100,9 @@ pub const QUEUE_COLUMNS: [(&str, i32); 7] = [
     ("From", 220),
     ("To", 220),
 ];
+
+/// The text prompt for a copy's new name (queue and local copies alike).
+pub const RENAME_PURPOSE: &str = "conn.copy.rename";
 
 /// A batch being walked into queue entries.
 pub(super) struct Planning {
@@ -134,6 +159,9 @@ pub(super) struct Transfers {
 }
 
 fn done_text(c: &Copied) -> String {
+    if let Some(how) = &c.same {
+        return format!("Same as there, not copied ({how})");
+    }
     let mut s = match &c.verified {
         Verified::Sum(sum) => format!("Done, {} matches", sum.name()),
         Verified::Size(_) => "Done, size matches".to_string(),
@@ -448,7 +476,7 @@ impl ConnectionController {
         }
     }
 
-    pub(super) fn start_import(&mut self, paths: Vec<PathBuf>, overwrite: bool) {
+    pub(super) fn start_import(&mut self, paths: Vec<PathBuf>, choices: local::Choices) {
         let dest = self.local_dir.clone();
         let what = if paths.len() == 1 {
             paths[0]
@@ -460,7 +488,7 @@ impl ConnectionController {
         };
         let label = format!("Copy {what} into {}", dest.display());
         let job = Job::spawn(label.clone(), Arc::clone(&self.notify), move |ctx| {
-            crate::model::local::copy_into(&paths, &dest, overwrite, ctx)
+            local::copy_into(&paths, &dest, &choices, ctx)
         });
         let id = self.xfer.queue.new_id();
         self.xfer.local.push(LocalCopy {
@@ -502,6 +530,11 @@ impl ConnectionController {
             self.enqueue(plan, OnExisting::Overwrite, start);
             return Vec::new();
         };
+        if self.xfer.prefs.on_existing != OnExisting::Ask {
+            let on = self.xfer.prefs.on_existing;
+            self.enqueue(plan, on, start);
+            return Vec::new();
+        }
         let place = match first.dir {
             Direction::Download => "on this computer".to_string(),
             Direction::Upload => format!("on {}", self.machine.name),
@@ -518,15 +551,22 @@ impl ConnectionController {
                 first.name()
             )
         };
-        let mut answers = vec![Some(OnExisting::Overwrite)];
-        let mut choices = vec!["Overwrite".to_string()];
+        let many = there.len() > 1;
+        let mut on = vec![OnExisting::Overwrite, OnExisting::IfDifferent];
         if plan.can_resume && shorter {
             message += " Resume continues the ones that are shorter there.";
-            answers.push(Some(OnExisting::Resume));
-            choices.push("Resume".into());
+            on.push(OnExisting::Resume);
         }
-        answers.extend([Some(OnExisting::Skip), Some(OnExisting::Ask), None]);
-        choices.extend(["Skip them".into(), "Ask for each".into(), "Cancel".into()]);
+        message += " ";
+        message += IF_DIFFERENT;
+        on.extend([OnExisting::Rename, OnExisting::Skip]);
+        if many {
+            on.push(OnExisting::Ask);
+        }
+        let mut choices: Vec<String> = on.iter().map(|o| label(*o, many).to_string()).collect();
+        let mut answers: Vec<Option<OnExisting>> = on.into_iter().map(Some).collect();
+        choices.push("Cancel".into());
+        answers.push(None);
         let dismiss = choices.len() - 1;
         self.pending = Some(Pending::QueueExists(plan, start, answers));
         vec![Effect::Choose(ChoiceSpec {
@@ -608,19 +648,30 @@ impl ConnectionController {
             message += &format!(" ({} there, {} to copy)", size_text(a), size_text(b));
         }
         message.push('.');
-        let mut answers = vec![ItemAnswer::This(OnExisting::Overwrite)];
-        let mut choices = vec!["Overwrite".to_string()];
+        let mut answers = vec![
+            ItemAnswer::This(OnExisting::Overwrite),
+            ItemAnswer::This(OnExisting::IfDifferent),
+        ];
         if e.can_resume && matches!((have, it.size), (Some(a), Some(b)) if a < b) {
             answers.push(ItemAnswer::This(OnExisting::Resume));
-            choices.push("Resume".into());
         }
+        answers.push(ItemAnswer::This(OnExisting::Rename));
         let skip = answers.len();
         answers.extend([
             ItemAnswer::This(OnExisting::Skip),
             ItemAnswer::Rest(OnExisting::Overwrite),
             ItemAnswer::Rest(OnExisting::Skip),
         ]);
-        choices.extend(["Skip".into(), "Overwrite all".into(), "Skip all".into()]);
+        let choices = answers
+            .iter()
+            .map(|a| match a {
+                ItemAnswer::This(o) => label(*o, false).to_string(),
+                ItemAnswer::Rest(OnExisting::Overwrite) => "Overwrite all".into(),
+                ItemAnswer::Rest(_) => "Skip all".into(),
+            })
+            .collect();
+        message.push(' ');
+        message += IF_DIFFERENT;
         self.xfer.queue.set_state(id, State::Asking);
         self.pending = Some(Pending::QueueItem(id, answers));
         vec![Effect::Choose(ChoiceSpec {
@@ -630,6 +681,63 @@ impl ConnectionController {
             choices,
             dismiss: skip,
         })]
+    }
+
+    /// "Copy it under another name": the user's own name, offered as `name (2)` to edit.
+    fn ask_rename(&mut self, id: Id, taken: Option<&str>) -> Vec<Effect> {
+        let Some(e) = self.xfer.queue.get(id) else {
+            return Vec::new();
+        };
+        let side = match e.item.dir {
+            Direction::Download => Side::Local,
+            Direction::Upload => Side::Remote,
+        };
+        let place = match e.item.dir {
+            Direction::Download => "this computer".to_string(),
+            Direction::Upload => self.machine.name.clone(),
+        };
+        let prompt = match taken {
+            Some(n) => format!("{n} is also on {place}. Copy {} as:", e.item.name()),
+            None => format!(
+                "{} is already on {place}. Copy it as:",
+                e.item.target_name()
+            ),
+        };
+        let initial = self.xfer.queue.suggest_name(id);
+        self.xfer.queue.set_state(id, State::Asking);
+        self.pending = Some(Pending::QueueRename(id));
+        vec![Effect::AskText(TextSpec {
+            purpose: RENAME_PURPOSE,
+            title: "Copy under another name".into(),
+            prompt,
+            initial,
+            ok_label: "Copy".into(),
+            validator: self.name_rule(side),
+        })]
+    }
+
+    /// The name for a renamed copy; no name asks the "already there" question again.
+    pub(super) fn queue_rename_answered(&mut self, answer: Option<String>) -> Vec<Effect> {
+        let Some(Pending::QueueRename(id)) = self.pending.take() else {
+            return Vec::new();
+        };
+        let name = answer
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty());
+        match name {
+            Some(n) if self.xfer.queue.name_taken(id, &n) => self.ask_rename(id, Some(&n)),
+            Some(n) => {
+                self.xfer.queue.rename(id, &n);
+                Vec::new()
+            }
+            None => {
+                if let Some(e) = self.xfer.queue.get_mut(id) {
+                    e.on_existing = OnExisting::Ask;
+                    e.state = State::Waiting;
+                }
+                Vec::new()
+            }
+        }
     }
 
     /// Before Disconnect: ask what happens to unfinished transfers; `None` when there are none.
@@ -726,7 +834,7 @@ impl ConnectionController {
                 for p in self.xfer.planning.iter().filter(|p| ids.contains(&p.id)) {
                     p.job.cancel();
                 }
-                if let Some(Pending::QueueItem(id, _)) = &self.pending {
+                if let Some(Pending::QueueItem(id, _) | Pending::QueueRename(id)) = &self.pending {
                     if ids.contains(id) {
                         self.pending = None;
                     }
@@ -752,7 +860,10 @@ impl ConnectionController {
                 if matches!(
                     self.pending,
                     Some(
-                        Pending::QueueItem(..) | Pending::QueueMany(..) | Pending::QueueExists(..)
+                        Pending::QueueItem(..)
+                            | Pending::QueueMany(..)
+                            | Pending::QueueExists(..)
+                            | Pending::QueueRename(..)
                     )
                 ) {
                     self.pending = None;
@@ -877,6 +988,12 @@ impl ConnectionController {
             if e.needs_answer() {
                 if self.pending.is_none() {
                     out.extend(self.ask_item(id));
+                }
+                break;
+            }
+            if e.needs_name() {
+                if self.pending.is_none() {
+                    out.extend(self.ask_rename(id, None));
                 }
                 break;
             }

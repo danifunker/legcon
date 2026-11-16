@@ -1,6 +1,7 @@
 //! This computer's files, as the local pane lists them.
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 /// One entry of a local folder.
@@ -39,11 +40,70 @@ pub fn list_dir(dir: &Path) -> std::io::Result<Vec<LocalEntry>> {
     Ok(out)
 }
 
-/// Copy files and folders (dropped from the OS) into `dest`, keeping their names.
+/// What a local copy does with one file already in its target folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Existing {
+    Overwrite,
+    /// Leave it when it is the same file (same size and CRC-32), else overwrite.
+    IfDifferent,
+    Skip,
+    /// Copy under this name in the same folder instead.
+    Rename(String),
+}
+
+/// The answers for a local copy: one per target file the user named, `rest` for the others.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choices {
+    pub rest: Existing,
+    pub each: HashMap<PathBuf, Existing>,
+}
+
+impl Choices {
+    pub fn all(rest: Existing) -> Choices {
+        Choices {
+            rest,
+            each: HashMap::new(),
+        }
+    }
+}
+
+/// The target files a copy of `sources` into `dest` would land on that are already there,
+/// folders walked; each as (source, target).
+pub fn clashes(sources: &[PathBuf], dest: &Path) -> Vec<(PathBuf, PathBuf)> {
+    fn walk(src: &Path, dst: &Path, out: &mut Vec<(PathBuf, PathBuf)>) {
+        if src.is_dir() {
+            if dst.is_dir() {
+                for e in std::fs::read_dir(src).into_iter().flatten().flatten() {
+                    walk(&e.path(), &dst.join(e.file_name()), out);
+                }
+            }
+        } else if dst.is_file() {
+            out.push((src.to_path_buf(), dst.to_path_buf()));
+        }
+    }
+    let mut out = Vec::new();
+    for src in sources {
+        if let Some(name) = src.file_name() {
+            walk(src, &dest.join(name), &mut out);
+        }
+    }
+    out
+}
+
+fn same_file(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let crc = |p: &Path| lc_core::checksum::crc32(&mut std::fs::File::open(p)?);
+    Ok(crc(a)? == crc(b)?)
+}
+
+/// Copy files and folders (dropped from the OS) into `dest`, keeping their names unless the
+/// answers give a file another.
 pub fn copy_into(
-    sources: &[std::path::PathBuf],
+    sources: &[PathBuf],
     dest: &Path,
-    overwrite: bool,
+    choices: &Choices,
     ctx: &super::job::JobCtx,
 ) -> anyhow::Result<super::transfer::Summary> {
     fn size_of(p: &Path) -> u64 {
@@ -55,16 +115,15 @@ pub fn copy_into(
             Err(_) => 0,
         }
     }
-    fn copy_one(
-        src: &Path,
-        dst: &Path,
-        overwrite: bool,
-        sum: &mut super::transfer::Summary,
-        done: &mut u64,
+    struct Run<'a> {
+        choices: &'a Choices,
+        sum: super::transfer::Summary,
+        done: u64,
         total: u64,
-        ctx: &super::job::JobCtx,
-    ) -> anyhow::Result<()> {
-        ctx.check_cancel()?;
+        ctx: &'a super::job::JobCtx,
+    }
+    fn copy_one(r: &mut Run, src: &Path, dst: &Path) -> anyhow::Result<()> {
+        r.ctx.check_cancel()?;
         let name = dst
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -73,37 +132,47 @@ pub fn copy_into(
             std::fs::create_dir_all(dst)?;
             for e in std::fs::read_dir(src)? {
                 let e = e?;
-                copy_one(
-                    &e.path(),
-                    &dst.join(e.file_name()),
-                    overwrite,
-                    sum,
-                    done,
-                    total,
-                    ctx,
-                )?;
+                copy_one(r, &e.path(), &dst.join(e.file_name()))?;
             }
             return Ok(());
         }
-        if dst.exists() && !overwrite {
-            sum.skipped.push(name);
-            return Ok(());
+        let mut target = dst.to_path_buf();
+        if dst.exists() {
+            match r.choices.each.get(dst).unwrap_or(&r.choices.rest) {
+                Existing::Overwrite => {}
+                Existing::Skip => {
+                    r.sum.skipped.push(name);
+                    return Ok(());
+                }
+                Existing::IfDifferent => {
+                    r.ctx.set_phase(format!("Comparing {name}"));
+                    if same_file(src, dst).unwrap_or(false) {
+                        r.sum.skipped.push(name);
+                        return Ok(());
+                    }
+                }
+                Existing::Rename(n) => target = dst.with_file_name(n),
+            }
         }
-        ctx.set_phase(format!("Copying {name}"));
-        match std::fs::copy(src, dst) {
+        r.ctx.set_phase(format!("Copying {name}"));
+        match std::fs::copy(src, &target) {
             Ok(n) => {
-                sum.files += 1;
-                sum.bytes += n;
-                *done += n;
-                ctx.set_bytes(*done, total.max(*done));
+                r.sum.files += 1;
+                r.sum.bytes += n;
+                r.done += n;
+                r.ctx.set_bytes(r.done, r.total.max(r.done));
             }
-            Err(e) => sum.failed.push((name, e.to_string())),
+            Err(e) => r.sum.failed.push((name, e.to_string())),
         }
         Ok(())
     }
-    let total: u64 = sources.iter().map(|p| size_of(p)).sum();
-    let mut sum = super::transfer::Summary::default();
-    let mut done = 0;
+    let mut r = Run {
+        choices,
+        sum: super::transfer::Summary::default(),
+        done: 0,
+        total: sources.iter().map(|p| size_of(p)).sum(),
+        ctx,
+    };
     for src in sources {
         let Some(name) = src.file_name() else {
             continue;
@@ -111,15 +180,15 @@ pub fn copy_into(
         let dst = dest.join(name);
         // A folder dropped into itself would copy forever.
         if dst.starts_with(src) {
-            sum.failed.push((
+            r.sum.failed.push((
                 name.to_string_lossy().into_owned(),
                 "a folder cannot go inside itself".into(),
             ));
             continue;
         }
-        copy_one(src, &dst, overwrite, &mut sum, &mut done, total, ctx)?;
+        copy_one(&mut r, src, &dst)?;
     }
-    Ok(sum)
+    Ok(r.sum)
 }
 
 #[cfg(test)]

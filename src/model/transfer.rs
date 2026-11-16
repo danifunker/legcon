@@ -57,6 +57,47 @@ pub struct Item {
 }
 
 impl Item {
+    /// The folder the copy goes into, as text: the key for the names already there.
+    pub fn target_folder(&self) -> String {
+        match self.dir {
+            Direction::Download => self
+                .local
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+            Direction::Upload => self
+                .remote
+                .parent()
+                .map(|p| p.to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The name the copy gets on the target side.
+    pub fn target_name(&self) -> String {
+        match self.dir {
+            Direction::Download => self
+                .local
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            Direction::Upload => self.remote.name().to_string(),
+        }
+    }
+
+    /// Copy under another name in the same folder, which is not there yet.
+    pub fn rename_target(&mut self, name: &str) {
+        match self.dir {
+            Direction::Download => self.local = self.local.with_file_name(name),
+            Direction::Upload => {
+                if let Some(p) = self.remote.parent() {
+                    self.remote = p.join(name);
+                }
+            }
+        }
+        self.exists = None;
+    }
+
     /// The name the queue shows: the source side's.
     pub fn name(&self) -> String {
         match self.dir {
@@ -185,6 +226,8 @@ pub struct Plan {
     pub items: Vec<Item>,
     /// The protocol can continue a partly copied file in this direction.
     pub can_resume: bool,
+    /// Names already in each target folder that holds a clash ([`Item::target_folder`]).
+    pub taken: HashMap<String, Vec<String>>,
 }
 
 impl Plan {
@@ -350,6 +393,31 @@ pub fn plan(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             }
         }
     }
+    // The names in each folder where something clashes, so a new name can be offered.
+    let mut taken: HashMap<String, Vec<String>> = HashMap::new();
+    for s in steps.iter().filter(|s| s.exists.is_some()) {
+        let key = s.target_folder();
+        if taken.contains_key(&key) {
+            continue;
+        }
+        let names = match dir {
+            Direction::Download => s
+                .local
+                .parent()
+                .and_then(|p| std::fs::read_dir(p).ok())
+                .map(|d| {
+                    d.flatten()
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            Direction::Upload => there
+                .get(&key)
+                .map(|l| l.iter().map(|e| e.0.clone()).collect())
+                .unwrap_or_default(),
+        };
+        taken.insert(key, names);
+    }
     let caps = fs.caps();
     Ok(Plan {
         items: steps,
@@ -357,6 +425,7 @@ pub fn plan(fs: &mut dyn FileSession, b: &Batch, ctx: &JobCtx) -> anyhow::Result
             Direction::Download => true,
             Direction::Upload => caps.resume_upload,
         },
+        taken,
     })
 }
 
@@ -397,6 +466,8 @@ pub enum Mode {
     Overwrite,
     /// Continue from the target's length (from the start where the protocol cannot).
     Resume,
+    /// Leave a target that is the same file ([`same_as_target`]); overwrite one that is not.
+    IfDifferent,
 }
 
 /// How a finished file was checked.
@@ -412,6 +483,8 @@ pub enum Verified {
 /// One item copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Copied {
+    /// Not copied: the target is already this file, and how that was found.
+    pub same: Option<String>,
     pub bytes: u64,
     /// Where it continued from, when it resumed.
     pub resumed_at: u64,
@@ -449,6 +522,7 @@ pub fn copy_item(
             }
         }
         return Ok(Copied {
+            same: None,
             bytes: 0,
             resumed_at: 0,
             verified: Verified::Unchecked,
@@ -456,6 +530,16 @@ pub fn copy_item(
     }
     if let Some(why) = &item.problem {
         bail!("{why}");
+    }
+    if mode == Mode::IfDifferent && item.exists.is_some() {
+        if let Some(how) = same_as_target(fs, item, ctx)? {
+            return Ok(Copied {
+                same: Some(how),
+                bytes: 0,
+                resumed_at: 0,
+                verified: Verified::Unchecked,
+            });
+        }
     }
     ctx.set_phase(item.name());
     let forks = fs.keeps_mac_extras();
@@ -466,7 +550,7 @@ pub fn copy_item(
             }
             let have = match mode {
                 Mode::Resume => std::fs::metadata(&item.local).map_or(0, |m| m.len()),
-                Mode::Overwrite => 0,
+                Mode::Overwrite | Mode::IfDifferent => 0,
             };
             let at = item.size.map_or(have, |s| have.min(s));
             let mut src = fs.open_read(&item.remote, at)?;
@@ -525,9 +609,44 @@ pub fn copy_item(
     ctx.set_phase(format!("Checking {}", item.name()));
     let verified = verify(fs, item, size, sum)?;
     Ok(Copied {
+        same: None,
         bytes,
         resumed_at: at,
         verified,
+    })
+}
+
+/// Whether the file on the target side is already this one, without copying it: the sizes
+/// match, then the machine's own checksum (`cksum`, `XCRC`) matches ours, or, where the machine
+/// makes none, the dates match. `Some(how)` when it is the same.
+pub fn same_as_target(
+    fs: &mut dyn FileSession,
+    item: &Item,
+    ctx: &JobCtx,
+) -> anyhow::Result<Option<String>> {
+    ctx.set_phase(format!("Comparing {}", item.name()));
+    let here = std::fs::metadata(&item.local).ok().filter(|m| m.is_file());
+    let there = fs.stat(&item.remote).ok();
+    let (Some(here), Some(there)) = (here, there) else {
+        return Ok(None);
+    };
+    if there.size != Some(here.len()) {
+        return Ok(None);
+    }
+    ctx.check_cancel()?;
+    if let Ok(Some(theirs)) = fs.checksum(&item.remote) {
+        let ours = theirs.of(&mut File::open(&item.local)?)?;
+        return Ok((ours == theirs).then(|| format!("{} matches", theirs.name())));
+    }
+    let here_time = here
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    Ok(match (here_time, there.modified.map(|t| t.unix)) {
+        // FAT keeps dates to two seconds.
+        (Some(a), Some(b)) if (a - b).abs() <= 2 => Some("same size and date".into()),
+        _ => None,
     })
 }
 

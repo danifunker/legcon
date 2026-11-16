@@ -5,6 +5,10 @@
 //! machine's connection is free between files for a listing or a rename. Entries can be paused,
 //! resumed (from the partial file where the protocol allows), retried, removed and reordered.
 
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
 use super::transfer::{Item, Mode, Plan};
 
 pub type Id = u64;
@@ -28,13 +32,18 @@ impl State {
     }
 }
 
-/// What to do when the target is already there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What to do when the target is already there (also the Options default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum OnExisting {
+    #[default]
     Ask,
     Overwrite,
+    /// Overwrite only a target that is not the same file (size, then checksum or date).
+    IfDifferent,
     /// Continue a shorter target (where the protocol can), overwrite otherwise.
     Resume,
+    /// Ask for another name to copy it under when its turn comes.
+    Rename,
     Skip,
 }
 
@@ -53,11 +62,16 @@ pub struct Entry {
 impl Entry {
     /// What the copy job is told: resume a partial target, or write it whole.
     pub fn mode(&self) -> Mode {
-        if self.on_existing == OnExisting::Resume && self.can_resume && !self.restart {
-            Mode::Resume
-        } else {
-            Mode::Overwrite
+        match self.on_existing {
+            OnExisting::Resume if self.can_resume && !self.restart => Mode::Resume,
+            OnExisting::IfDifferent => Mode::IfDifferent,
+            _ => Mode::Overwrite,
         }
+    }
+
+    /// The target is there and the user is to name another one for this copy.
+    pub fn needs_name(&self) -> bool {
+        self.item.exists.is_some() && self.on_existing == OnExisting::Rename && !self.item.folder
     }
 
     /// The target is there and nobody has said what to do with it yet.
@@ -96,6 +110,8 @@ pub struct Queue {
     next: Id,
     /// Whether waiting entries start on their own; off means "Add to queue" only builds it up.
     pub running: bool,
+    /// Names already in target folders, from planning ([`Plan::taken`]).
+    taken: HashMap<String, Vec<String>>,
 }
 
 impl Queue {
@@ -108,6 +124,14 @@ impl Queue {
     /// Append a planned batch; returns how many entries it added.
     pub fn add(&mut self, plan: Plan, on_existing: OnExisting) -> usize {
         let n = plan.items.len();
+        for (folder, names) in plan.taken {
+            let have = self.taken.entry(folder).or_default();
+            for name in names {
+                if !have.contains(&name) {
+                    have.push(name);
+                }
+            }
+        }
         for item in plan.items {
             let id = self.new_id();
             self.entries.push(Entry {
@@ -267,6 +291,48 @@ impl Queue {
             .retain(|e| !e.unfinished() || e.state == State::Running);
     }
 
+    /// Whether `name` is in use in `id`'s target folder: there already, or another entry's.
+    pub fn name_taken(&self, id: Id, name: &str) -> bool {
+        let Some(e) = self.get(id) else {
+            return false;
+        };
+        let folder = e.item.target_folder();
+        let fold = |n: &str| n.to_lowercase();
+        self.taken
+            .get(&folder)
+            .is_some_and(|l| l.iter().any(|n| fold(n) == fold(name)))
+            || self.entries.iter().any(|o| {
+                o.id != id
+                    && o.unfinished()
+                    && o.item.target_folder() == folder
+                    && fold(&o.item.target_name()) == fold(name)
+            })
+    }
+
+    /// A name to offer for `id`'s copy: its own with " (2)" (or the first free number) before
+    /// the extension. The user edits it before anything is copied.
+    pub fn suggest_name(&self, id: Id) -> String {
+        let Some(e) = self.get(id) else {
+            return String::new();
+        };
+        let name = e.item.target_name();
+        (2..)
+            .map(|n| numbered(&name, n))
+            .find(|c| !self.name_taken(id, c))
+            .expect("some number is free")
+    }
+
+    /// Copy `id` under `name` instead, in the same folder.
+    pub fn rename(&mut self, id: Id, name: &str) {
+        if let Some(e) = self.get_mut(id) {
+            e.item.rename_target(name);
+            e.on_existing = OnExisting::Ask;
+            if e.state == State::Asking {
+                e.state = State::Waiting;
+            }
+        }
+    }
+
     /// Answer "already there" for every entry still waiting on that question.
     pub fn answer_rest(&mut self, on: OnExisting) {
         for e in &mut self.entries {
@@ -274,6 +340,14 @@ impl Queue {
                 e.on_existing = on;
             }
         }
+    }
+}
+
+/// `name` with ` (n)` before its extension: `notes (2).txt`, `README (2)`, `.profile (2)`.
+pub fn numbered(name: &str, n: u32) -> String {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => format!("{} ({n}){}", &name[..dot], &name[dot..]),
+        _ => format!("{name} ({n})"),
     }
 }
 
@@ -299,6 +373,11 @@ mod tests {
                 })
                 .collect(),
             can_resume: true,
+            taken: [(
+                "C:/x".to_string(),
+                vec!["a".to_string(), "b (2)".to_string()],
+            )]
+            .into(),
         }
     }
 
@@ -356,5 +435,26 @@ mod tests {
         assert!(q.entries().iter().all(Entry::skips));
         q.add(plan(&["c"], true), OnExisting::Resume);
         assert_eq!(q.entries()[2].mode(), Mode::Resume);
+    }
+
+    #[test]
+    fn a_new_name_is_offered_free_and_taken_by_a_rename() {
+        assert_eq!(numbered("notes.txt", 2), "notes (2).txt");
+        assert_eq!(numbered(".profile", 3), ".profile (3)");
+        assert_eq!(numbered("archive.tar.gz", 2), "archive.tar (2).gz");
+        let mut q = Queue::default();
+        q.add(plan(&["b", "c"], true), OnExisting::Rename);
+        let ids: Vec<Id> = q.entries().iter().map(|e| e.id).collect();
+        assert!(q.entries()[0].needs_name());
+        // "b (2)" is already in the folder; "c" is another entry's target.
+        assert_eq!(q.suggest_name(ids[0]), "b (3)");
+        assert!(q.name_taken(ids[0], "C") && q.name_taken(ids[0], "a"));
+        q.rename(ids[0], "b (3)");
+        let e = q.get(ids[0]).unwrap();
+        assert_eq!(e.item.local, std::path::PathBuf::from("C:/x/b (3)"));
+        assert!(!e.needs_name() && !e.needs_answer() && e.item.exists.is_none());
+        assert!(q.name_taken(ids[1], "b (3)"));
+        q.get_mut(ids[1]).unwrap().on_existing = OnExisting::IfDifferent;
+        assert_eq!(q.get(ids[1]).unwrap().mode(), Mode::IfDifferent);
     }
 }

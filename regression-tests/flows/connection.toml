@@ -156,9 +156,31 @@ ui = [
   { op = "select_row", id = "remote.list", name = ".profile" },
   { op = "key", id = "remote.list", key = "f6" },
   { op = "wait_dialog" },
-  { op = "press", name = "Skip them" },
+  { op = "press", name = "Skip" },
   { op = "expect_enabled", id = "transfers.clear", enabled = true },
   { op = "activate", id = "transfers.clear" },
   { op = "expect_row", id = "transfers.list", name = ".profile", present = false },
 ]
 expect_files = [".profile"]
+
+[[case]]
+id = "flow.conn.queue-rename"
+description = "Copy a file twice and give the second copy a name of the user's own (offered as .profile (2))"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "expect_row", id = "local.list", name = ".profile" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "remote.list", key = "f6" },
+  { op = "wait_dialog" },
+  { op = "press", name = "Rename..." },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "profile.old" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "local.list", name = "profile.old" },
+]
+expect_files = [".profile", "profile.old"]

@@ -19,9 +19,10 @@ use crate::model::queue::{Id, OnExisting};
 use crate::model::term::TermSession;
 use crate::model::transfer::{self, Direction, Pick, Plan};
 
+mod import;
 mod transfers;
 use transfers::{direction_from, ItemAnswer, Transfers};
-pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS};
+pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS, RENAME_PURPOSE};
 
 use crate::model::local::{list_dir, LocalEntry};
 use crate::model::machines::{Machine, Password, Service};
@@ -151,8 +152,10 @@ pub enum Action {
     ShellResize(u16, u16),
     /// Copy these names from one side's current folder to the other side's.
     Copy(Side, Vec<String>),
-    /// The answer to "these already exist": Overwrite, Skip existing, Cancel.
+    /// A button of "already there" for files dropped onto the local pane (batch or one file).
     CopyConflict(usize),
+    /// A new name for a copy whose target is there (`None`: cancelled), queued or local.
+    CopyRenameAnswered(Option<String>),
     /// The answer to "host key changed": accept for good, accept once, cancel.
     HostKeyAnswered(usize),
     /// Make (or reuse) a key for this machine, install it over SSH and test it (PLAN.md 5.1).
@@ -277,10 +280,12 @@ enum Pending {
     QueueExists(Plan, bool, Vec<Option<OnExisting>>),
     /// One queued file whose target is there.
     QueueItem(Id, Vec<ItemAnswer>),
+    /// The new name for one queued file whose target is there.
+    QueueRename(Id),
     /// Disconnect with transfers unfinished.
     QueueDisconnect,
-    /// Files dropped from the OS onto the local pane, to copy into its folder.
-    Import(Vec<PathBuf>),
+    /// Files dropped from the OS onto the local pane, and the questions about ones already there.
+    Import(Box<import::ImportAsk>),
     NewFolder(Side),
     Rename(Side, String),
     Delete(Side, Vec<Pick>),
@@ -1333,17 +1338,7 @@ impl ConnectionController {
                     .into_iter()
                     .filter(|p| p.parent() != Some(self.local_dir.as_path()))
                     .collect();
-                let clashes: Vec<String> = paths
-                    .iter()
-                    .map(name)
-                    .filter(|n| self.local_dir.join(n).exists())
-                    .collect();
-                if clashes.is_empty() {
-                    self.start_import(paths, true);
-                    return Vec::new();
-                }
-                self.pending = Some(Pending::Import(paths));
-                conflict_question(&clashes.iter().map(String::as_str).collect::<Vec<_>>())
+                self.import(paths)
             }
             Side::Remote => {
                 if !self.can_disconnect() || self.remote_dir.is_none() {
@@ -1382,26 +1377,6 @@ impl ConnectionController {
             }
         }
     }
-}
-
-/// "These already exist": Overwrite, Skip existing, Cancel.
-fn conflict_question(clashes: &[&str]) -> Vec<Effect> {
-    let message = if clashes.len() == 1 {
-        format!("{} already exists there.", clashes[0])
-    } else {
-        format!(
-            "{} of these already exist there, such as {}.",
-            clashes.len(),
-            clashes[0]
-        )
-    };
-    vec![Effect::Choose(super::ChoiceSpec {
-        purpose: "conn.copy.conflict",
-        title: "Copy".into(),
-        message,
-        choices: vec!["Overwrite".into(), "Skip existing".into(), "Cancel".into()],
-        dismiss: 2,
-    })]
 }
 
 impl ConnectionController {
@@ -1972,10 +1947,17 @@ impl Controller for ConnectionController {
                     self.machine.password = Password::Ask;
                 }
             }
-            Action::CopyConflict(choice) => match self.pending.take() {
-                Some(Pending::Import(paths)) if choice < 2 => self.start_import(paths, choice == 0),
-                _ => {}
-            },
+            Action::CopyConflict(choice) => return self.import_answered(choice),
+            Action::CopyRenameAnswered(answer) => {
+                return match self.pending {
+                    Some(Pending::QueueRename(_)) => {
+                        let out = self.queue_rename_answered(answer);
+                        self.nudge_queue(out)
+                    }
+                    Some(Pending::Import(_)) => self.import_rename_answered(answer),
+                    _ => Vec::new(),
+                };
+            }
             Action::Drop(side, paths) => return self.drop_files(side, paths),
             Action::AddToQueue(side, names) => return self.copy(side, names, false),
             Action::CopyOut(names, dir) => return self.copy_into(Side::Remote, names, dir, true),
@@ -2304,6 +2286,7 @@ mod tests {
     use super::*;
     use crate::model::job::NoNotify;
     use crate::model::machines::Service;
+    use transfers::RENAME_PURPOSE;
 
     fn tab(home: &Path) -> ConnectionController {
         let mut m = Machine::new("sparc", "demo");
@@ -2807,7 +2790,7 @@ mod tests {
         c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
         c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
         let s = settle_ask(&mut c, "conn.queue.exists");
-        let skip = s.choices.iter().position(|b| b == "Skip them").unwrap();
+        let skip = s.choices.iter().position(|b| b == "Skip").unwrap();
         c.apply(Action::QueueExistsAnswered(skip));
         settle(&mut c);
         assert_eq!(done(&c, "Skipped"), 1, "{}", c.transfers_text());
@@ -2831,6 +2814,7 @@ mod tests {
         c.set_queue_prefs(QueuePrefs {
             ask_over: 1,
             checksum: false,
+            ..Default::default()
         });
         c.apply(Action::Copy(Side::Remote, vec!["src".into()]));
         let s = settle_ask(&mut c, "conn.queue.many");
@@ -2941,16 +2925,146 @@ mod tests {
                 .len(),
             1440
         );
-        // A second drop asks first; Skip existing copies nothing.
+        // A second drop asks first; Skip them copies nothing.
         let e = c.apply(Action::Drop(Side::Local, dropped));
-        assert!(matches!(&e[0], Effect::Choose(s) if s.purpose == "conn.copy.conflict"));
-        c.apply(Action::CopyConflict(1));
+        let Effect::Choose(s) = &e[0] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(s.purpose, "conn.copy.conflict");
+        c.apply(Action::CopyConflict(
+            s.choices.iter().position(|b| b == "Skip them").unwrap(),
+        ));
         settle(&mut c);
         assert!(
             c.transfers_text().contains("0 file(s)"),
             "{}",
             c.transfers_text()
         );
+    }
+
+    /// Tick until the queue asks for a name; the prompt.
+    fn settle_name(c: &mut ConnectionController) -> super::super::TextSpec {
+        for _ in 0..400 {
+            for e in c.tick() {
+                match e {
+                    Effect::AskText(t) => return t,
+                    Effect::Choose(s) => panic!("asked {}: {}", s.purpose, s.message),
+                    _ => {}
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("no name asked for");
+    }
+
+    #[test]
+    fn files_already_there_are_renamed_compared_or_left() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        let profile = home.path().join(".profile");
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        let original = std::fs::read(&profile).unwrap();
+        let pick = |s: &super::super::ChoiceSpec, b: &str| {
+            s.choices.iter().position(|c| c == b).unwrap_or_else(|| {
+                panic!("no {b} in {:?}", s.choices);
+            })
+        };
+        let status = |c: &ConnectionController| {
+            let rows = c.queue_rows();
+            let r = rows.iter().rev().find(|r| r.direction.starts_with("To "));
+            r.unwrap().status.clone()
+        };
+        // The same file: Replace if different leaves it, by the machine's checksum.
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        let s = settle_ask(&mut c, "conn.queue.exists");
+        assert_eq!(
+            s.choices,
+            [
+                "Overwrite",
+                "Replace if different",
+                "Rename...",
+                "Skip",
+                "Cancel"
+            ]
+        );
+        c.apply(Action::QueueExistsAnswered(pick(
+            &s,
+            "Replace if different",
+        )));
+        settle(&mut c);
+        assert_eq!(status(&c), "Same as there, not copied (CRC-32 matches)");
+        // Same size, other bytes: the checksum differs, so it is copied.
+        let mut changed = original.clone();
+        changed[0] ^= 1;
+        std::fs::write(&profile, &changed).unwrap();
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        let s = settle_ask(&mut c, "conn.queue.exists");
+        c.apply(Action::QueueExistsAnswered(pick(
+            &s,
+            "Replace if different",
+        )));
+        settle(&mut c);
+        assert!(status(&c).starts_with("Done"), "{}", c.transfers_text());
+        assert_eq!(std::fs::read(&profile).unwrap(), original);
+        // Rename...: a name to edit, offered free; one that is there is asked again.
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        let s = settle_ask(&mut c, "conn.queue.exists");
+        let e = c.apply(Action::QueueExistsAnswered(pick(&s, "Rename...")));
+        let t = match &e[..] {
+            [Effect::AskText(t)] => t.clone(),
+            _ => settle_name(&mut c),
+        };
+        assert_eq!(
+            (t.purpose, t.initial.as_str()),
+            (RENAME_PURPOSE, ".profile (2)")
+        );
+        assert!(t.validate("a/b").is_err());
+        let again = c.apply(Action::CopyRenameAnswered(Some(".profile".into())));
+        assert!(
+            matches!(&again[..], [Effect::AskText(t)] if t.prompt.starts_with(".profile is also")),
+            "{again:?}"
+        );
+        c.apply(Action::CopyRenameAnswered(Some("profile.old".into())));
+        settle(&mut c);
+        assert_eq!(
+            std::fs::read(home.path().join("profile.old")).unwrap(),
+            original
+        );
+        // Files dropped on the local pane get the same choices; Rename... names the copy.
+        let outside = tempfile::tempdir().unwrap();
+        let a = outside.path().join("a.txt");
+        std::fs::write(&a, b"one").unwrap();
+        std::fs::write(home.path().join("a.txt"), b"two").unwrap();
+        let e = c.apply(Action::Drop(Side::Local, vec![a.clone()]));
+        let Effect::Choose(s) = &e[0] else {
+            panic!("{e:?}")
+        };
+        let e = c.apply(Action::CopyConflict(pick(s, "Rename...")));
+        let [Effect::AskText(t)] = &e[..] else {
+            panic!("{e:?}")
+        };
+        assert_eq!(t.initial, "a (2).txt");
+        c.apply(Action::CopyRenameAnswered(Some(t.initial.clone())));
+        settle(&mut c);
+        assert_eq!(
+            std::fs::read(home.path().join("a (2).txt")).unwrap(),
+            b"one"
+        );
+        assert_eq!(std::fs::read(home.path().join("a.txt")).unwrap(), b"two");
+        // The Options default answers without asking.
+        c.set_queue_prefs(QueuePrefs {
+            on_existing: OnExisting::Skip,
+            ..Default::default()
+        });
+        c.apply(Action::Copy(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        assert_eq!(status(&c), "Skipped, already there");
+        assert!(c.apply(Action::Drop(Side::Local, vec![a])).is_empty());
+        settle(&mut c);
+        assert_eq!(std::fs::read(home.path().join("a.txt")).unwrap(), b"two");
     }
 
     #[test]

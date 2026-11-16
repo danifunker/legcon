@@ -94,6 +94,7 @@ pub const MACHINES_OPTIONS: &str = "machines.options";
 pub const OPT_SECTION_QUEUE: &str = "options.section.queue";
 pub const OPT_QUEUE_ASK_OVER: &str = "options.queue_ask_over";
 pub const OPT_CHECKSUM: &str = "options.checksum";
+pub const OPT_ON_EXISTING: &str = "options.on_existing";
 
 // The setup (controller::setup).
 pub const MACHINES_SETUP: &str = "machines.setup";
