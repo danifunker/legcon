@@ -955,7 +955,9 @@ fn refresh() {
                 }
             }
         }
-        if on_shell && ui::shown(s.w.term.hwnd) {
+        // On every connection tab, not just Shell: a shell opened from another tab starts at
+        // the size it is shown at, rather than a default it is squeezed from later.
+        if ui::client(s.w.term.hwnd).right > 0 {
             let grid = term_view::grid(s.w.term.hwnd);
             if grid != t.shell_size() {
                 resize = Some(grid);

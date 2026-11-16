@@ -1134,7 +1134,9 @@ pub fn refresh() {
             None
         };
         s.w.term.set(screen, &t.shell_message());
-        if on_shell && ui::shown(&s.w.term.view) {
+        // On every connection tab, not just Shell: a shell opened from another tab starts at
+        // the size it is shown at, rather than a default it is squeezed from later.
+        if s.w.term.view.bounds().size.width > 0.0 {
             resize = Some(t.shell_size());
         }
         t.status_line()

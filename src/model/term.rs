@@ -323,9 +323,7 @@ impl TermSession {
         if (r, c) == (rows, cols) {
             return Ok(());
         }
-        lock_status(&self.inner.parser)
-            .screen_mut()
-            .set_size(rows, cols);
+        resize_keeping_cursor(&mut lock_status(&self.inner.parser), rows, cols);
         lock_status(&self.inner.writer).resize(cols, rows)?;
         Ok(())
     }
@@ -349,9 +347,39 @@ impl TermSession {
     }
 }
 
+/// Resize the screen as xterm does: when it gets shorter, the top lines go rather than the ones
+/// at the cursor, so the prompt stays where it was in the text instead of losing the lines above.
+fn resize_keeping_cursor(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+    let (old_rows, _) = parser.screen().size();
+    let (row, _) = parser.screen().cursor_position();
+    if rows < old_rows && row >= rows {
+        let n = row + 1 - rows;
+        // Save the cursor, scroll the whole screen up n lines from its bottom, come back n higher.
+        let seq = format!(
+            "\x1b7\x1b[r\x1b[{old_rows};1H{}\x1b8\x1b[{n}A",
+            "\n".repeat(n as usize)
+        );
+        parser.process(seq.as_bytes());
+    }
+    parser.screen_mut().set_size(rows, cols);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shorter_screen_keeps_the_cursor_line() {
+        let mut p = vt100::Parser::new(10, 20, 0);
+        p.process(b"one\r\ntwo\r\nthree\r\nfour\r\n$ ls\r\n$ ");
+        resize_keeping_cursor(&mut p, 3, 20);
+        let rows: Vec<String> = p.screen().rows(0, 20).collect();
+        assert_eq!(rows, ["four", "$ ls", "$ "]);
+        assert_eq!(p.screen().cursor_position(), (2, 2));
+        // Taller or a cursor still inside: nothing moves.
+        resize_keeping_cursor(&mut p, 8, 30);
+        assert_eq!(p.screen().rows(0, 30).next().unwrap(), "four");
+    }
 
     #[test]
     fn palette_corners() {

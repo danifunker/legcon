@@ -68,6 +68,7 @@ pub const MS_FORGET_HOST_KEY: &str = "machine.forget_host_key";
 pub const MS_SYSTEM: &str = "machine.section.system";
 pub const MS_CHARSET: &str = "machine.charset";
 pub const MS_HOME: &str = "machine.home";
+pub const MS_REMOTE_FOLDER: &str = "machine.remote_folder";
 pub const MS_LOGOUT: &str = "machine.logout";
 pub const MS_TERMINAL: &str = "machine.terminal";
 pub const MS_UID: &str = "machine.uid";

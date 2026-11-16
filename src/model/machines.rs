@@ -279,6 +279,9 @@ pub struct Machine {
     /// Sent before a shell session closes (`exit`, `logout`); empty sends nothing.
     #[serde(default)]
     pub logout_command: String,
+    /// The folder on the machine its pane opens in after connecting; empty for the login folder.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub remote_folder: String,
     /// Log in over SSH as `ssh` does too: the keys in the user's ssh-agent and `~/.ssh`.
     #[serde(default = "yes")]
     pub use_agent: bool,
@@ -423,6 +426,7 @@ impl Machine {
             logout_command: String::new(),
             terminal: String::new(),
             use_agent: true,
+            remote_folder: String::new(),
             host_key: None,
             check_host_key: true,
             key_file: None,

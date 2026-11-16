@@ -46,13 +46,16 @@ fn kinds(files: bool, m: &Machine) -> Vec<ServiceKind> {
 const NFS_VERSIONS: [(&str, Option<u32>); 3] = [("Auto", None), ("3", Some(3)), ("2", Some(2))];
 
 /// Terminal types a shell can ask for; the first is "pick one" (`Machine::terminal_type`).
-const TERMINALS: [&str; 7] = [
+const TERMINALS: [&str; 10] = [
     "Auto",
     "vt100",
+    "vt102",
     "vt220",
     "ansi",
     "xterm",
+    "xterm-color",
     "xterm-256color",
+    "iris-ansi",
     "dumb",
 ];
 
@@ -215,14 +218,21 @@ pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
         ),
         field(
             ids::MS_HOME,
-            "Home folder here",
+            "Folder on this computer",
             FieldKind::Folder(
                 m.home_folder
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
             ),
-            "Empty for the app's home folder.",
+            "Where this machine's local pane opens; empty for legcon's home folder.",
+        ),
+        field(
+            ids::MS_REMOTE_FOLDER,
+            "Folder on the machine",
+            FieldKind::Text(m.remote_folder.clone()),
+            "Where the machine's pane opens after connecting, as the machine spells it (/media/fat); \
+             empty for the login folder.",
         ),
         field(
             ids::MS_LOGOUT,
@@ -377,6 +387,7 @@ pub fn apply(m: &mut Machine, v: &FormValues, keys: &[KeyInfo]) -> Result<(), St
     }
     let home = v.text(ids::MS_HOME).trim();
     m.home_folder = (!home.is_empty()).then(|| home.into());
+    m.remote_folder = v.text(ids::MS_REMOTE_FOLDER).trim().to_string();
     m.logout_command = v.text(ids::MS_LOGOUT).trim().to_string();
     m.terminal = match v.choice(ids::MS_TERMINAL) {
         0 => String::new(),

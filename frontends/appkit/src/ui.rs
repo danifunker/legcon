@@ -385,10 +385,6 @@ pub fn set_title(b: &NSButton, text: &str) {
     }
 }
 
-pub fn shown(view: &NSView) -> bool {
-    !view.isHidden()
-}
-
 pub fn set_visible(view: &NSView, on: bool) {
     if view.isHidden() == on {
         view.setHidden(!on);

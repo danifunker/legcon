@@ -482,9 +482,12 @@ impl ConnectionController {
         sessions: Sessions,
         notify: Arc<dyn Notify>,
     ) -> Self {
+        // A machine's own folder that is not on this computer (moved, or another computer's
+        // path) falls back to the app's, rather than an error in the pane.
         let home = machine
             .home_folder
             .clone()
+            .filter(|p| p.is_dir())
             .unwrap_or_else(|| app_home.to_path_buf());
         let mut c = ConnectionController {
             layout: machine.layout.clone(),
@@ -2136,7 +2139,12 @@ impl Controller for ConnectionController {
             match r {
                 Ok(home) => {
                     self.remote_home = Some(home.clone());
-                    self.go_remote(home);
+                    // The machine's own start folder, when set; else where the login put us.
+                    let start = match self.machine.remote_folder.trim() {
+                        "" => home,
+                        f => remote_target(&home, f),
+                    };
+                    self.go_remote(start);
                 }
                 Err(e) if changed => self.remote_error = Some(format!("Could not connect: {e}")),
                 // No key got in and no password was given: ask for it, as ssh does, then retry.
@@ -2696,6 +2704,32 @@ mod tests {
         assert_eq!(c.remote_path(), "/export/home/dani");
         c.apply(Action::RemoteGoToAnswered(Some("/tmp".into())));
         assert_eq!(c.remote_path(), "/tmp");
+    }
+
+    #[test]
+    fn a_machine_opens_in_its_own_folders_or_falls_back() {
+        let home = tempfile::tempdir().unwrap();
+        let mut m = Machine::new("sparc", "demo");
+        m.services.push(Service {
+            kind: ServiceKind::Demo,
+            port: 0,
+        });
+        m.remote_folder = "src".into();
+        m.home_folder = Some(PathBuf::from("/no/such/folder/on/this/computer"));
+        let mut c = ConnectionController::new(
+            m,
+            home.path(),
+            Vec::new(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        );
+        // The local folder is not here: the app's home folder instead.
+        assert_eq!(c.local_path(), home.path().display().to_string());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        // Relative to the login folder, as the machine spells it.
+        assert_eq!(c.remote_path(), "/export/home/dani/src");
     }
 
     #[test]
