@@ -239,9 +239,10 @@ impl Link {
         put_u32(&mut pkt, (1 + payload.len() + pad) as u32);
         pkt.push(pad as u8);
         pkt.extend_from_slice(payload);
-        let mut padding = vec![0u8; pad];
-        OsRng.fill_bytes(&mut padding);
-        pkt.extend_from_slice(&padding);
+        let at = pkt.len();
+        pkt.resize(at + pad, 0);
+        // A user-space CSPRNG: a system call per packet slowed bulk transfers.
+        rand::thread_rng().fill_bytes(&mut pkt[at..]);
         let mac = self.out.mac.as_ref().map(|m| m.sign(self.out.seq, &pkt));
         self.out.cipher.apply(&mut pkt);
         if let Some(m) = mac {
@@ -253,7 +254,7 @@ impl Link {
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
-        let mut buf = [0u8; 16384];
+        let mut buf = [0u8; 65536];
         while self.rbuf.len() < n {
             match self.tcp.read(&mut buf) {
                 Ok(0) => {
@@ -937,9 +938,11 @@ impl Link {
             return Ok(if c.eof { Some(0) } else { None });
         }
         let n = buf.len().min(q.len());
-        for (b, v) in buf.iter_mut().zip(q.drain(..n)) {
-            *b = v;
-        }
+        let (a, b) = q.as_slices();
+        let k = a.len().min(n);
+        buf[..k].copy_from_slice(&a[..k]);
+        buf[k..n].copy_from_slice(&b[..n - k]);
+        q.drain(..n);
         c.consumed += n as u32;
         if c.consumed >= WINDOW / 2 && !c.closed {
             let mut p = vec![msg::CHANNEL_WINDOW_ADJUST];

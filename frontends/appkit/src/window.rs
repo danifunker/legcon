@@ -81,6 +81,9 @@ struct Drawn {
     remote: Vec<Row>,
     header: Option<HeaderInfo>,
     machine: String,
+    /// The folders the lists were last filled from: a new one starts at the top.
+    local_dir: String,
+    remote_dir: String,
     queue_ids: Vec<u64>,
     term_text: String,
 }
@@ -1050,11 +1053,19 @@ pub fn refresh() {
         let local = t.local_rows();
         if local != s.drawn.local {
             s.w.local.list.set_rows(lines(&local, false));
+            if s.drawn.local_dir != t.local_path() {
+                s.w.local.list.to_top();
+                s.drawn.local_dir = t.local_path();
+            }
             s.drawn.local = local;
         }
         let remote = t.remote_rows();
         if remote != s.drawn.remote {
             s.w.remote.list.set_rows(lines(&remote, true));
+            if s.drawn.remote_dir != t.remote_path() {
+                s.w.remote.list.to_top();
+                s.drawn.remote_dir = t.remote_path();
+            }
             s.drawn.remote = remote;
         }
         let term = t.term_tab();

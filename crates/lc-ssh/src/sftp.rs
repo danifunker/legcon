@@ -4,6 +4,7 @@
 //! which on Windows must be UTF-8, and 1990s machines name files in Latin-1 or MacRoman. The
 //! client works over any `Read + Write`, so tests drive it against a pretend server in memory.
 
+use std::collections::HashMap;
 use std::io::{Read, Write};
 
 use lc_core::{Error, Result};
@@ -198,10 +199,11 @@ pub fn read_packet(r: &mut impl Read) -> Result<(u8, Vec<u8>)> {
     if len == 0 || len > 1 << 20 {
         return Err(Error::Protocol(format!("SFTP packet of {len} bytes")));
     }
-    let mut body = vec![0u8; len];
+    let mut kind = [0u8];
+    r.read_exact(&mut kind)?;
+    let mut body = vec![0u8; len - 1];
     r.read_exact(&mut body)?;
-    let kind = body.remove(0);
-    Ok((kind, body))
+    Ok((kind[0], body))
 }
 
 pub fn write_packet(w: &mut impl Write, kind: u8, body: &[u8]) -> Result<()> {
@@ -226,6 +228,8 @@ pub struct Name {
 pub struct Sftp<S> {
     io: S,
     next: u32,
+    /// Replies that came ahead of the one being waited for, by request id.
+    early: HashMap<u32, (u8, Vec<u8>)>,
     pub version: u32,
 }
 
@@ -270,6 +274,7 @@ impl<S: Read + Write> Sftp<S> {
         Ok(Sftp {
             io,
             next: 1,
+            early: HashMap::new(),
             version,
         })
     }
@@ -279,18 +284,39 @@ impl<S: Read + Write> Sftp<S> {
     }
 
     fn call(&mut self, kind: u8, args: &[u8]) -> Result<Reply> {
+        let id = self.request(kind, args)?;
+        self.reply(id)
+    }
+
+    /// Send a request without waiting; its id, for `reply`.
+    fn request(&mut self, kind: u8, args: &[u8]) -> Result<u32> {
         let id = self.next;
         self.next = self.next.wrapping_add(1);
         let mut b = Vec::with_capacity(args.len() + 4);
         put_u32(&mut b, id);
         b.extend_from_slice(args);
         write_packet(&mut self.io, kind, &b)?;
-        let (kind, body) = read_packet(&mut self.io)?;
+        Ok(id)
+    }
+
+    /// The reply to request `id`; others that arrive first are kept for their turn.
+    fn reply(&mut self, id: u32) -> Result<Reply> {
+        let (kind, body) = loop {
+            if let Some(r) = self.early.remove(&id) {
+                break r;
+            }
+            let (kind, body) = read_packet(&mut self.io)?;
+            let got = Cursor::new(&body).u32()?;
+            if got == id {
+                break (kind, body);
+            }
+            if self.early.len() >= 1024 {
+                return Err(Error::Protocol(format!("SFTP reply {got} to request {id}")));
+            }
+            self.early.insert(got, (kind, body));
+        };
         let mut c = Cursor::new(&body);
-        let got = c.u32()?;
-        if got != id {
-            return Err(Error::Protocol(format!("SFTP reply {got} to request {id}")));
-        }
+        c.u32()?;
         Ok(match kind {
             op::STATUS => {
                 let code = c.u32()?;
@@ -397,10 +423,26 @@ impl<S: Read + Write> Sftp<S> {
 
     /// Up to `len` bytes at `offset`; empty at the end of the file.
     pub fn read(&mut self, handle: &[u8], offset: u64, len: u32) -> Result<Vec<u8>> {
+        let id = self.send_read(handle, offset, len)?;
+        self.read_data(id)
+    }
+
+    pub fn write(&mut self, handle: &[u8], offset: u64, data: &[u8]) -> Result<()> {
+        let id = self.send_write(handle, offset, data)?;
+        self.write_done(id)
+    }
+
+    /// Ask for a read without waiting; `read_data` collects it.
+    pub fn send_read(&mut self, handle: &[u8], offset: u64, len: u32) -> Result<u32> {
         let mut b = Self::path_arg(handle);
         b.extend_from_slice(&offset.to_be_bytes());
         put_u32(&mut b, len);
-        match self.call(op::READ, &b)? {
+        self.request(op::READ, &b)
+    }
+
+    /// The data of read `id`; empty at the end of the file.
+    pub fn read_data(&mut self, id: u32) -> Result<Vec<u8>> {
+        match self.reply(id)? {
             Reply::Data(d) => Ok(d),
             Reply::Status(status::EOF, _) => Ok(Vec::new()),
             Reply::Status(code, msg) => Err(status_error(code, &msg, b"read")),
@@ -408,11 +450,20 @@ impl<S: Read + Write> Sftp<S> {
         }
     }
 
-    pub fn write(&mut self, handle: &[u8], offset: u64, data: &[u8]) -> Result<()> {
+    /// Send a write without waiting; `write_done` collects its status.
+    pub fn send_write(&mut self, handle: &[u8], offset: u64, data: &[u8]) -> Result<u32> {
         let mut b = Self::path_arg(handle);
         b.extend_from_slice(&offset.to_be_bytes());
         put_str(&mut b, data);
-        self.expect_ok(op::WRITE, &b, b"write")
+        self.request(op::WRITE, &b)
+    }
+
+    pub fn write_done(&mut self, id: u32) -> Result<()> {
+        match self.reply(id)? {
+            Reply::Status(status::OK, _) => Ok(()),
+            Reply::Status(code, msg) => Err(status_error(code, &msg, b"write")),
+            _ => Err(Error::Protocol("SFTP: expected a status".into())),
+        }
     }
 
     pub fn remove(&mut self, path: &[u8]) -> Result<()> {

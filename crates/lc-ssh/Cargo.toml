@@ -27,5 +27,9 @@ ed25519-dalek = "2"
 des = "0.8"
 md5 = { package = "md-5", version = "0.10" }
 
+# The ARMv8 SHA-2 instructions (x86 has SHA-NI detection without this); not on Windows ARM.
+[target.'cfg(all(target_arch = "aarch64", not(windows)))'.dependencies]
+sha2 = { version = "0.10", features = ["oid", "asm"] }
+
 [dev-dependencies]
 tempfile = "3"

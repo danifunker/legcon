@@ -286,3 +286,36 @@ fn read_write_rename_remove() {
     let e = s.stat(b"/home/dani/old").unwrap_err();
     assert!(matches!(e, Error::NotFound(_)), "{e}");
 }
+
+#[test]
+fn requests_in_flight_answer_in_any_order() {
+    let mut s = start();
+    let body: Vec<u8> = (0..100_000u32).map(|i| (i % 249) as u8).collect();
+    let h = s
+        .open(b"/home/dani/big.bin", flag::WRITE | flag::CREAT)
+        .unwrap();
+    let ids: Vec<u32> = body
+        .chunks(10_000)
+        .enumerate()
+        .map(|(i, c)| s.send_write(&h, i as u64 * 10_000, c).unwrap())
+        .collect();
+    for id in ids {
+        s.write_done(id).unwrap();
+    }
+    s.close(&h).unwrap();
+
+    let h = s.open(b"/home/dani/big.bin", flag::READ).unwrap();
+    let ids: Vec<u32> = (0..11)
+        .map(|i| s.send_read(&h, i * 10_000, 10_000).unwrap())
+        .collect();
+    // Collected last first: the earlier replies wait their turn.
+    let mut parts: Vec<Vec<u8>> = ids
+        .iter()
+        .rev()
+        .map(|&id| s.read_data(id).unwrap())
+        .collect();
+    parts.reverse();
+    assert!(parts[10].is_empty());
+    assert_eq!(parts.concat(), body);
+    s.close(&h).unwrap();
+}

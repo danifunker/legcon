@@ -17,6 +17,7 @@ pub mod ssh1;
 pub mod transport;
 pub mod wire;
 
+use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
@@ -614,56 +615,148 @@ impl PtyWriter for PtyWriterImpl {
     }
 }
 
-/// Reads a file through SFTP from an offset; closes the handle when dropped.
+/// Requests kept in flight at once, as OpenSSH does: 64 of 32 KB fill a 2 MB window.
+const DEPTH: usize = 64;
+/// Data per write, so a WRITE and its header fit one 32 KB channel packet.
+const WRITE_CHUNK: usize = CHUNK as usize - 512;
+
+/// Reads a file through SFTP from an offset, reading ahead; closes the handle when dropped.
 struct FileReader<'a> {
     sftp: &'a mut Sftp<Channel>,
     handle: Vec<u8>,
-    at: u64,
+    /// Offset of the next read to ask for.
+    next: u64,
+    /// Reads asked for: id, offset, length. Starts at one and grows, so small files ask little.
+    inflight: VecDeque<(u32, u64, u32)>,
+    depth: usize,
+    got: Vec<u8>,
+    pos: usize,
+    eof: bool,
+}
+
+impl<'a> FileReader<'a> {
+    fn new(sftp: &'a mut Sftp<Channel>, handle: Vec<u8>, at: u64) -> Self {
+        FileReader {
+            sftp,
+            handle,
+            next: at,
+            inflight: VecDeque::new(),
+            depth: 1,
+            got: Vec::new(),
+            pos: 0,
+            eof: false,
+        }
+    }
+
+    /// Collect and drop the replies still owed, so the channel is clean for the next request.
+    fn settle(&mut self) {
+        while let Some((id, ..)) = self.inflight.pop_front() {
+            let _ = self.sftp.read_data(id);
+        }
+    }
+
+    fn next_block(&mut self) -> Result<()> {
+        while self.inflight.len() < self.depth {
+            let id = self.sftp.send_read(&self.handle, self.next, CHUNK)?;
+            self.inflight.push_back((id, self.next, CHUNK));
+            self.next += u64::from(CHUNK);
+        }
+        let (id, at, len) = self.inflight.pop_front().expect("a read in flight");
+        let data = self.sftp.read_data(id)?;
+        self.depth = (self.depth * 2).min(DEPTH);
+        if data.is_empty() {
+            self.eof = true;
+            self.settle();
+        } else if data.len() < len as usize {
+            // A short read leaves a gap before the reads already asked for: ask again from it.
+            self.settle();
+            self.next = at + data.len() as u64;
+        }
+        self.got = data;
+        self.pos = 0;
+        Ok(())
+    }
 }
 
 impl Read for FileReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let want = (buf.len() as u32).min(CHUNK);
-        let data = self
-            .sftp
-            .read(&self.handle, self.at, want)
-            .map_err(std::io::Error::other)?;
-        let n = data.len().min(buf.len());
-        buf[..n].copy_from_slice(&data[..n]);
-        self.at += n as u64;
+        while self.pos == self.got.len() {
+            if self.eof {
+                return Ok(0);
+            }
+            self.next_block().map_err(std::io::Error::other)?;
+        }
+        let n = buf.len().min(self.got.len() - self.pos);
+        buf[..n].copy_from_slice(&self.got[self.pos..self.pos + n]);
+        self.pos += n;
         Ok(n)
     }
 }
 
 impl Drop for FileReader<'_> {
     fn drop(&mut self) {
+        self.settle();
         let _ = self.sftp.close(&self.handle);
     }
 }
 
+/// Writes a file through SFTP, not waiting for each write's answer; `flush` collects them.
 struct FileWriter<'a> {
     sftp: &'a mut Sftp<Channel>,
     handle: Vec<u8>,
     at: u64,
+    inflight: VecDeque<u32>,
+}
+
+impl<'a> FileWriter<'a> {
+    fn new(sftp: &'a mut Sftp<Channel>, handle: Vec<u8>, at: u64) -> Self {
+        FileWriter {
+            sftp,
+            handle,
+            at,
+            inflight: VecDeque::new(),
+        }
+    }
+
+    fn collect(&mut self, keep: usize) -> Result<()> {
+        while self.inflight.len() > keep {
+            let id = self.inflight.pop_front().expect("a write in flight");
+            if let Err(e) = self.sftp.write_done(id) {
+                self.settle();
+                return Err(e);
+            }
+        }
+        Ok(())
+    }
+
+    fn settle(&mut self) {
+        while let Some(id) = self.inflight.pop_front() {
+            let _ = self.sftp.write_done(id);
+        }
+    }
 }
 
 impl Write for FileWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let n = buf.len().min(CHUNK as usize);
-        self.sftp
-            .write(&self.handle, self.at, &buf[..n])
+        let n = buf.len().min(WRITE_CHUNK);
+        let id = self
+            .sftp
+            .send_write(&self.handle, self.at, &buf[..n])
             .map_err(std::io::Error::other)?;
+        self.inflight.push_back(id);
         self.at += n as u64;
+        self.collect(DEPTH - 1).map_err(std::io::Error::other)?;
         Ok(n)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        self.collect(0).map_err(std::io::Error::other)
     }
 }
 
 impl Drop for FileWriter<'_> {
     fn drop(&mut self) {
+        self.settle();
         let _ = self.sftp.close(&self.handle);
     }
 }
@@ -761,7 +854,7 @@ impl FileSession for SshSession {
         let raw = self.path(path);
         let sftp = self.sftp()?;
         let handle = sftp.open(&raw, flag::READ)?;
-        Ok(Box::new(FileReader { sftp, handle, at }))
+        Ok(Box::new(FileReader::new(sftp, handle, at)))
     }
 
     fn open_write(
@@ -782,7 +875,7 @@ impl FileSession for SshSession {
         };
         let sftp = self.sftp()?;
         let handle = sftp.open(&raw, flags)?;
-        Ok(Box::new(FileWriter { sftp, handle, at }))
+        Ok(Box::new(FileWriter::new(sftp, handle, at)))
     }
 
     fn open_write_sized(

@@ -1,0 +1,6 @@
+# ARMv8 AES instructions for the aes crate (on by default from aes 0.9); runtime-detected.
+[target.aarch64-apple-darwin]
+rustflags = ["--cfg", "aes_armv8"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["--cfg", "aes_armv8"]

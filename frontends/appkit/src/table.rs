@@ -543,6 +543,18 @@ impl Table {
         self.select_rows(&keep);
     }
 
+    /// Another folder's rows: nothing selected, scrolled to the first row.
+    pub fn to_top(&self) {
+        self.select_rows(&[]);
+        if self.len() > 0 {
+            self.view.scrollRowToVisible(0);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.source.ivars().borrow().rows.len()
+    }
+
     pub fn selected_all(&self) -> Vec<usize> {
         let set = self.view.selectedRowIndexes();
         let mut out = Vec::new();
