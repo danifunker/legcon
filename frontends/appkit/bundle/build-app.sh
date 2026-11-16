@@ -35,7 +35,9 @@ done
 out=${1:-"$shell/target/$profile"}
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
-plist_version=${version:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$shell/Cargo.toml" | head -1)}
+# A dated release version (2026-11-16-04-12) goes in as dotted numbers.
+plist_version=${version//-/.}
+plist_version=${plist_version:-$(sed -n 's/^version = "\(.*\)"/\1/p' "$shell/Cargo.toml" | head -1)}
 # macOS 11 (Big Sur) on Intel and Apple silicon alike (D44).
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}"
 

@@ -184,7 +184,8 @@ jobs:
 
   # Release builds, once the lab, Windows and macOS pass: the Win32 window and lc for Windows x64,
   # x86 (Windows 10) and ARM64 (Windows 11); the AppKit legcon.app and lc for macOS, universal
-  # (macOS 11 and later); lc for Linux. Each is kept as a workflow artifact.
+  # (macOS 11 and later); lc for Linux. Each is kept as a workflow artifact, named with the
+  # version (the head commit's UTC time, 2026-11-16-04-12) that a push to main releases.
   build:
     name: build (${{ matrix.target }})
     needs: [unix90s, windows, macos]
@@ -275,31 +276,33 @@ jobs:
           NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARIZE_PASSWORD }}
           NOTARY_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
         run: |
-          mkdir -p dist
-          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-${GITHUB_SHA::8}"
+          mkdir -p dist stage
+          VERSION=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%d-%H-%M)
           if [ "$RUNNER_OS" = Windows ]; then
             T="${{ matrix.rust_targets }}"
             cargo build --release --bin lc --target "$T"
             (cd frontends/win32 && cargo build --release --target "$T")
-            cp "target/$T/release/lc.exe" "frontends/win32/target/$T/release/legcon.exe" dist/
+            cp "target/$T/release/lc.exe" "frontends/win32/target/$T/release/legcon.exe" stage/
             # It starts on this runner (x64 Windows runs x86; the ARM runner runs ARM64).
-            dist/lc.exe --help > /dev/null
+            stage/lc.exe --help > /dev/null
+            pwsh -NoProfile -Command "Compress-Archive -Path stage/legcon.exe,stage/lc.exe -DestinationPath dist/legcon-${{ matrix.target }}-$VERSION.zip"
           elif [ "$RUNNER_OS" = macOS ]; then
             # Both architectures, macOS 11 and later; the bundle script signs, notarizes and
             # packages the app.
             export MACOSX_DEPLOYMENT_TARGET=11.0
             cargo build --release --bin lc --target aarch64-apple-darwin
             cargo build --release --bin lc --target x86_64-apple-darwin
-            lipo -create -output dist/lc target/aarch64-apple-darwin/release/lc target/x86_64-apple-darwin/release/lc
+            lipo -create -output stage/lc target/aarch64-apple-darwin/release/lc target/x86_64-apple-darwin/release/lc
             if [ -n "$MACOS_SIGN_IDENTITY" ] && [ "$MACOS_SIGN_IDENTITY" != "-" ]; then
-              codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/lc
+              codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" stage/lc
             fi
-            frontends/appkit/bundle/build-app.sh --universal --package "$VERSION" "$PWD/dist"
+            ditto -c -k stage/lc "dist/lc-macos-universal-$VERSION.zip"
+            frontends/appkit/bundle/build-app.sh --universal --package "$VERSION" "$PWD/stage"
             # The zip and dmg carry the app: an artifact would drop the bundle's executable bit.
-            rm -rf dist/legcon.app
+            mv stage/legcon-macos-universal-"$VERSION".{zip,dmg} dist/
           else
             cargo build --release --bin lc
-            cp target/release/lc dist/
+            tar -czf "dist/lc-linux-x64-$VERSION.tar.gz" -C target/release lc
           fi
           ls -l dist
 
@@ -315,3 +318,53 @@ jobs:
           name: legcon-${{ matrix.target }}-${{ github.sha }}
           path: dist/
           if-no-files-found: error
+
+  # A push to main that passes everything is a release: every build above, with a table of
+  # downloads and checksums, tagged v<version> on the commit it was built from.
+  release:
+    name: release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: legcon-*-${{ github.sha }}
+          path: release
+          merge-multiple: true
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%d-%H-%M)
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VER"
+          cd release
+          for f in legcon-windows-x64 legcon-windows-x86 legcon-windows-arm64; do
+            [ -f "$f-$VER.zip" ] || { echo "::error::missing $f-$VER.zip"; exit 1; }
+          done
+          for f in legcon-macos-universal-$VER.dmg legcon-macos-universal-$VER.zip \
+                   lc-macos-universal-$VER.zip lc-linux-x64-$VER.tar.gz; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          sha256sum * > SHA256SUMS.txt
+          cat > ../NOTES.md <<EOF
+          ## Downloads
+
+          | System | legcon | Command line only (\`lc\`) |
+          |---|---|---|
+          | **macOS 11 and later**, Apple silicon and Intel | [.dmg]($BASE/legcon-macos-universal-$VER.dmg) or [.zip]($BASE/legcon-macos-universal-$VER.zip) | [lc]($BASE/lc-macos-universal-$VER.zip) |
+          | **Windows 10 / 11**, x64 | [.zip]($BASE/legcon-windows-x64-$VER.zip) (legcon.exe and lc.exe) | _(in the zip)_ |
+          | **Windows 10**, x86 (32-bit) | [.zip]($BASE/legcon-windows-x86-$VER.zip) | _(in the zip)_ |
+          | **Windows 11**, ARM64 | [.zip]($BASE/legcon-windows-arm64-$VER.zip) | _(in the zip)_ |
+          | **Linux**, x64 | | [lc]($BASE/lc-linux-x64-$VER.tar.gz) |
+
+          The Windows programs are not code-signed yet: SmartScreen may ask before the first run.
+          Checksums: [SHA256SUMS.txt]($BASE/SHA256SUMS.txt).
+          EOF
+          gh release create "v$VER" * --target "$GITHUB_SHA" --title "legcon $VER" \
+            --notes-file ../NOTES.md --generate-notes
