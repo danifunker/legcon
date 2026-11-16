@@ -73,8 +73,46 @@ pub struct TermScreen {
     pub app_cursor: bool,
 }
 
+/// What the machine asks the terminal and a real one answers: where the cursor is (login scripts
+/// move it to the far corner and ask, to learn the screen's size), whether it is well, what it
+/// is, how big it is. Without answers a prompt starts wherever the question left the cursor.
+#[derive(Default)]
+pub(crate) struct Answers {
+    out: Vec<u8>,
+}
+
+impl vt100::Callbacks for Answers {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        _i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        let first = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
+        let (row, col) = screen.cursor_position();
+        let (rows, cols) = screen.size();
+        let reply = match (i1, c, first) {
+            // Cursor position report (DSR 6), also the DEC form.
+            (None, 'n', 6) => format!("\x1b[{};{}R", row + 1, col + 1),
+            (Some(b'?'), 'n', 6) => format!("\x1b[?{};{}R", row + 1, col + 1),
+            // Status report: all well.
+            (None, 'n', 5) => "\x1b[0n".into(),
+            // Primary device attributes: a VT100 with advanced video.
+            (None, 'c', 0) => "\x1b[?1;2c".into(),
+            // Secondary device attributes: a plain VT220-class terminal.
+            (Some(b'>'), 'c', 0) => "\x1b[>1;10;0c".into(),
+            // The text area's size in characters.
+            (None, 't', 18) => format!("\x1b[8;{rows};{cols}t"),
+            _ => return,
+        };
+        self.out.extend_from_slice(reply.as_bytes());
+    }
+}
+
 struct Inner {
-    parser: Mutex<vt100::Parser>,
+    parser: Mutex<vt100::Parser<Answers>>,
     writer: Mutex<Box<dyn PtyWriter>>,
     charset: Charset,
     /// Why the session ended, once it has.
@@ -240,7 +278,12 @@ impl TermSession {
             let charset = Charset::from_label(&machine.charset).unwrap_or_default();
             let session = TermSession {
                 inner: Arc::new(Inner {
-                    parser: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK)),
+                    parser: Mutex::new(vt100::Parser::new_with_callbacks(
+                        rows,
+                        cols,
+                        SCROLLBACK,
+                        Answers::default(),
+                    )),
                     writer: Mutex::new(pty.writer),
                     charset,
                     ended: Mutex::new(None),
@@ -266,7 +309,14 @@ impl TermSession {
                     Ok(0) => break "The machine closed the session.".to_string(),
                     Ok(n) => {
                         let text = inner.charset.decode(&buf[..n]);
-                        lock_status(&inner.parser).process(text.as_bytes());
+                        let answers = {
+                            let mut p = lock_status(&inner.parser);
+                            p.process(text.as_bytes());
+                            std::mem::take(&mut p.callbacks_mut().out)
+                        };
+                        if !answers.is_empty() {
+                            let _ = lock_status(&inner.writer).send(&answers);
+                        }
                         wake.wake();
                     }
                     Err(e)
@@ -349,7 +399,7 @@ impl TermSession {
 
 /// Resize the screen as xterm does: when it gets shorter, the top lines go rather than the ones
 /// at the cursor, so the prompt stays where it was in the text instead of losing the lines above.
-fn resize_keeping_cursor(parser: &mut vt100::Parser, rows: u16, cols: u16) {
+fn resize_keeping_cursor<C: vt100::Callbacks>(parser: &mut vt100::Parser<C>, rows: u16, cols: u16) {
     let (old_rows, _) = parser.screen().size();
     let (row, _) = parser.screen().cursor_position();
     if rows < old_rows && row >= rows {
@@ -367,6 +417,22 @@ fn resize_keeping_cursor(parser: &mut vt100::Parser, rows: u16, cols: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn questions_to_the_terminal_are_answered() {
+        let mut p = vt100::Parser::new_with_callbacks(24, 80, 0, Answers::default());
+        // The size-finding trick: far corner, then "where is the cursor?".
+        p.process(b"\x1b7\x1b[999;999H\x1b[6n\x1b8");
+        assert_eq!(p.callbacks_mut().out, b"\x1b[24;80R");
+        p.callbacks_mut().out.clear();
+        p.process(b"\x1b[5n\x1b[c\x1b[>c\x1b[18t");
+        assert_eq!(
+            String::from_utf8_lossy(&p.callbacks().out),
+            "\x1b[0n\x1b[?1;2c\x1b[>1;10;0c\x1b[8;24;80t"
+        );
+        // And the cursor went back where it was, so the prompt starts at the top.
+        assert_eq!(p.screen().cursor_position(), (0, 0));
+    }
 
     #[test]
     fn a_shorter_screen_keeps_the_cursor_line() {
