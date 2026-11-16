@@ -82,7 +82,7 @@ impl Header {
                 }
                 for (r, st) in &s.chips {
                     let bg = NSColor::controlBackgroundColor();
-                    ui::pill(*r, &bg, &NSColor::separatorColor(), r.size.height / 2.0);
+                    ui::pill(*r, &bg, &ui::separator(), r.size.height / 2.0);
                     let y = r.origin.y + (r.size.height - 8.0) / 2.0;
                     ui::dot(r.origin.x + 10.0, y, 8.0, &ui::rgb(*st));
                 }

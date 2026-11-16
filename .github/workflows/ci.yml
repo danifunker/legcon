@@ -182,8 +182,9 @@ jobs:
           path: ${{ runner.temp }}/flow-failures
           if-no-files-found: ignore
 
-  # Release builds, once the lab, Windows and macOS pass: the Win32 window and lc for Windows, the
-  # AppKit legcon.app and lc for macOS, lc for Linux. Each is kept as a workflow artifact.
+  # Release builds, once the lab, Windows and macOS pass: the Win32 window and lc for Windows x64,
+  # x86 (Windows 10) and ARM64 (Windows 11); the AppKit legcon.app and lc for macOS, universal
+  # (Intel from 10.13, Apple silicon from 11); lc for Linux. Each is kept as a workflow artifact.
   build:
     name: build (${{ matrix.target }})
     needs: [unix90s, windows, macos]
@@ -192,6 +193,15 @@ jobs:
         include:
           - target: windows-x64
             os: windows-latest
+            rust_targets: x86_64-pc-windows-msvc
+          # 32-bit, for Windows 10 on x86; the x64 runner builds it and runs it.
+          - target: windows-x86
+            os: windows-latest
+            rust_targets: i686-pc-windows-msvc
+          # Windows 11 on ARM, built natively.
+          - target: windows-arm64
+            os: windows-11-arm
+            rust_targets: aarch64-pc-windows-msvc
           - target: linux-x64
             os: ubuntu-latest
           - target: macos-universal
@@ -268,14 +278,17 @@ jobs:
           mkdir -p dist
           VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-${GITHUB_SHA::8}"
           if [ "$RUNNER_OS" = Windows ]; then
-            cargo build --release --bin lc
-            (cd frontends/win32 && cargo build --release)
-            cp target/release/lc.exe frontends/win32/target/release/legcon.exe dist/
+            T="${{ matrix.rust_targets }}"
+            cargo build --release --bin lc --target "$T"
+            (cd frontends/win32 && cargo build --release --target "$T")
+            cp "target/$T/release/lc.exe" "frontends/win32/target/$T/release/legcon.exe" dist/
+            # It starts on this runner (x64 Windows runs x86; the ARM runner runs ARM64).
+            dist/lc.exe --help > /dev/null
           elif [ "$RUNNER_OS" = macOS ]; then
-            # Both architectures; the bundle script signs, notarizes and packages the app.
-            for t in aarch64-apple-darwin x86_64-apple-darwin; do
-              cargo build --release --bin lc --target "$t"
-            done
+            # Both architectures (Intel back to macOS 10.13); the bundle script signs, notarizes
+            # and packages the app.
+            MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --bin lc --target aarch64-apple-darwin
+            MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release --bin lc --target x86_64-apple-darwin
             lipo -create -output dist/lc target/aarch64-apple-darwin/release/lc target/x86_64-apple-darwin/release/lc
             if [ -n "$MACOS_SIGN_IDENTITY" ] && [ "$MACOS_SIGN_IDENTITY" != "-" ]; then
               codesign --force --options runtime --timestamp --sign "$MACOS_SIGN_IDENTITY" dist/lc

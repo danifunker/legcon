@@ -308,7 +308,14 @@ pub fn start(mtm: MainThreadMarker) {
     }
     window.setFrameAutosaveName(&ns("legcon.main"));
     window.makeKeyAndOrderFront(None);
-    NSApplication::sharedApplication(mtm).activate();
+    let ns_app = NSApplication::sharedApplication(mtm);
+    if objc2::available!(macos = 14.0) {
+        ns_app.activate();
+    } else {
+        // Its replacement, activate, needs macOS 14.
+        #[allow(deprecated)]
+        ns_app.activateIgnoringOtherApps(true);
+    }
     refresh();
     dispatch(app::Action::Start);
 }
@@ -345,15 +352,9 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
                 ui::rect(0.0, 0.0, b.size.width, 32.0),
                 &NSColor::windowBackgroundColor(),
             );
-            ui::fill(
-                ui::rect(0.0, 32.0, b.size.width, 1.0),
-                &NSColor::separatorColor(),
-            );
-            ui::fill(
-                ui::rect(0.0, 54.0, b.size.width, 1.0),
-                &NSColor::separatorColor(),
-            );
-            ui::frame(b, &NSColor::separatorColor());
+            ui::fill(ui::rect(0.0, 32.0, b.size.width, 1.0), &ui::separator());
+            ui::fill(ui::rect(0.0, 54.0, b.size.width, 1.0), &ui::separator());
+            ui::frame(b, &ui::separator());
         }),
     );
     content.addSubview(&bg);
@@ -492,11 +493,20 @@ fn build(mtm: MainThreadMarker, content: &NSView) -> Widgets {
     content.addSubview(&term_tabs);
     let term = Term::new(mtm);
     content.addSubview(&term.view);
-    let term_scroll = NSTextView::scrollableTextView(mtm);
-    let term_text = term_scroll
-        .documentView()
-        .and_then(|v| v.downcast::<NSTextView>().ok())
-        .expect("a scrollable text view holds a text view");
+    // Built by hand: NSTextView::scrollableTextView needs macOS 10.14.
+    let term_scroll = NSScrollView::initWithFrame(mtm.alloc(), ui::rect(0.0, 0.0, 400.0, 200.0));
+    term_scroll.setHasVerticalScroller(true);
+    term_scroll.setAutohidesScrollers(true);
+    let term_text = NSTextView::initWithFrame(mtm.alloc(), ui::rect(0.0, 0.0, 400.0, 200.0));
+    term_text.setVerticallyResizable(true);
+    term_text.setHorizontallyResizable(false);
+    term_text.setAutoresizingMask(objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
+    term_text.setMaxSize(NSSize::new(f64::MAX, f64::MAX));
+    // SAFETY: a plain read of the text view's own container.
+    if let Some(c) = unsafe { term_text.textContainer() } {
+        c.setWidthTracksTextView(true);
+    }
+    term_scroll.setDocumentView(Some(&term_text));
     term_text.setEditable(false);
     term_text.setFont(Some(&ui::mono()));
     ui::set_id(&term_text, "term.text");
@@ -1598,12 +1608,28 @@ fn chord(e: &NSEvent) -> Option<Chord> {
         109 => Key::F(10),
         103 => Key::F(11),
         111 => Key::F(12),
+        // Digits and brackets by key code: with Shift held they arrive as other characters.
+        18 => Key::Digit(1),
+        19 => Key::Digit(2),
+        20 => Key::Digit(3),
+        21 => Key::Digit(4),
+        23 => Key::Digit(5),
+        22 => Key::Digit(6),
+        26 => Key::Digit(7),
+        28 => Key::Digit(8),
+        25 => Key::Digit(9),
+        29 => Key::Digit(0),
         _ => {
-            let c = e
-                .charactersByApplyingModifiers(NSEventModifierFlags::empty())?
-                .to_string()
-                .chars()
-                .next()?;
+            let plain = if objc2::available!(macos = 10.15) {
+                e.charactersByApplyingModifiers(NSEventModifierFlags::empty())
+            } else {
+                e.charactersIgnoringModifiers()
+            };
+            let c = match e.keyCode() {
+                33 => '[',
+                30 => ']',
+                _ => plain?.to_string().chars().next()?,
+            };
             match c {
                 '0'..='9' => Key::Digit(c as u8 - b'0'),
                 c if c.is_ascii_alphabetic() => Key::Char(c.to_ascii_uppercase()),

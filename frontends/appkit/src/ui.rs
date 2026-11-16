@@ -468,6 +468,21 @@ pub fn text_width(text: &str, font: &NSFont) -> f64 {
     unsafe { ns(&plain(text)).sizeWithAttributes(Some(&a)) }.width
 }
 
+/// The colour of separators: `separatorColor` from 10.14, the grid colour before.
+pub fn separator() -> Retained<NSColor> {
+    if objc2::available!(macos = 10.14) {
+        NSColor::separatorColor()
+    } else {
+        NSColor::gridColor()
+    }
+}
+
+/// Whether `v` draws in a dark appearance (there is none before 10.14).
+pub fn dark(v: &NSView) -> bool {
+    use objc2_app_kit::NSAppearanceCustomization;
+    objc2::available!(macos = 10.14) && v.effectiveAppearance().name().to_string().contains("Dark")
+}
+
 pub fn font() -> Retained<NSFont> {
     NSFont::systemFontOfSize(NSFont::systemFontSize())
 }

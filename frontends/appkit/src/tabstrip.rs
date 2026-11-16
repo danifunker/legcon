@@ -9,8 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::NSObjectProtocol;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAccessibility, NSAccessibilityTabGroupRole, NSAppearanceCustomization, NSButton, NSColor,
-    NSEvent, NSView,
+    NSAccessibility, NSAccessibilityTabGroupRole, NSButton, NSColor, NSEvent, NSView,
 };
 use objc2_foundation::NSRect;
 
@@ -93,7 +92,7 @@ define_class!(
 );
 
 fn dark(v: &NSView) -> bool {
-    v.effectiveAppearance().name().to_string().contains("Dark")
+    ui::dark(v)
 }
 
 fn draw(s: &TabState, b: NSRect, dark: bool) {
@@ -107,7 +106,7 @@ fn draw(s: &TabState, b: NSRect, dark: bool) {
         (None, false) => NSColor::quaternaryLabelColor(),
     };
     let r = ui::rect(1.0, 2.0, w - 2.0, h - 2.0);
-    ui::pill(r, &face, &NSColor::separatorColor(), 4.0);
+    ui::pill(r, &face, &ui::separator(), 4.0);
     if let Some(c) = s.look.color {
         ui::fill(ui::rect(2.0, 3.0, w - 4.0, 4.0), &ui::rgb(c));
     }

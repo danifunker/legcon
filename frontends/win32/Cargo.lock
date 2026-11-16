@@ -1142,6 +1142,7 @@ dependencies = [
  "rsa",
  "sha1",
  "sha2 0.10.9",
+ "subtle",
  "x25519-dalek",
 ]
 
