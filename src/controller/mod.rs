@@ -21,6 +21,7 @@ pub mod machine_form;
 pub mod machines;
 pub mod options;
 pub mod picks;
+pub mod setup;
 pub mod ssh_keys;
 pub mod task;
 

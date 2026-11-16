@@ -24,6 +24,8 @@
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>legcon connects to the old computers on your network (FTP, Telnet, SMB, NFS, SSH and the rest) when you open them. Without this, every machine on your LAN looks unreachable.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>

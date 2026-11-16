@@ -223,13 +223,14 @@ const QUEUE_BUTTONS: [(&str, &str); 9] = [
     (ids::QUEUE_CANCEL, "Cancel all"),
 ];
 
-const MACHINE_BUTTONS: [(&str, &str, f64); 6] = [
+const MACHINE_BUTTONS: [(&str, &str, f64); 7] = [
     (ids::MACHINES_ADD, "Add machine...", 130.0),
     (ids::MACHINES_OPEN, "Open", 80.0),
     (ids::MACHINES_REMOVE, "Remove", 90.0),
     (ids::MACHINES_SETTINGS, "Settings...", 100.0),
     (ids::MACHINES_OPTIONS, "Options...", 100.0),
     (ids::MACHINES_DISCONNECT_ALL, "Disconnect all", 130.0),
+    (ids::MACHINES_SETUP, "Set up...", 100.0),
 ];
 
 const KEY_BUTTONS: [(&str, &str, f64); 5] = [
@@ -628,6 +629,7 @@ pub fn command(id: &str) {
         }
         ids::MACHINES_OPTIONS => dispatch(app::Action::EditOptions),
         ids::MACHINES_DISCONNECT_ALL => dispatch(app::Action::DisconnectAll),
+        ids::MACHINES_SETUP => dispatch(app::Action::Setup),
         ids::KEYS_NEW => dispatch(app::Action::Keys(sshkeys::Action::New)),
         ids::KEYS_IMPORT => dispatch(app::Action::Keys(sshkeys::Action::Import)),
         ids::KEYS_EXPORT | ids::KEYS_COPY | ids::KEYS_DELETE => {
@@ -812,6 +814,9 @@ fn run(effects: Vec<Effect>) {
                     "conn.queue.exists" => conn_action(conn::Action::QueueExistsAnswered(i)),
                     "conn.queue.item" => conn_action(conn::Action::QueueItemAnswered(i)),
                     "conn.queue.disconnect" => conn_action(conn::Action::DisconnectAnswered(i)),
+                    legcon::controller::setup::FIRST_PURPOSE => {
+                        dispatch(app::Action::SetupFirstAnswered(i))
+                    }
                     _ => {}
                 }
             }
@@ -823,6 +828,9 @@ fn run(effects: Vec<Effect>) {
                     }
                     legcon::controller::options::PURPOSE => {
                         dispatch(app::Action::OptionsAnswered(answer))
+                    }
+                    legcon::controller::setup::PURPOSE => {
+                        dispatch(app::Action::SetupAnswered(answer))
                     }
                     sshkeys::NEW_PURPOSE => {
                         dispatch(app::Action::Keys(sshkeys::Action::NewAnswered(answer)))

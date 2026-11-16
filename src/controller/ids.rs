@@ -91,3 +91,30 @@ pub const MACHINES_OPTIONS: &str = "machines.options";
 pub const OPT_SECTION_QUEUE: &str = "options.section.queue";
 pub const OPT_QUEUE_ASK_OVER: &str = "options.queue_ask_over";
 pub const OPT_CHECKSUM: &str = "options.checksum";
+
+// The setup (controller::setup).
+pub const MACHINES_SETUP: &str = "machines.setup";
+pub const SETUP_SECTION_HOME: &str = "setup.section.home";
+pub const SETUP_HOME: &str = "setup.home";
+pub const SETUP_SECTION_FOLDERS: &str = "setup.section.folders";
+/// The folders offered for pinning, in the order listed.
+pub const SETUP_PINS: [&str; 10] = [
+    "setup.pin.1",
+    "setup.pin.2",
+    "setup.pin.3",
+    "setup.pin.4",
+    "setup.pin.5",
+    "setup.pin.6",
+    "setup.pin.7",
+    "setup.pin.8",
+    "setup.pin.9",
+    "setup.pin.10",
+];
+pub const SETUP_SECTION_KEYS: &str = "setup.section.keys";
+pub const SETUP_KEY_RSA: &str = "setup.key.rsa2048";
+pub const SETUP_KEY_DSA: &str = "setup.key.dsa1024";
+pub const SETUP_KEY_SSH1: &str = "setup.key.ssh1";
+pub const SETUP_SECTION_PASSWORDS: &str = "setup.section.passwords";
+pub const SETUP_PASSWORDS: &str = "setup.passwords";
+pub const SETUP_SECTION_PERMISSIONS: &str = "setup.section.permissions";
+pub const SETUP_PERMISSIONS: &str = "setup.permissions";

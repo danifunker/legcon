@@ -44,6 +44,8 @@ pub struct KeysController {
     notify: Arc<dyn Notify>,
     keys: Vec<KeyInfo>,
     making: Option<Job<KeyInfo>>,
+    /// Keys still to make after this one (the setup's starter set): name, kind, comment.
+    queued: std::collections::VecDeque<(String, KeyKind, String)>,
     importing: Option<PathBuf>,
     exporting: Option<String>,
     deleting: Option<String>,
@@ -91,6 +93,7 @@ impl KeysController {
             notify,
             keys,
             making: None,
+            queued: std::collections::VecDeque::new(),
             importing: None,
             exporting: None,
             deleting: None,
@@ -294,13 +297,41 @@ impl KeysController {
         };
         self.making = None;
         self.reload();
-        match r {
+        let out = match r {
             Ok(k) => {
                 self.notes
                     .push(format!("Made the key {} ({}).", k.name, k.kind_label()));
                 Vec::new()
             }
             Err(e) => vec![Effect::Message(format!("Could not make the key: {e}"))],
+        };
+        self.start_next();
+        out
+    }
+
+    /// Make a key once the one being made (if any) is done.
+    pub(crate) fn make(&mut self, name: &str, kind: KeyKind, comment: &str) {
+        self.queued
+            .push_back((name.to_string(), kind, comment.to_string()));
+        if self.making.is_none() {
+            self.start_next();
+        }
+    }
+
+    /// Whether a key of this name is kept already.
+    pub(crate) fn has(&self, name: &str) -> bool {
+        self.keys.iter().any(|k| k.name == name)
+    }
+
+    fn start_next(&mut self) {
+        while let Some((name, kind, comment)) = self.queued.pop_front() {
+            match keystore::generate_job(&self.dir, &name, kind, &comment, Arc::clone(&self.notify)) {
+                Ok(job) => {
+                    self.making = Some(job);
+                    return;
+                }
+                Err(e) => self.notes.push(format!("Could not make the key {name}: {e}")),
+            }
         }
     }
 }

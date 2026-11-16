@@ -54,6 +54,14 @@ const LABEL_W: f64 = 170.0;
 const ROW_H: f64 = 24.0;
 const HINT_H: f64 = 30.0;
 
+/// Extra height a long read-only text takes, wrapped at about 55 characters a line.
+fn info_extra(kind: &FieldKind) -> f64 {
+    match kind {
+        FieldKind::Info(t) => (t.chars().count().div_ceil(55).max(1) - 1) as f64 * 16.0,
+        _ => 0.0,
+    }
+}
+
 /// Show the form modally; the values when saved, `None` for Cancel.
 pub fn show(mtm: MainThreadMarker, spec: &FormSpec) -> Option<FormValues> {
     // Sections become tabs; a form without headings is one page.
@@ -69,7 +77,9 @@ pub fn show(mtm: MainThreadMarker, spec: &FormSpec) -> Option<FormValues> {
     let page_h = |fields: &[&legcon::controller::Field]| -> f64 {
         fields
             .iter()
-            .map(|f| ROW_H + 8.0 + if f.hint.is_empty() { 0.0 } else { HINT_H })
+            .map(|f| {
+                ROW_H + 8.0 + info_extra(&f.kind) + if f.hint.is_empty() { 0.0 } else { HINT_H }
+            })
             .sum::<f64>()
             + 12.0
     };
@@ -150,9 +160,12 @@ pub fn show(mtm: MainThreadMarker, spec: &FormSpec) -> Option<FormValues> {
                     label(&f.label);
                     let l = ui::label(mtm, t);
                     l.setSelectable(true);
+                    l.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByWordWrapping);
+                    l.setMaximumNumberOfLines(0);
                     ui::set_id(&l, f.id);
                     page.addSubview(&l);
-                    ui::place(&l, (control_x, y + 3.0, control_w, 18.0));
+                    let h = 18.0 + info_extra(&f.kind);
+                    ui::place(&l, (control_x, y + 3.0, control_w, h));
                     Control::Info
                 }
                 FieldKind::Check(on) => {
@@ -194,7 +207,7 @@ pub fn show(mtm: MainThreadMarker, spec: &FormSpec) -> Option<FormValues> {
                     Control::Choice(p)
                 }
             };
-            y += ROW_H + 8.0;
+            y += ROW_H + 8.0 + info_extra(&f.kind);
             if !f.hint.is_empty() {
                 let hint = ui::label(mtm, &f.hint);
                 hint.setTextColor(Some(&NSColor::secondaryLabelColor()));

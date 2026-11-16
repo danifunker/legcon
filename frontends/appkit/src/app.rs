@@ -132,6 +132,12 @@ fn menu_bar(mtm: MainThreadMarker) {
             NSMenuItem::separatorItem(mtm),
             ours(
                 mtm,
+                "Set up legcon...",
+                legcon::controller::ids::MACHINES_SETUP,
+                "",
+            ),
+            ours(
+                mtm,
                 "Options...",
                 legcon::controller::ids::MACHINES_OPTIONS,
                 ",",

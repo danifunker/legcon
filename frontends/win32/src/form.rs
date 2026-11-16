@@ -20,10 +20,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IsDialogMessageW, IsWindow, PostMessageW, RegisterClassW, SendMessageW, SetWindowPos,
     ShowWindow, TranslateMessage, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX,
     CBN_SELCHANGE, CBS_DROPDOWNLIST, CB_ADDSTRING, CB_GETCURSEL, CB_SETCURSEL, CW_USEDEFAULT,
-    EN_CHANGE, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY, HMENU, IDCANCEL, IDOK, MSG, SWP_NOZORDER,
-    SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CTLCOLORBTN,
-    WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NOTIFY, WNDCLASSW, WS_CAPTION, WS_CLIPSIBLINGS,
-    WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_VSCROLL,
+    EN_CHANGE, ES_AUTOHSCROLL, ES_MULTILINE, ES_PASSWORD, ES_READONLY, HMENU, IDCANCEL, IDOK, MSG,
+    SWP_NOZORDER, SW_SHOWNORMAL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_ERASEBKGND, WM_NOTIFY, WNDCLASSW, WS_CAPTION,
+    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VSCROLL,
 };
 
 use crate::effects::pick_folder;
@@ -38,6 +39,16 @@ struct Row {
     control: HWND,
     browse: Option<HWND>,
     hint: Option<HWND>,
+    /// Rows of height it takes: a long read-only text wraps.
+    lines: i32,
+}
+
+/// Lines a read-only text wraps to, at about 60 characters a line.
+fn info_lines(kind: &FieldKind) -> i32 {
+    match kind {
+        FieldKind::Info(t) => t.chars().count().div_ceil(60).max(1) as i32,
+        _ => 1,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -166,6 +177,19 @@ pub fn show(owner: HWND, spec: &FormSpec) -> Option<FormValues> {
                     edit(window, t, WS_TABSTOP.0 | ES_PASSWORD as u32, f.id),
                     Some(&f.label),
                 ),
+                FieldKind::Info(t) if info_lines(&f.kind) > 1 => (
+                    Kind::Info,
+                    // Multi-line without auto-scroll, so it wraps at words.
+                    ui::child(
+                        window,
+                        w!("EDIT"),
+                        t,
+                        WINDOW_STYLE(ES_MULTILINE as u32 | ES_READONLY as u32 | WS_TABSTOP.0),
+                        WS_EX_CLIENTEDGE,
+                        f.id,
+                    ),
+                    Some(&f.label),
+                ),
                 FieldKind::Info(t) => (
                     Kind::Info,
                     edit(window, t, WS_TABSTOP.0 | ES_READONLY as u32, f.id),
@@ -211,6 +235,7 @@ pub fn show(owner: HWND, spec: &FormSpec) -> Option<FormValues> {
                 control,
                 browse,
                 hint: (!f.hint.is_empty()).then(|| ui::label(window, &f.hint)),
+                lines: info_lines(&f.kind),
             });
         }
         let error = ui::label(window, "");
@@ -237,7 +262,7 @@ pub fn show(owner: HWND, spec: &FormSpec) -> Option<FormValues> {
                 let h = if r.kind == Kind::Choice {
                     s(220)
                 } else {
-                    row_h
+                    row_h * r.lines
                 };
                 match (r.kind, r.browse) {
                     (_, Some(b)) => {
@@ -249,7 +274,7 @@ pub fn show(owner: HWND, spec: &FormSpec) -> Option<FormValues> {
                     }
                     _ => ui::place(r.control, (control_x, y, control_w, h)),
                 }
-                y += row_h + s(2);
+                y += row_h * r.lines + s(2);
                 if let Some(hint) = r.hint {
                     let x = if r.kind == Kind::Check {
                         m + s(26)

@@ -183,6 +183,10 @@ impl MachinesController {
         crate::model::keystore::dir_in(&self.dir)
     }
 
+    pub fn machines_empty(&self) -> bool {
+        self.store.machines.is_empty()
+    }
+
     /// A machine's settings form.
     pub fn form(&self, id: &str) -> Option<super::FormSpec> {
         let keys = self.keys();

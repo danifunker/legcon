@@ -1,0 +1,26 @@
+# The setup (D45): home folder, folders to pin, starter keys, passwords, permissions (FLOWS.md).
+
+[[case]]
+id = "flow.setup.from-the-machines-tab"
+description = "Open Set up..., make the DSA starter key only, finish, add the first machine later"
+machines = []
+ui = [
+  { op = "activate", id = "machines.setup" },
+  { op = "wait_dialog" },
+  { op = "expect_value", id = "setup.home", value = "{work}" },
+  { op = "section", id = "setup.sections", name = "Keys" },
+  { op = "check", id = "setup.key.rsa2048", on = false },
+  { op = "check", id = "setup.key.dsa1024", on = true },
+  { op = "section", id = "setup.sections", name = "Permissions" },
+  { op = "activate", id = "setup.ok" },
+  { op = "press", name = "Later" },
+  { op = "expect_no_dialog" },
+  { op = "section", id = "tabs", name = "Keys" },
+  { op = "expect_row", id = "keys.list", name = "legcon-dsa1024", timeout = 60 },
+  { op = "expect_row", id = "keys.list", name = "legcon-rsa2048", present = false },
+]
+lc = [{ args = ["keys", "list"], stdout_has = ["legcon-dsa1024", "DSA 1024"] }]
+
+[case.expect_settings]
+setup_done = true
+home_folder = "{work}"

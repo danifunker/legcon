@@ -74,6 +74,7 @@ pub struct Widgets {
     m_settings: HWND,
     m_options: HWND,
     m_disconnect_all: HWND,
+    m_setup: HWND,
     m_list: HWND,
     k_new: HWND,
     k_import: HWND,
@@ -313,6 +314,7 @@ fn build(window: HWND) -> Widgets {
         m_settings: ui::button(window, "Settings...", ids::MACHINES_SETTINGS),
         m_options: ui::button(window, "Options...", ids::MACHINES_OPTIONS),
         m_disconnect_all: ui::button(window, "Disconnect all", ids::MACHINES_DISCONNECT_ALL),
+        m_setup: ui::button(window, "Set up...", ids::MACHINES_SETUP),
         m_list: controls::list(
             window,
             ids::MACHINES_LIST,
@@ -605,6 +607,9 @@ fn run(effects: Vec<Effect>) {
                     "conn.queue.exists" => conn_action(conn::Action::QueueExistsAnswered(i)),
                     "conn.queue.item" => conn_action(conn::Action::QueueItemAnswered(i)),
                     "conn.queue.disconnect" => conn_action(conn::Action::DisconnectAnswered(i)),
+                    legcon::controller::setup::FIRST_PURPOSE => {
+                        dispatch(app::Action::SetupFirstAnswered(i))
+                    }
                     _ => {}
                 }
             }
@@ -616,6 +621,9 @@ fn run(effects: Vec<Effect>) {
                     }
                     legcon::controller::options::PURPOSE => {
                         dispatch(app::Action::OptionsAnswered(answer))
+                    }
+                    legcon::controller::setup::PURPOSE => {
+                        dispatch(app::Action::SetupAnswered(answer))
                     }
                     sshkeys::NEW_PURPOSE => {
                         dispatch(app::Action::Keys(sshkeys::Action::NewAnswered(answer)))
@@ -764,6 +772,7 @@ fn refresh() {
             s.w.m_settings,
             s.w.m_options,
             s.w.m_disconnect_all,
+            s.w.m_setup,
             s.w.m_list,
         ] {
             ui::set_visible(h, on_machines);
@@ -1032,6 +1041,7 @@ fn layout() {
                 (s.w.m_settings, 90),
                 (s.w.m_options, 90),
                 (s.w.m_disconnect_all, 110),
+                (s.w.m_setup, 90),
             ] {
                 ui::place(b, (x, top + m, sc(bw), btn));
                 x += sc(bw) + m;
@@ -1759,6 +1769,7 @@ fn command(from: HWND, code: u32) {
             s.w.m_settings,
             s.w.m_options,
             s.w.m_disconnect_all,
+            s.w.m_setup,
             s.w.local.places,
             s.w.local.home,
             s.w.local.other,
@@ -1769,7 +1780,7 @@ fn command(from: HWND, code: u32) {
     }) else {
         return;
     };
-    let [add, open, remove, settings, options, all, l_places, l_home, l_go_to, r_places, r_home, r_up] =
+    let [add, open, remove, settings, options, all, setup, l_places, l_home, l_go_to, r_places, r_home, r_up] =
         b;
     match from {
         h if h == add => dispatch(app::Action::AddMachine),
@@ -1790,6 +1801,7 @@ fn command(from: HWND, code: u32) {
         }
         h if h == options => dispatch(app::Action::EditOptions),
         h if h == all => dispatch(app::Action::DisconnectAll),
+        h if h == setup => dispatch(app::Action::Setup),
         h if h == l_places => conn_action(conn::Action::Places(Side::Local)),
         h if h == l_home => conn_action(conn::Action::LocalHome),
         h if h == l_go_to => conn_action(conn::Action::GoTo(Side::Local)),

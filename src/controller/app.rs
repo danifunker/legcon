@@ -12,7 +12,7 @@ use super::log::LogStore;
 use super::machines::ProbeSummary;
 use super::machines::{suggest_id, validate_id, MachineRow, MachinesController, NewMachine};
 use super::{
-    not_empty, ChoiceSpec, Controller, Effect, FormValues, PickSpec, ServiceKind, TabColor,
+    ids, not_empty, ChoiceSpec, Controller, Effect, FieldKind, FormValues, ServiceKind, TabColor,
     TextSpec,
 };
 use crate::model::config;
@@ -32,9 +32,14 @@ pub enum Tab {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// Once, when the window is up: asks for the home folder on the first run.
+    /// Once, when the window is up: the setup on the first run.
     Start,
     HomePicked(Option<PathBuf>),
+    /// Open the setup (Set up...): home folder, folders, starter keys, passwords, permissions.
+    Setup,
+    SetupAnswered(Option<FormValues>),
+    /// After the setup with no machines yet: Add a machine (0), Later.
+    SetupFirstAnswered(usize),
     ShowMachines,
     ShowKeys,
     /// An action on the Keys tab.
@@ -105,6 +110,8 @@ pub struct AppController {
     removing: Option<String>,
     editing: Option<String>,
     keys: super::ssh_keys::KeysController,
+    /// The folders the open setup form offers to pin.
+    setup: Option<super::setup::Offered>,
 }
 
 impl AppController {
@@ -128,6 +135,7 @@ impl AppController {
                 crate::model::keystore::dir_in(dir),
                 Arc::clone(&notify),
             ),
+            setup: None,
         })
     }
 
@@ -171,6 +179,42 @@ impl AppController {
             .or_else(dirs::document_dir)
             .or_else(dirs::home_dir)
             .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Carry out the setup's answers: the home folder, pins, password default, starter keys.
+    fn finish_setup(&mut self, a: super::setup::Answer) -> Vec<Effect> {
+        if let Err(e) = std::fs::create_dir_all(&a.home) {
+            return vec![Effect::Message(format!(
+                "Could not make the home folder {}: {e}",
+                a.home.display()
+            ))];
+        }
+        self.settings.home_folder = Some(a.home);
+        let pins = &mut self.settings.pinned_places;
+        pins.retain(|p| !a.unpin.contains(p));
+        for p in a.pin {
+            if !pins.contains(&p) {
+                pins.push(p);
+            }
+        }
+        self.settings.passwords_in_os_store = a.passwords_in_os_store;
+        self.settings.setup_done = true;
+        let mut out = self.save_settings();
+        for t in &mut self.tabs {
+            t.set_local_places(
+                self.settings.pinned_places.clone(),
+                self.settings.recent_places.clone(),
+            );
+        }
+        for (name, kind) in a.keys {
+            if !self.keys.has(name) {
+                self.keys.make(name, kind, "legcon");
+            }
+        }
+        if self.machines.machines_empty() {
+            out.push(super::setup::first_machine());
+        }
+        out
     }
 
     fn save_settings(&mut self) -> Vec<Effect> {
@@ -346,15 +390,22 @@ impl Controller for AppController {
         match action {
             Action::Start => {
                 if self.settings.home_folder.is_none() {
-                    return vec![Effect::PickFolder(PickSpec {
-                        purpose: "app.home",
-                        title:
-                            "Choose the folder on this computer you work from (your home folder)"
-                                .into(),
-                        start: dirs::document_dir(),
-                    })];
+                    return self.apply(Action::Setup);
                 }
             }
+            Action::Setup => {
+                let keys = &self.keys;
+                let (spec, offered) = super::setup::form(&self.settings, |n| keys.has(n));
+                self.setup = Some(offered);
+                return vec![Effect::Form(spec)];
+            }
+            Action::SetupAnswered(None) => self.setup = None,
+            Action::SetupAnswered(Some(values)) => {
+                let offered = self.setup.take().unwrap_or_default();
+                return self.finish_setup(super::setup::read(&values, &offered));
+            }
+            Action::SetupFirstAnswered(0) => return self.apply(Action::AddMachine),
+            Action::SetupFirstAnswered(_) => {}
             Action::HomePicked(path) => {
                 // Cancelled: use Documents for now and ask again next start.
                 if let Some(p) = path {
@@ -493,9 +544,19 @@ impl Controller for AppController {
                 }
             }
             Action::EditMachine(id) => {
-                let Some(spec) = self.machines.form(&id) else {
+                let Some(mut spec) = self.machines.form(&id) else {
                     return vec![Effect::Message(format!("No machine called {id}."))];
                 };
+                // A machine with no password yet keeps one where the setup said.
+                let no_password = spec
+                    .fields
+                    .iter()
+                    .any(|f| f.id == ids::MS_PASSWORD && f.kind == FieldKind::Secret(String::new()));
+                if no_password && self.settings.passwords_in_os_store {
+                    if let Some(f) = spec.fields.iter_mut().find(|f| f.id == ids::MS_OS_STORE) {
+                        f.kind = FieldKind::Check(true);
+                    }
+                }
                 self.editing = Some(id);
                 return vec![Effect::Form(spec)];
             }
@@ -645,14 +706,38 @@ mod tests {
     }
 
     #[test]
-    fn first_run_asks_for_home_then_remembers_it() {
+    fn first_run_sets_up_then_remembers_it() {
+        use crate::controller::FieldValue;
         let dir = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
         let mut a = app(dir.path());
-        assert!(matches!(a.apply(Action::Start)[0], Effect::PickFolder(_)));
-        a.apply(Action::HomePicked(Some(PathBuf::from("D:/Retro"))));
+        let Effect::Form(spec) = a.apply(Action::Start).remove(0) else {
+            panic!("the first run opens the setup");
+        };
+        assert_eq!(spec.purpose, super::super::setup::PURPOSE);
+        let mut v = spec.initial();
+        let home = work.path().join("Retro");
+        v.set(ids::SETUP_HOME, FieldValue::Text(home.display().to_string()));
+        v.set(ids::SETUP_PASSWORDS, FieldValue::Choice(1));
+        for (id, _, _, _) in super::super::setup::STARTER_KEYS {
+            v.set(id, FieldValue::Check(false));
+        }
+        let pinned = spec.fields.iter().find(|f| f.id == ids::SETUP_PINS[0]).map(|f| f.id);
+        if let Some(id) = pinned {
+            v.set(id, FieldValue::Check(true));
+        }
+        let out = a.apply(Action::SetupAnswered(Some(v)));
+        // No machines yet: offer the first one.
+        assert!(
+            matches!(&out[..], [Effect::Choose(c)] if c.purpose == super::super::setup::FIRST_PURPOSE),
+            "{out:?}"
+        );
+        assert!(home.is_dir(), "the home folder is made");
         let mut b = app(dir.path());
-        assert!(b.apply(Action::Start).is_empty());
-        assert_eq!(b.home_folder(), Some(Path::new("D:/Retro")));
+        assert!(b.apply(Action::Start).is_empty(), "set up once");
+        assert_eq!(b.home_folder(), Some(home.as_path()));
+        assert!(b.settings.passwords_in_os_store);
+        assert_eq!(b.settings.pinned_places.len(), usize::from(pinned.is_some()));
     }
 
     #[test]
