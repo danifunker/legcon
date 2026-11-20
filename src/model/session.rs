@@ -577,15 +577,19 @@ impl Sessions {
                 slot.breaker.clone()
             };
             ctx.set_phase("Logging off");
-            // A call stuck on a dead server holds the lock for its whole timeout: break it.
-            let mut guard = match lock_within(&session, LOGOFF_TIMEOUT) {
-                Some(g) => g,
-                None => {
-                    if let Some(b) = &breaker {
-                        b.trip();
-                    }
-                    lock_status(&session)
+            // A call stuck on a dead server holds the lock for its whole timeout: break it, and
+            // where that cannot wake it (Windows), leave it to end on its own, without a log-off.
+            let got = lock_within(&session, LOGOFF_TIMEOUT).or_else(|| {
+                if let Some(b) = &breaker {
+                    b.trip();
                 }
+                lock_within(&session, Duration::from_secs(1))
+            });
+            let Some(mut guard) = got else {
+                if let Some(slot) = lock_status(&me.slots).get_mut(&machine) {
+                    slot.end(end, why);
+                }
+                bail!("{machine} did not answer; closed without logging off");
             };
             let result = logoff(guard.as_mut(), breaker);
             drop(guard);
@@ -1015,6 +1019,27 @@ mod tests {
             .why("sparc")
             .unwrap()
             .starts_with("Could not connect again"));
+    }
+
+    #[test]
+    fn a_call_stuck_on_a_dead_server_does_not_hold_up_disconnect() {
+        let s = Sessions::new();
+        let fs = lab(&s);
+        fs.stall.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _stuck = s.list(
+            "sparc",
+            RemotePath::parse(PathStyle::Unix, "/"),
+            Arc::new(NoNotify),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        let t = Instant::now();
+        let snap = s.disconnect("sparc", Arc::new(NoNotify)).wait();
+        assert!(t.elapsed() < LOGOFF_TIMEOUT + Duration::from_secs(3));
+        assert!(
+            matches!(snap.status, crate::model::job::Status::Failed(ref e) if e.contains("did not answer"))
+        );
+        assert_eq!(s.state("sparc"), ConnState::Disconnected);
+        fs.stall.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]

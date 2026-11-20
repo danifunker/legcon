@@ -32,6 +32,8 @@ pub struct MemoryFs {
     pub dropped: Arc<std::sync::atomic::AtomicBool>,
     /// How many pings the server has answered.
     pub pings: Arc<std::sync::atomic::AtomicUsize>,
+    /// Set to act as a server that stopped answering: listings wait until it is cleared.
+    pub stall: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemoryFs {
@@ -45,6 +47,7 @@ impl MemoryFs {
             logged_off: Arc::default(),
             dropped: Arc::default(),
             pings: Arc::default(),
+            stall: Arc::default(),
         };
         fs.add_folder(home);
         fs
@@ -150,6 +153,9 @@ impl FileSession for MemoryFs {
     }
 
     fn list(&mut self, dir: &RemotePath) -> Result<Vec<Entry>> {
+        while self.stall.load(std::sync::atomic::Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
         self.live()?;
         let tree = self.tree.lock().unwrap();
         if !dir.is_root() && !matches!(tree.nodes.get(&dir.to_string()), Some(Node::Folder)) {
