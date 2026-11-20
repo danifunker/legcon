@@ -238,6 +238,38 @@ def op_key(o):
     time.sleep(o.get("pause", 0.6))
 
 
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("flags", ctypes.wintypes.DWORD),
+        ("hwndActive", ctypes.wintypes.HWND),
+        ("hwndFocus", ctypes.wintypes.HWND),
+        ("hwndCapture", ctypes.wintypes.HWND),
+        ("hwndMenuOwner", ctypes.wintypes.HWND),
+        ("hwndMoveSize", ctypes.wintypes.HWND),
+        ("hwndCaret", ctypes.wintypes.HWND),
+        ("rcCaret", ctypes.wintypes.RECT),
+    ]
+
+
+WM_CHAR = 0x0102
+
+
+def op_type(o):
+    """Type text into the focused control (or `id`), as WM_CHAR so the keyboard layout does not matter."""
+    if "id" in o:
+        user32.SetForegroundWindow(MAIN if not dialogs() else dialogs()[0])
+        find(o["id"]).SetFocus()
+        time.sleep(0.2)
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(info)
+    if not user32.GetGUIThreadInfo(0, ctypes.byref(info)) or not info.hwndFocus:
+        raise Fail("no control has the keyboard")
+    for ch in o["text"]:
+        user32.SendMessageW(info.hwndFocus, WM_CHAR, ord(ch), 1)
+    time.sleep(o.get("pause", 0.4))
+
+
 def rows_of(aid):
     lst = find(aid)
     items = lst.FindAll(U.TreeScope_Descendants, UIA.CreatePropertyCondition(U.UIA_ControlTypePropertyId, U.UIA_ListItemControlTypeId))
@@ -348,6 +380,7 @@ OPS = {
     "screenshot": op_screenshot,
     "menu": op_menu,
     "key": op_key,
+    "type": op_type,
     "expect_row": op_expect_row,
     "press": op_press,
     "activate": op_activate,
