@@ -249,6 +249,51 @@ define_class!(
 );
 
 define_class!(
+    /// A pane's address bar: typed into, Enter goes there, Escape puts the path back.
+    #[unsafe(super(NSTextField))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "LCPathField"]
+    pub struct PathField;
+
+    unsafe impl NSObjectProtocol for PathField {}
+
+    impl PathField {
+        #[unsafe(method(textView:doCommandBySelector:))]
+        fn do_command(&self, view: &AnyObject, command: objc2::runtime::Sel) -> objc2::runtime::Bool {
+            if command == sel!(cancelOperation:) {
+                // Drop the edit: the field shows the folder it showed before.
+                self.abortEditing();
+                if let Some(w) = self.window() {
+                    w.makeFirstResponder(None);
+                }
+                return objc2::runtime::Bool::YES;
+            }
+            // SAFETY: NSTextField's own handling of every other editing command.
+            unsafe { msg_send![super(self), textView: view, doCommandBySelector: command] }
+        }
+    }
+);
+
+/// A pane's address bar with controller id `id`; its action fires on Enter only.
+pub fn path_field(mtm: MainThreadMarker, id: &str) -> Retained<NSTextField> {
+    // SAFETY: NSTextField's designated initialiser.
+    let v: Retained<PathField> =
+        unsafe { msg_send![mtm.alloc::<PathField>(), initWithFrame: NSRect::ZERO] };
+    let f: Retained<NSTextField> = Retained::into_super(v);
+    f.setEditable(true);
+    f.setSelectable(true);
+    f.setBezeled(true);
+    f.setDrawsBackground(true);
+    if let Some(cell) = f.cell() {
+        cell.setScrollable(true);
+        cell.setWraps(false);
+        cell.setSendsActionOnEndEditing(false);
+    }
+    set_id(&f, id);
+    f
+}
+
+define_class!(
     #[unsafe(super(NSSecureTextField))]
     #[thread_kind = MainThreadOnly]
     #[name = "LCSecureField"]

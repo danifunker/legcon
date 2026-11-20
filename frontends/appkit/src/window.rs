@@ -362,12 +362,10 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
         }),
     );
     content.addSubview(&bg);
-    let path = ui::label(mtm, "");
+    // The address bar: shows the folder, and goes to whatever path is typed into it.
+    let path = ui::path_field(mtm, path_id);
     path.setFont(Some(&ui::mono()));
-    // The end of a path is the folder the user is in: cut the middle, as the Finder does.
-    path.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingMiddle);
-    path.setSelectable(true);
-    ui::set_id(&path, path_id);
+    path.setPlaceholderString(Some(&ns("Type a path, then Return")));
     let p = Pane {
         bg,
         places: ui::button(mtm, "Places", places_id),
@@ -483,6 +481,13 @@ fn build(mtm: MainThreadMarker, content: &NSView) -> Widgets {
     let labels: Vec<_> = TermTab::ALL.iter().map(|t| ns(t.label())).collect();
     let labels: Vec<&objc2_foundation::NSString> = labels.iter().map(|l| &**l).collect();
     let t = ui::target(mtm);
+    for p in [&local.path, &remote.path] {
+        // SAFETY: the target is never dropped.
+        unsafe {
+            p.setTarget(Some(&t));
+            p.setAction(Some(objc2::sel!(act:)));
+        }
+    }
     // SAFETY: the target is never dropped.
     let term_tabs = unsafe {
         NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
@@ -691,6 +696,8 @@ pub fn command(id: &str) {
             }
         }
         "console.send" | "console.input" => send_console(),
+        ids::LOCAL_PATH => path_typed(Side::Local),
+        ids::REMOTE_PATH => path_typed(Side::Remote),
         _ if QUEUE_BUTTONS.iter().any(|(q, _)| *q == id) => queue_click(id),
         _ => {}
     }
@@ -1049,8 +1056,15 @@ pub fn refresh() {
             s.drawn.header = Some(info);
         }
         ui::set_text(&s.w.remote.title, &t.title());
-        ui::set_text(&s.w.local.path, &t.local_path());
-        ui::set_text(&s.w.remote.path, &t.remote_path());
+        // Not while the user is typing a path there.
+        for (field, path) in [
+            (&s.w.local.path, t.local_path()),
+            (&s.w.remote.path, t.remote_path()),
+        ] {
+            if field.currentEditor().is_none() {
+                ui::set_text(field, &path);
+            }
+        }
         ui::set_enabled(&s.w.remote.home, t.can_disconnect());
         ui::set_enabled(&s.w.remote.other, t.can_disconnect());
         s.w.local.list.set_dir(Some(PathBuf::from(t.local_path())));
@@ -1459,6 +1473,39 @@ fn queue_menu() {
     }
 }
 
+/// Return in an address bar: go to what was typed, and give the keyboard back to the list.
+fn path_typed(side: Side) {
+    let Some((text, list, window)) = with(|s| {
+        let p = match side {
+            Side::Local => &s.w.local,
+            Side::Remote => &s.w.remote,
+        };
+        (
+            p.path.stringValue().to_string(),
+            p.list.view.clone(),
+            s.window.clone(),
+        )
+    }) else {
+        return;
+    };
+    window.makeFirstResponder(Some(&list));
+    conn_action(conn::Action::PathTyped(side, text));
+}
+
+/// Put the cursor in a pane's address bar, its text selected to type over.
+fn edit_path(side: Side) {
+    let Some((path, window)) = with(|s| {
+        let p = match side {
+            Side::Local => &s.w.local,
+            Side::Remote => &s.w.remote,
+        };
+        (p.path.clone(), s.window.clone())
+    }) else {
+        return;
+    };
+    window.makeFirstResponder(Some(&path));
+}
+
 fn send_console() {
     let Some(field) = with(|s| s.w.console.clone()) else {
         return;
@@ -1699,6 +1746,7 @@ fn run_command(cmd: Command, side: Side) {
         Command::RemotePlaces => conn_action(conn::Action::Places(Side::Remote)),
         Command::LocalHome => conn_action(conn::Action::LocalHome),
         Command::GoTo => conn_action(conn::Action::GoTo(side)),
+        Command::EditPath => edit_path(side),
         Command::Refresh => conn_action(conn::Action::Refresh(side)),
         Command::Up => conn_action(match side {
             Side::Local => conn::Action::LocalUp,

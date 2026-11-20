@@ -19,6 +19,39 @@ ui = [
 ]
 
 [[case]]
+id = "flow.conn.address-bar"
+description = "Type paths into both address bars: Return goes there, Escape puts the folder back"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "fill", id = "remote.path", text = "/etc" },
+  { op = "key", id = "remote.path", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "motd" },
+  { op = "expect_value", id = "remote.path", value = "/etc" },
+  { op = "fill", id = "remote.path", text = "/nowhere" },
+  { op = "key", id = "remote.path", key = "escape" },
+  { op = "expect_value", id = "remote.path", value = "/etc" },
+  { op = "key", id = "remote.list", key = "ctrl+l" },
+  { op = "type", text = "../export/home/dani/src" },
+  { op = "key", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = "Makefile.local" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "docs" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "local.list", name = "docs" },
+  { op = "fill", id = "local.path", text = "docs" },
+  { op = "key", id = "local.path", key = "enter" },
+  { op = "expect_row", id = "local.list", name = "docs", present = false },
+  { op = "fill", id = "local.path", text = ".." },
+  { op = "key", id = "local.path", key = "enter" },
+  { op = "expect_row", id = "local.list", name = "docs" },
+]
+
+[[case]]
 id = "flow.conn.copy-to-home"
 description = "Copy a remote file to the home folder with F6"
 machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]

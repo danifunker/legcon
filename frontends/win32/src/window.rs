@@ -24,7 +24,7 @@ use windows::Win32::UI::Controls::{
     ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT,
+    GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_SHIFT,
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -248,12 +248,13 @@ fn pane(window: HWND, local: bool) -> Pane {
     if !local {
         cols.push(("Permissions", 90));
     }
+    // The address bar: shows the folder, and goes to whatever path is typed into it.
     let path = ui::child(
         window,
         w!("EDIT"),
         "",
-        WINDOW_STYLE(ES_AUTOHSCROLL as u32 | ES_READONLY as u32),
-        WINDOW_EX_STYLE(0),
+        WINDOW_STYLE(ES_AUTOHSCROLL as u32 | WS_TABSTOP.0),
+        windows::Win32::UI::WindowsAndMessaging::WS_EX_CLIENTEDGE,
         path_id,
     );
     ui::set_font(path, ui::mono_font_for(window));
@@ -866,8 +867,17 @@ fn refresh() {
             s.drawn.header = Some(info);
         }
         ui::set_text(s.w.remote.title, &t.title());
-        ui::set_text(s.w.local.path, &format!(" {}", t.local_path()));
-        ui::set_text(s.w.remote.path, &format!(" {}", t.remote_path()));
+        // Not while the user is typing a path there.
+        // SAFETY: reading which window has the keyboard, on the UI thread.
+        let focus = unsafe { GetFocus() };
+        for (edit, path) in [
+            (s.w.local.path, t.local_path()),
+            (s.w.remote.path, t.remote_path()),
+        ] {
+            if edit != focus {
+                ui::set_text(edit, &path);
+            }
+        }
         ui::set_enabled(s.w.remote.home, t.can_disconnect());
         ui::set_enabled(s.w.remote.other, t.can_disconnect());
         let local = t.local_rows();
@@ -1638,6 +1648,33 @@ pub fn key(vk: u16, focus: HWND) -> bool {
         send_console();
         return true;
     }
+    // An address bar: Enter goes to the path typed, Escape puts the folder back.
+    let bar = with(|s| {
+        [
+            (s.w.local.path, Side::Local),
+            (s.w.remote.path, Side::Remote),
+        ]
+        .into_iter()
+        .find(|(h, _)| *h == focus)
+    })
+    .flatten();
+    if let (Some((_, side)), 0x0D | 0x1B) = (bar, vk) {
+        let text = ui::text(focus);
+        let list = with(|s| match side {
+            Side::Local => s.w.local.list,
+            Side::Remote => s.w.remote.list,
+        });
+        // SAFETY: moving the keyboard to our own list on the UI thread.
+        if let Some(l) = list {
+            let _ = unsafe { SetFocus(Some(l)) };
+        }
+        if vk == 0x0D {
+            conn_action(conn::Action::PathTyped(side, text));
+        } else {
+            refresh();
+        }
+        return true;
+    }
     let Some(c) = chord(vk) else {
         return false;
     };
@@ -1672,6 +1709,18 @@ pub fn key(vk: u16, focus: HWND) -> bool {
         Command::RemotePlaces => conn_action(conn::Action::Places(Side::Remote)),
         Command::LocalHome => conn_action(conn::Action::LocalHome),
         Command::GoTo => conn_action(conn::Action::GoTo(side)),
+        Command::EditPath => {
+            if let Some(edit) = with(|s| match side {
+                Side::Local => s.w.local.path,
+                Side::Remote => s.w.remote.path,
+            }) {
+                // SAFETY: focusing our own edit control and selecting its text, on the UI thread.
+                unsafe {
+                    let _ = SetFocus(Some(edit));
+                    SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
+                }
+            }
+        }
         Command::Refresh => conn_action(conn::Action::Refresh(side)),
         Command::Up => conn_action(match side {
             Side::Local => conn::Action::LocalUp,

@@ -39,6 +39,8 @@ pub enum Command {
     LocalHome,
     /// Type a folder to go to, in the focused pane.
     GoTo,
+    /// Put the cursor in the focused pane's address bar, to type a path there.
+    EditPath,
     Refresh,
     Up,
     CloseTab,
@@ -70,6 +72,8 @@ pub const DEFAULTS: &[(Chord, Command)] = &[
     (chord(Key::Digit(2), true, true), Command::RemotePlaces),
     (chord(Key::Char('H'), true, true), Command::LocalHome),
     (chord(Key::Char('G'), true, true), Command::GoTo),
+    // Browsers' and Explorer's address bar key.
+    (chord(Key::Char('L'), true, false), Command::EditPath),
     (chord(Key::F(5), false, false), Command::Refresh),
     (chord(Key::Backspace, false, false), Command::Up),
     (chord(Key::Char('W'), true, false), Command::CloseTab),

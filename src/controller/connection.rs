@@ -137,6 +137,8 @@ pub enum Action {
     /// The Go to prompts' answers; `None` when cancelled.
     LocalGoToAnswered(Option<PathBuf>),
     RemoteGoToAnswered(Option<String>),
+    /// A path typed into a pane's address bar, then Enter: go there.
+    PathTyped(Side, String),
     Connect,
     PasswordAnswered(Option<String>),
     Disconnect,
@@ -1761,6 +1763,54 @@ fn not_empty(text: &str) -> Result<(), String> {
 }
 
 /// A typed remote folder: absolute as the machine spells it, or relative to `dir`.
+/// Where a path typed into the local address bar leads: `~` is the user's folder, a relative
+/// path starts at `dir`, and a file's own folder is taken; `None` for nothing typed.
+fn local_target(dir: &Path, text: &str) -> Result<Option<PathBuf>, String> {
+    let t = text.trim().trim_matches('"');
+    if t.is_empty() {
+        return Ok(None);
+    }
+    let home = dirs::home_dir();
+    let mut path = match (t.strip_prefix('~'), &home) {
+        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            h.join(rest.trim_start_matches(['/', '\\']))
+        }
+        _ => PathBuf::from(t),
+    };
+    // A drive letter alone (C:) means its top, not the drive's current folder.
+    if t.len() == 2 && t.ends_with(':') && t.as_bytes()[0].is_ascii_alphabetic() {
+        path = PathBuf::from(format!("{t}\\"));
+    }
+    let path = tidy(&dir.join(path));
+    if path.is_dir() {
+        return Ok(Some(path));
+    }
+    match path.parent() {
+        Some(p) if path.is_file() => Ok(Some(p.to_path_buf())),
+        _ => Err(format!(
+            "There is no folder {} on this computer.",
+            path.display()
+        )),
+    }
+}
+
+/// `a/./b/../c` as `a/c`, without asking the disk (canonicalize would add `\\?\` on Windows).
+fn tidy(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 fn remote_target(dir: &RemotePath, text: &str) -> RemotePath {
     let sep = dir.style.separator();
     // A classic Mac path is relative when it starts with ':'; others when it lacks the leading separator.
@@ -1884,6 +1934,28 @@ impl Controller for ConnectionController {
                 }
                 self.note_local(path.clone());
                 self.go_local(path);
+            }
+            Action::PathTyped(Side::Local, text) => match local_target(&self.local_dir, &text) {
+                Ok(Some(dir)) => {
+                    self.note_local(dir.clone());
+                    self.go_local(dir);
+                }
+                Ok(None) => {}
+                Err(e) => return vec![Effect::Message(e)],
+            },
+            Action::PathTyped(Side::Remote, text) => {
+                let Some(dir) = self.remote_dir.clone() else {
+                    return vec![Effect::Message("Connect first.".into())];
+                };
+                let text = text.trim();
+                if !text.is_empty() {
+                    // DOS-style machines spell paths with '\'; '/' is taken as well.
+                    let text = match dir.style {
+                        lc_core::PathStyle::Dos => text.replace('/', "\\"),
+                        _ => text.to_string(),
+                    };
+                    self.go_remote(remote_target(&dir, &text));
+                }
             }
             Action::RemoteGoToAnswered(Some(text)) => {
                 if let Some(dir) = &self.remote_dir {
@@ -3475,5 +3547,77 @@ mod tests {
         }
         assert!(screen(&c).contains("Connected again."), "{:?}", screen(&c));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn a_path_typed_into_the_address_bar_goes_there() {
+        let home = tempfile::tempdir().unwrap();
+        let base = home.path().canonicalize().unwrap();
+        std::fs::create_dir_all(base.join("a/b")).unwrap();
+        std::fs::write(base.join("a/b/notes.txt"), b"x").unwrap();
+        let at = |t: &str| local_target(&base, t);
+        assert_eq!(at("a/b").unwrap(), Some(base.join("a/b")));
+        assert_eq!(at(" a/./b/.. ").unwrap(), Some(base.join("a")), "tidied");
+        assert_eq!(
+            at("a/b/notes.txt").unwrap(),
+            Some(base.join("a/b")),
+            "a file's folder"
+        );
+        assert_eq!(
+            at(&format!("\"{}\"", base.join("a").display())).unwrap(),
+            Some(base.join("a"))
+        );
+        assert_eq!(at("").unwrap(), None);
+        assert!(at("nowhere").unwrap_err().contains("no folder"));
+        if let Some(h) = dirs::home_dir() {
+            assert_eq!(at("~").unwrap(), Some(h));
+        }
+
+        let mut c = tab(home.path());
+        let out = c.apply(Action::PathTyped(Side::Remote, "/etc".into()));
+        assert!(matches!(&out[..], [Effect::Message(m)] if m == "Connect first."));
+        c.apply(Action::PathTyped(
+            Side::Local,
+            base.join("a").display().to_string(),
+        ));
+        settle(&mut c);
+        assert_eq!(c.local_path(), base.join("a").display().to_string());
+        assert!(c.local_rows().iter().any(|r| r.name == "b"));
+        let out = c.apply(Action::PathTyped(Side::Local, "missing".into()));
+        assert!(matches!(&out[..], [Effect::Message(m)] if m.contains("no folder")));
+        c.apply(Action::Connect);
+        settle(&mut c);
+        c.apply(Action::PathTyped(Side::Remote, "/etc".into()));
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/etc");
+        assert!(c.remote_rows.iter().any(|e| e.name == "motd"));
+        c.apply(Action::PathTyped(
+            Side::Remote,
+            "../export/home/dani/src".into(),
+        ));
+        settle(&mut c);
+        assert_eq!(
+            c.remote_path(),
+            "/export/home/dani/src",
+            "relative to the folder shown"
+        );
+    }
+
+    #[test]
+    fn a_path_typed_on_a_lost_machine_connects_again_first() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, fs) = droppable(home.path());
+        drop_link(&fs);
+        c.sessions.age("sparc", crate::model::session::CHECK_AFTER);
+        c.apply(Action::Refresh(Side::Remote));
+        settle(&mut c);
+        // The refresh found the link gone and reconnected; now type a path while it is lost.
+        c.sessions.suspend("sparc", Arc::new(NoNotify)).wait();
+        c.tick();
+        assert_eq!(c.state(), ConnState::Idle);
+        c.apply(Action::PathTyped(Side::Remote, "/etc".into()));
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Connected);
+        assert_eq!(c.remote_path(), "/etc");
     }
 }

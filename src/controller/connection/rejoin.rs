@@ -167,6 +167,7 @@ impl ConnectionController {
             | Action::Refresh(Side::Remote)
             | Action::GoTo(Side::Remote)
             | Action::RemoteGoToAnswered(Some(_))
+            | Action::PathTyped(Side::Remote, _)
             | Action::PlaceChosen(Side::Remote, Some(_))
             | Action::Copy(..)
             | Action::AddToQueue(..)
@@ -283,6 +284,7 @@ impl ConnectionController {
                     | Action::RemoteOpen(_)
                     | Action::Refresh(Side::Remote)
                     | Action::RemoteGoToAnswered(_)
+                    | Action::PathTyped(Side::Remote, _)
                     | Action::PlaceChosen(Side::Remote, _),
                 ..
             }) => self.remote_dir = Some(dir),
