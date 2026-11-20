@@ -11,6 +11,7 @@ use crate::controller::{ChoiceSpec, Effect, TextSpec};
 use crate::model::job::{Cancelled, Job, Status};
 use crate::model::local;
 use crate::model::queue::{Id, OnExisting, Queue, State};
+use crate::model::session::suspect;
 use crate::model::transfer::{self, Copied, Direction, Mismatch, Plan, Summary, Verified};
 
 /// The app settings the queue follows.
@@ -915,10 +916,15 @@ impl ConnectionController {
                     let p = self.xfer.planning.remove(i);
                     match status {
                         Status::Done => {
+                            self.link_worked();
                             if let Some(plan) = p.job.take_result().filter(|p| !p.items.is_empty())
                             {
                                 self.xfer.arrived.push_back((plan, p.start));
                             }
+                        }
+                        Status::Failed(e) if self.state() == ConnState::Lost => {
+                            self.link.failed = true;
+                            log::warn!("Could not copy {}: {e}", p.label);
                         }
                         Status::Failed(e) => {
                             out.push(Effect::Message(format!("Could not copy {}: {e}", p.label)))
@@ -961,8 +967,25 @@ impl ConnectionController {
                     Status::Failed(why) => q.set_state(r.id, State::Failed(why)),
                     Status::Running => {}
                 }
+                if self
+                    .xfer
+                    .queue
+                    .get(r.id)
+                    .is_some_and(|e| matches!(e.state, State::Done(_)))
+                {
+                    self.link_worked();
+                }
                 // A connection that went away fails every file after it; stop instead.
                 if !self.can_disconnect() {
+                    let failed = self
+                        .xfer
+                        .queue
+                        .get(r.id)
+                        .is_some_and(|e| matches!(e.state, State::Failed(_)));
+                    if failed {
+                        self.link.failed = true;
+                        self.note_cut(r.id, self.xfer.queue.running);
+                    }
                     self.xfer.queue.running = false;
                 }
             }
@@ -1006,7 +1029,8 @@ impl ConnectionController {
                 Arc::clone(&self.notify),
                 move |fs, ctx| match transfer::copy_item(fs, &item, mode, sum, ctx) {
                     Ok(c) => Ok(Ok(c)),
-                    Err(e) if e.downcast_ref::<Cancelled>().is_some() => Err(e),
+                    // A dead link fails the job, so the session manager sees it and stops the queue.
+                    Err(e) if e.downcast_ref::<Cancelled>().is_some() || suspect(&e) => Err(e),
                     Err(e) => Ok(Err((
                         format!("{e:#}"),
                         e.downcast_ref::<Mismatch>().is_some(),

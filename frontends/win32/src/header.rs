@@ -72,6 +72,7 @@ pub fn state_rgb(s: ConnState) -> u32 {
         ConnState::Connecting | ConnState::Disconnecting => paint::WARN,
         ConnState::Disconnected => paint::OFF,
         ConnState::Lost => paint::BAD,
+        ConnState::Idle => paint::OFF,
     }
 }
 
@@ -80,7 +81,8 @@ fn button_label(s: ConnState) -> &'static str {
         ConnState::Connected | ConnState::Busy => "Disconnect",
         ConnState::Connecting => "Connecting...",
         ConnState::Disconnecting => "Logging off...",
-        ConnState::Disconnected | ConnState::Lost => "Connect",
+        ConnState::Disconnected => "Connect",
+        ConnState::Lost | ConnState::Idle => "Reconnect",
     }
 }
 
@@ -150,7 +152,7 @@ pub fn update(hd: &Header, h: &HeaderInfo) {
         !h.files.starts_with("No ")
             && matches!(
                 h.files_state,
-                ConnState::Connected | ConnState::Disconnected | ConnState::Lost
+                ConnState::Connected | ConnState::Disconnected | ConnState::Lost | ConnState::Idle
             ),
     );
     ui::set_enabled(
@@ -158,7 +160,7 @@ pub fn update(hd: &Header, h: &HeaderInfo) {
         !h.commands.starts_with("No ")
             && matches!(
                 h.commands_state,
-                ConnState::Connected | ConnState::Disconnected | ConnState::Lost
+                ConnState::Connected | ConnState::Disconnected | ConnState::Lost | ConnState::Idle
             ),
     );
     for (b, r) in [hd.files, hd.commands, hd.swap, hd.close, hd.settings]

@@ -742,10 +742,11 @@ impl Connection for AfpSession {
     }
 
     /// Close the volumes, `FPLogout`, then `DSICloseSession`: the server's user list stays truthful.
-    fn disconnect(&mut self, _timeout: Duration) -> Result<()> {
+    fn disconnect(&mut self, timeout: Duration) -> Result<()> {
         if self.closed {
             return Ok(());
         }
+        let _ = self.dsi.set_timeout(timeout);
         let vols: Vec<u16> = self.open.values().copied().collect();
         for v in vols {
             let mut m = vec![cmd::CLOSE_VOL, 0];
@@ -764,6 +765,24 @@ impl Connection for AfpSession {
         let _ = self.dsi.stream.shutdown(std::net::Shutdown::Both);
         self.closed = true;
         out
+    }
+
+    /// `FPGetSrvrParms`: a small request every AFP server answers once logged in.
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        if self.closed {
+            return Err(Error::NotConnected);
+        }
+        let saved = self.dsi.timeout();
+        self.dsi.set_timeout(timeout)?;
+        let r = self
+            .call(&[cmd::GET_SRVR_PARMS, 0], "asking the server")
+            .map(drop);
+        self.dsi.set_timeout(saved)?;
+        r
+    }
+
+    fn breaker(&self) -> Option<lc_core::net::Breaker> {
+        Some(lc_core::net::Breaker::new(&self.dsi.stream))
     }
 }
 

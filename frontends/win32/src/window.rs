@@ -32,11 +32,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
     SetCursor, ShowWindow, TrackPopupMenu, BN_CLICKED, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE,
     ES_READONLY, HMENU, IDC_ARROW, IDC_HAND, IDC_SIZENS, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM,
-    WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VSCROLL,
+    MF_STRING, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
+    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETCURSOR,
+    WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VSCROLL,
 };
 
 use crate::controls;
@@ -608,6 +608,8 @@ fn run(effects: Vec<Effect>) {
                     "conn.queue.exists" => conn_action(conn::Action::QueueExistsAnswered(i)),
                     "conn.queue.item" => conn_action(conn::Action::QueueItemAnswered(i)),
                     "conn.queue.disconnect" => conn_action(conn::Action::DisconnectAnswered(i)),
+                    conn::REJOIN_PURPOSE => conn_action(conn::Action::RejoinAnswered(i)),
+                    conn::RESUME_PURPOSE => conn_action(conn::Action::ResumeQueueAnswered(i)),
                     legcon::controller::setup::FIRST_PURPOSE => {
                         dispatch(app::Action::SetupFirstAnswered(i))
                     }
@@ -685,6 +687,7 @@ fn state_text(s: ConnState) -> &'static str {
         ConnState::Busy => "Busy",
         ConnState::Disconnecting => "Logging off...",
         ConnState::Lost => "Connection lost",
+        ConnState::Idle => "Logged off while idle",
     }
 }
 
@@ -2065,6 +2068,16 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_CLOSE => {
             dispatch(app::Action::Quit);
             LRESULT(0)
+        }
+        WM_POWERBROADCAST => {
+            // Sleep logs every machine off; waking checks connections before they are used.
+            match wp.0 as u32 {
+                PBT_APMSUSPEND => dispatch(app::Action::Sleep),
+                // Every resume sends this one; RESUMESUSPEND follows only after user input.
+                PBT_APMRESUMEAUTOMATIC => dispatch(app::Action::Wake),
+                _ => {}
+            }
+            LRESULT(1)
         }
         WM_DESTROY => {
             // SAFETY: ends the message loop.

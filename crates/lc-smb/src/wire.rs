@@ -22,6 +22,7 @@ pub const DELETE: u8 = 0x06;
 pub const RENAME: u8 = 0x07;
 pub const CREATE_DIRECTORY: u8 = 0x00;
 pub const DELETE_DIRECTORY: u8 = 0x01;
+pub const ECHO: u8 = 0x2b;
 
 /// No AndX command follows.
 pub const NO_ANDX: u8 = 0xff;

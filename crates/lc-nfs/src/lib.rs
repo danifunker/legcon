@@ -763,10 +763,11 @@ impl Connection for NfsSession {
     }
 
     /// `UMNT` every export mounted here, so the server's mount list stays truthful.
-    fn disconnect(&mut self, _timeout: Duration) -> Result<()> {
+    fn disconnect(&mut self, timeout: Duration) -> Result<()> {
         if self.closed {
             return Ok(());
         }
+        let _ = self.mount.set_timeout(timeout);
         let mut first = None;
         let mounted: Vec<String> = self.mounted.keys().cloned().collect();
         for shown in mounted {
@@ -786,6 +787,25 @@ impl Connection for NfsSession {
         self.mounted.clear();
         self.handles.clear();
         first.map_or(Ok(()), Err)
+    }
+
+    /// The NFS program's NULL procedure, which every server answers with nothing.
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        if self.closed {
+            return Err(Error::NotConnected);
+        }
+        let saved = self.nfs.timeout();
+        self.nfs.set_timeout(timeout)?;
+        let r = self.nfs.call(0, &[]).map(drop);
+        self.nfs.set_timeout(saved)?;
+        r
+    }
+
+    fn breaker(&self) -> Option<lc_core::net::Breaker> {
+        let b = lc_core::net::Breaker::default();
+        self.nfs.break_with(&b);
+        self.mount.break_with(&b);
+        Some(b)
     }
 }
 

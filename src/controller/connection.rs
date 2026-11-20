@@ -20,7 +20,9 @@ use crate::model::term::TermSession;
 use crate::model::transfer::{self, Direction, Pick, Plan};
 
 mod import;
+mod rejoin;
 mod transfers;
+pub use rejoin::{LinkPrefs, REJOIN_PURPOSE, RESUME_PURPOSE};
 use transfers::{direction_from, ItemAnswer, Transfers};
 pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS, RENAME_PURPOSE};
 
@@ -193,6 +195,10 @@ pub enum Action {
     /// Download these remote names into a folder other than the local pane's (rows dragged
     /// out to the Finder or Explorer, which names the folder).
     CopyOut(Vec<String>, PathBuf),
+    /// "Connect again?" after a lost link or an idle log-off: Connect, Not now.
+    RejoinAnswered(usize),
+    /// "Transfers are not finished" after a reconnect: Go on, Not now.
+    ResumeQueueAnswered(usize),
 }
 
 /// A name for a new or renamed file or folder: not empty, no path separators, nothing Windows refuses.
@@ -419,6 +425,8 @@ pub struct ConnectionController {
     ops: Vec<(Side, Job<()>)>,
     console: Vec<String>,
     console_job: Option<Job<String>>,
+    /// Lost connections and connecting again (rejoin.rs).
+    link: rejoin::Link,
 }
 
 /// What an rsh check or setup on `name` found, in words (the tab and `lc rsh-trust`).
@@ -543,7 +551,9 @@ impl ConnectionController {
             ops: Vec::new(),
             console: Vec::new(),
             console_job: None,
+            link: rejoin::Link::default(),
         };
+        c.push_upkeep();
         c.list_local();
         c.drives_job = Some(Job::spawn(
             "Find drives".to_string(),
@@ -923,6 +933,7 @@ impl ConnectionController {
     /// Take the machine's edited settings; true when a live connection still uses the old ones.
     pub(crate) fn machine_edited(&mut self, m: Machine) -> bool {
         let old = std::mem::replace(&mut self.machine, m);
+        self.push_upkeep();
         let m = &self.machine;
         let changed = (
             &old.address,
@@ -945,6 +956,7 @@ impl ConnectionController {
             ConnState::Connecting,
             ConnState::Disconnecting,
             ConnState::Lost,
+            ConnState::Idle,
         ] {
             if f == s || c == s {
                 return s;
@@ -1059,12 +1071,13 @@ impl ConnectionController {
         self.shell_open = Some(TermSession::open(
             &self.machine,
             password,
-            cols,
-            rows,
+            (cols, rows),
             Arc::clone(&self.shell_key_note),
             Arc::clone(&self.notify),
             Some(self.sessions.trace_log(&self.machine.id)),
+            self.keepalive(),
         ));
+        self.link.shell_closed = false;
     }
 
     fn ask_password(&self) -> Effect {
@@ -1081,6 +1094,7 @@ impl ConnectionController {
 
     /// Close the shell (logout command first); also used when the tab closes.
     pub(crate) fn begin_shell_close(&mut self) -> Option<Job<()>> {
+        self.link.shell_closed = true;
         let shell = self.shell.as_ref()?;
         if shell.state() != ConnState::Connected || self.shell_close.is_some() {
             return None;
@@ -1201,8 +1215,9 @@ impl ConnectionController {
             .collect()
     }
 
+    /// Why the remote pane is empty or stale: a failed listing, or the connection lost or idle.
     pub fn remote_error(&self) -> Option<&str> {
-        self.remote_error.as_deref()
+        self.remote_error.as_deref().or(self.link.note.as_deref())
     }
 
     /// What the terminal area shows until its features arrive (phase 1 and later).
@@ -1679,6 +1694,20 @@ impl ConnectionController {
         self.list_remote();
     }
 
+    /// Connect the file service, asking for the password first where it is needed.
+    fn start_connect(&mut self) -> Vec<Effect> {
+        let kind = self.machine.file_service().map(|s| s.kind);
+        // No password for the demo or NFS, nor up front for SSH with keys to try.
+        let key = kind == Some(ServiceKind::Ssh)
+            && (self.machine.key_file.is_some() || self.machine.use_agent);
+        let needed = !key && kind.is_some_and(ServiceKind::needs_password);
+        match self.password_for(Login::Files, needed) {
+            Ok(p) => self.connect(p),
+            Err(ask) => return vec![*ask],
+        }
+        Vec::new()
+    }
+
     fn connect(&mut self, password: Option<String>) {
         self.remote_error = None;
         self.connect_job = Some(self.sessions.connect(
@@ -1785,6 +1814,14 @@ impl Controller for ConnectionController {
     type Action = Action;
 
     fn apply(&mut self, action: Action) -> Vec<Effect> {
+        if let Some(out) = self.gate(&action) {
+            return out;
+        }
+        if matches!(action, Action::ShellText(_) | Action::ShellKey(_)) {
+            if let Some(out) = self.shell_gate() {
+                return out;
+            }
+        }
         match action {
             Action::Swap => {
                 // The areas trade places and sizes: the one on top keeps the larger share.
@@ -1855,19 +1892,16 @@ impl Controller for ConnectionController {
                 }
             }
             Action::Connect => {
+                if matches!(self.state(), ConnState::Lost | ConnState::Idle) {
+                    return self.rejoin(None);
+                }
                 if !self.can_connect() {
                     return Vec::new();
                 }
-                let kind = self.machine.file_service().map(|s| s.kind);
-                // No password for the demo or NFS, nor up front for SSH with keys to try.
-                let key = kind == Some(ServiceKind::Ssh)
-                    && (self.machine.key_file.is_some() || self.machine.use_agent);
-                let needed = !key && kind.is_some_and(ServiceKind::needs_password);
-                match self.password_for(Login::Files, needed) {
-                    Ok(p) => self.connect(p),
-                    Err(ask) => return vec![*ask],
-                }
+                return self.start_connect();
             }
+            Action::RejoinAnswered(choice) => return self.rejoin_answered(choice),
+            Action::ResumeQueueAnswered(choice) => return self.resume_answered(choice),
             Action::PasswordAnswered(None) => {}
             Action::PasswordAnswered(Some(p)) => {
                 // Kept for this tab only, so a reconnect does not ask again.
@@ -1875,6 +1909,17 @@ impl Controller for ConnectionController {
                 self.log_in(self.asking_for, Some(p));
             }
             Action::Disconnect => {
+                self.link.rejoin = None;
+                if matches!(self.state(), ConnState::Lost | ConnState::Idle) {
+                    // Nothing to log off; the pane empties and nothing connects again.
+                    self.link.cut.clear();
+                    self.link.queue_was_running = false;
+                    let job = self
+                        .sessions
+                        .disconnect(&self.machine.id, Arc::clone(&self.notify));
+                    self.disconnect_job = Some(job);
+                    return Vec::new();
+                }
                 if let Some(ask) = self.ask_disconnect() {
                     return ask;
                 }
@@ -2121,14 +2166,21 @@ impl Controller for ConnectionController {
             match r {
                 Ok(home) => {
                     self.remote_home = Some(home.clone());
-                    // The machine's own start folder, when set; else where the login put us.
-                    let start = match self.machine.remote_folder.trim() {
-                        "" => home,
-                        f => remote_target(&home, f),
-                    };
-                    self.go_remote(start);
+                    if let Some(more) = self.rejoined(&home) {
+                        out.extend(more);
+                    } else {
+                        // The machine's own start folder, when set; else where the login put us.
+                        let start = match self.machine.remote_folder.trim() {
+                            "" => home,
+                            f => remote_target(&home, f),
+                        };
+                        self.go_remote(start);
+                    }
                 }
-                Err(e) if changed => self.remote_error = Some(format!("Could not connect: {e}")),
+                Err(e) if changed => {
+                    self.rejoin_failed();
+                    self.remote_error = Some(format!("Could not connect: {e}"))
+                }
                 // No key got in and no password was given: ask for it, as ssh does, then retry.
                 Err(e)
                     if self.session_password.is_none() && crate::model::ssh::keys_refused(&e) =>
@@ -2137,6 +2189,7 @@ impl Controller for ConnectionController {
                     out.push(self.ask_password());
                 }
                 Err(e) => {
+                    self.rejoin_failed();
                     self.remote_error = Some(format!("Could not connect: {e}"));
                     if let Some(why) = self.sessions.take_rsh_note(&self.machine.id) {
                         out.push(self.rsh_refused(why));
@@ -2153,8 +2206,13 @@ impl Controller for ConnectionController {
         if let Some(r) = self.list_job.as_ref().and_then(job_outcome) {
             self.list_job = None;
             match r {
-                Ok(rows) => self.remote_rows = rows,
+                Ok(rows) => {
+                    self.link_worked();
+                    self.link.listed = self.remote_dir.clone();
+                    self.remote_rows = rows
+                }
                 Err(e) => {
+                    self.link.failed = true;
                     self.remote_error = Some(format!("Could not list {}: {e}", self.remote_path()))
                 }
             }
@@ -2175,14 +2233,28 @@ impl Controller for ConnectionController {
                 Side::Remote => refresh.1 = true,
             }
             if let Err(e) = r {
-                out.push(Effect::Message(e));
+                // A lost link is said once, by the reconnect, not by every job it failed.
+                if side == Side::Remote && self.state() == ConnState::Lost {
+                    self.link.failed = true;
+                    log::warn!("{}: {e}", self.machine.name);
+                } else {
+                    out.push(Effect::Message(e));
+                }
+            } else if side == Side::Remote {
+                self.link_worked();
             }
         }
         if let Some(r) = self.console_job.as_ref().and_then(job_outcome) {
             self.console_job = None;
             match r {
-                Ok(text) => self.console.extend(text.lines().map(|l| format!("< {l}"))),
-                Err(e) => self.console.push(format!("  {e}")),
+                Ok(text) => {
+                    self.link_worked();
+                    self.console.extend(text.lines().map(|l| format!("< {l}")))
+                }
+                Err(e) => {
+                    self.link.failed = true;
+                    self.console.push(format!("  {e}"))
+                }
             }
             // A command may have changed the folder or its files.
             refresh.1 = true;
@@ -2210,7 +2282,14 @@ impl Controller for ConnectionController {
             let note = take_note(&self.shell_key_note);
             out.extend(self.key_note(note, Login::Shell));
             match r {
-                Ok(s) => self.shell = Some(s),
+                Ok(s) => {
+                    // The machine closed the last one, not the user: say when it came back.
+                    let again = self.shell.as_ref().is_some_and(|o| o.ended().is_some());
+                    if again && !self.link.shell_closed {
+                        s.note(&format!("{} Connected again.", rejoin::clock()));
+                    }
+                    self.shell = Some(s)
+                }
                 Err(e)
                     if self.session_password.is_none() && crate::model::ssh::keys_refused(&e) =>
                 {
@@ -2228,6 +2307,7 @@ impl Controller for ConnectionController {
         }
         if let Some(r) = self.disconnect_job.as_ref().and_then(job_outcome) {
             self.disconnect_job = None;
+            self.link.listed = None;
             self.remote_rows.clear();
             self.remote_dir = None;
             self.remote_home = None;
@@ -2235,6 +2315,7 @@ impl Controller for ConnectionController {
                 out.push(Effect::Message(format!("{}: {e}", self.machine.name)));
             }
         }
+        self.watch_link(&mut out);
         out
     }
 }
@@ -3161,5 +3242,238 @@ mod tests {
         assert_eq!(date_text(0), "1970-01-01");
         assert_eq!(date_text(951_782_400), "2000-02-29");
         assert_eq!(size_text(812 * 1024), "812 KB");
+    }
+
+    /// A connected demo tab whose server the test controls (it can drop the link).
+    fn droppable(home: &Path) -> (ConnectionController, lc_core::memory::MemoryFs) {
+        let mut c = tab(home);
+        c.apply(Action::Connect);
+        settle(&mut c);
+        let fs = crate::model::session::demo_machine();
+        c.sessions
+            .adopt("sparc", Box::new(fs.clone()), Arc::new(NoNotify));
+        (c, fs)
+    }
+
+    fn drop_link(fs: &lc_core::memory::MemoryFs) {
+        fs.dropped.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn settle_out(c: &mut ConnectionController) -> Vec<Effect> {
+        let mut out = Vec::new();
+        for _ in 0..400 {
+            out.extend(c.tick());
+            if c.connect_job.is_none() && c.list_job.is_none() && c.ops.is_empty() && !c.copying() {
+                return out;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("jobs did not finish");
+    }
+
+    #[test]
+    fn a_dropped_link_connects_again_and_carries_on() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, fs) = droppable(home.path());
+        assert_eq!(c.remote_path(), "/export/home/dani");
+        drop_link(&fs);
+        let out = c.apply(Action::RemoteOpen("src".into()));
+        assert!(out.is_empty());
+        let out = settle_out(&mut c);
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, Effect::Message(_) | Effect::Choose(_))),
+            "{out:?}"
+        );
+        assert_eq!(c.state(), ConnState::Connected);
+        assert_eq!(c.remote_path(), "/export/home/dani/src");
+        assert!(c.remote_rows.iter().any(|e| e.name == "Makefile.local"));
+        assert_eq!(c.remote_error(), None);
+        // The Console says when it went and when it came back.
+        assert!(
+            c.console[0].starts_with("-- ") && c.console[0].contains("lost"),
+            "{:?}",
+            c.console
+        );
+        assert!(
+            c.console[1].contains("Connected again to sparc"),
+            "{:?}",
+            c.console
+        );
+    }
+
+    #[test]
+    fn an_idle_machine_asks_or_waits_as_set() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, _fs) = droppable(home.path());
+        c.apply(Action::RemoteOpen("src".into()));
+        settle(&mut c);
+        c.sessions.suspend("sparc", Arc::new(NoNotify)).wait();
+        c.tick();
+        assert_eq!(c.state(), ConnState::Idle);
+        assert!(c.remote_error().unwrap().contains("slept"));
+        c.machine.reconnect = Some(crate::model::settings::Auto::Never);
+        let out = c.apply(Action::Refresh(Side::Remote));
+        assert!(matches!(&out[..], [Effect::Message(m)] if m.contains("Reconnect")));
+        assert_eq!(c.state(), ConnState::Idle);
+        c.machine.reconnect = Some(crate::model::settings::Auto::Ask);
+        let out = c.apply(Action::RemoteUp);
+        assert!(matches!(&out[..], [Effect::Choose(s)] if s.purpose == REJOIN_PURPOSE));
+        assert!(c.apply(Action::RejoinAnswered(0)).is_empty());
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Connected);
+        assert_eq!(c.remote_path(), "/export/home/dani", "went up from src");
+    }
+
+    #[test]
+    fn the_header_connect_on_a_lost_machine_goes_back_to_its_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, fs) = droppable(home.path());
+        c.apply(Action::RemoteOpen("bin".into()));
+        settle(&mut c);
+        // A keepalive found the link gone: nothing the user did failed, so nothing reconnects.
+        drop_link(&fs);
+        c.sessions.age("sparc", crate::model::session::CHECK_AFTER);
+        c.apply(Action::Queue(QueueOp::ClearFinished, Vec::new()));
+        c.sessions.suspend("sparc", Arc::new(NoNotify)).wait();
+        c.tick();
+        assert!(c.can_connect() || c.state() == ConnState::Idle);
+        c.apply(Action::Connect);
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/export/home/dani/bin");
+        // Disconnect from Idle empties the pane; using it no longer connects.
+        c.sessions.suspend("sparc", Arc::new(NoNotify)).wait();
+        c.tick();
+        c.apply(Action::Disconnect);
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Disconnected);
+        assert!(c.apply(Action::Refresh(Side::Remote)).is_empty());
+        assert_eq!(c.state(), ConnState::Disconnected);
+    }
+
+    #[test]
+    fn a_queue_the_sleep_stopped_asks_to_go_on_after_waking() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, _fs) = droppable(home.path());
+        c.apply(Action::AddToQueue(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        assert_eq!(c.xfer.queue.unfinished(), 1);
+        c.xfer.queue.running = true;
+        for j in c.begin_suspend() {
+            j.wait();
+        }
+        c.tick();
+        assert_eq!(c.state(), ConnState::Idle);
+        let out = c.woke();
+        assert!(out.is_empty(), "{out:?}");
+        let s = settle_ask(&mut c, RESUME_PURPOSE);
+        assert!(s.message.contains("1 file(s)"));
+        c.apply(Action::ResumeQueueAnswered(0));
+        settle(&mut c);
+        assert_eq!(c.xfer.queue.unfinished(), 0);
+        assert!(home.path().join(".profile").exists());
+    }
+
+    #[test]
+    fn a_link_lost_under_the_queue_reconnects_and_asks_to_go_on() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, fs) = droppable(home.path());
+        c.apply(Action::AddToQueue(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        drop_link(&fs);
+        c.apply(Action::Queue(QueueOp::Start, Vec::new()));
+        let s = settle_ask(&mut c, RESUME_PURPOSE);
+        assert!(s.message.contains("1 file(s)"), "{}", s.message);
+        assert!(c.can_disconnect(), "connected again");
+        c.apply(Action::ResumeQueueAnswered(0));
+        settle(&mut c);
+        assert!(home.path().join(".profile").exists());
+        assert!(c.link.cut.is_empty());
+    }
+
+    #[test]
+    fn console_commands_are_not_replayed_and_a_double_wake_asks_once() {
+        let home = tempfile::tempdir().unwrap();
+        let (mut c, _fs) = droppable(home.path());
+        c.apply(Action::ConsoleSend("SITE CHMOD 644 x".into()));
+        assert!(
+            c.link.last.is_none(),
+            "a console command is never sent twice"
+        );
+        settle(&mut c);
+        c.apply(Action::AddToQueue(Side::Remote, vec![".profile".into()]));
+        settle(&mut c);
+        c.xfer.queue.running = true;
+        for j in c.begin_suspend() {
+            j.wait();
+        }
+        c.tick();
+        c.machine.reconnect = Some(crate::model::settings::Auto::Ask);
+        let first = c.woke();
+        assert!(matches!(&first[..], [Effect::Choose(s)] if s.purpose == REJOIN_PURPOSE));
+        assert!(c.woke().is_empty(), "the second wake does not ask again");
+    }
+
+    #[test]
+    fn a_shell_the_machine_closed_says_when_and_opens_again_with_a_note() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            // The first shell is hung up on (an idle timeout); the second stays.
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(b"$ ").unwrap();
+            drop(s);
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(b"$ ").unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        });
+        let home = tempfile::tempdir().unwrap();
+        let mut m = Machine::new("sparc", "127.0.0.1");
+        m.services.push(Service {
+            kind: ServiceKind::Telnet,
+            port,
+        });
+        let mut c = ConnectionController::new(
+            m,
+            home.path(),
+            Vec::new(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        );
+        c.apply(Action::ShellConnect);
+        for _ in 0..400 {
+            c.tick();
+            if c.shell.as_ref().is_some_and(|s| s.ended().is_some()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let msg = c.shell_message();
+        // A clean close or a reset, depending on the timing: either way, with the time.
+        assert!(msg.starts_with("-- ") && msg.as_bytes()[5] == b':', "{msg}");
+        // Typing into it opens a new shell, which starts with the time it came back.
+        c.apply(Action::ShellText("x".into()));
+        let screen = |c: &ConnectionController| {
+            c.shell_screen()
+                .map(|s| {
+                    s.lines
+                        .iter()
+                        .flatten()
+                        .map(|r| r.text.clone())
+                        .collect::<String>()
+                })
+                .unwrap_or_default()
+        };
+        for _ in 0..400 {
+            c.tick();
+            if screen(&c).contains("Connected again.") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(screen(&c).contains("Connected again."), "{:?}", screen(&c));
+        server.join().unwrap();
     }
 }

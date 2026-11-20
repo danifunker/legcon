@@ -52,7 +52,13 @@ fn exercise(mut fs: Box<dyn FileSession>, style: PathStyle, upload: &[&str], lab
         .iter()
         .fold(RemotePath::root(style), |p, n| p.join(n));
     let home = dir.parent().expect("upload is inside the home folder");
+    // The keepalive and check-before-use ping: every server answers it, and still lists after.
+    let ping = std::time::Duration::from_secs(5);
+    fs.ping(ping)
+        .unwrap_or_else(|e| panic!("{label}: ping: {e}"));
     let listed = names(fs, &home);
+    fs.ping(ping)
+        .unwrap_or_else(|e| panic!("{label}: second ping: {e}"));
     for want in ["readme.txt", "notes", "folder with spaces"] {
         assert!(
             listed.iter().any(|n| n == want),

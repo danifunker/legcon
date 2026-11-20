@@ -75,6 +75,11 @@ pub const MS_UID: &str = "machine.uid";
 pub const MS_GID: &str = "machine.gid";
 pub const MS_NFS_VERSION: &str = "machine.nfs_version";
 pub const MS_LOCAL_USER: &str = "machine.local_user";
+pub const MS_LINK: &str = "machine.section.connection";
+pub const MS_RECONNECT: &str = "machine.reconnect";
+pub const MS_RESUME_QUEUE: &str = "machine.resume_queue";
+pub const MS_KEEPALIVE: &str = "machine.keepalive";
+pub const MS_IDLE_LOGOFF: &str = "machine.idle_logoff";
 
 // The Transfers tab (controller::connection::transfers).
 pub const QUEUE_LIST: &str = "transfers.list";
@@ -95,6 +100,11 @@ pub const OPT_SECTION_QUEUE: &str = "options.section.queue";
 pub const OPT_QUEUE_ASK_OVER: &str = "options.queue_ask_over";
 pub const OPT_CHECKSUM: &str = "options.checksum";
 pub const OPT_ON_EXISTING: &str = "options.on_existing";
+pub const OPT_SECTION_LINK: &str = "options.section.connections";
+pub const OPT_RECONNECT: &str = "options.reconnect";
+pub const OPT_RESUME_QUEUE: &str = "options.resume_queue";
+pub const OPT_KEEPALIVE: &str = "options.keepalive";
+pub const OPT_IDLE_LOGOFF: &str = "options.idle_logoff";
 
 // The setup (controller::setup).
 pub const MACHINES_SETUP: &str = "machines.setup";

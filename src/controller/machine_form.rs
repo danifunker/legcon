@@ -2,10 +2,12 @@
 
 use lc_core::Charset;
 
+use super::options;
 use super::{ids, Field, FieldKind, FieldValue, FormSpec, FormValues};
 use crate::model::keystore::KeyInfo;
 use crate::model::machines::{Machine, Password, Service, ServiceKind};
 use crate::model::secrets;
+use crate::model::settings::Auto;
 
 pub const PURPOSE: &str = "machines.settings";
 
@@ -279,6 +281,31 @@ pub fn form(m: &Machine, keys: &[KeyInfo]) -> FormSpec {
             FieldKind::Text(m.local_user.clone().unwrap_or_default()),
             "The name .rhosts trusts; empty for the user above.",
         ),
+        heading(ids::MS_LINK, "Connection"),
+        field(
+            ids::MS_RECONNECT,
+            options::RECONNECT_LABEL,
+            as_in_options(&options::RECONNECT_LABELS, m.reconnect),
+            "",
+        ),
+        field(
+            ids::MS_RESUME_QUEUE,
+            options::RESUME_LABEL,
+            as_in_options(&options::RESUME_LABELS, m.resume_queue),
+            "",
+        ),
+        field(
+            ids::MS_KEEPALIVE,
+            options::KEEPALIVE_LABEL,
+            FieldKind::Text(m.keepalive_secs.map(|v| v.to_string()).unwrap_or_default()),
+            "Empty as in Options; 0 never for this machine.",
+        ),
+        field(
+            ids::MS_IDLE_LOGOFF,
+            options::IDLE_LABEL,
+            FieldKind::Text(m.idle_logoff_mins.map(|v| v.to_string()).unwrap_or_default()),
+            "Empty as in Options; 0 never for this machine.",
+        ),
     ];
     FormSpec {
         purpose: PURPOSE,
@@ -297,6 +324,26 @@ fn port(text: &str) -> Result<Option<u16>, String> {
     match t.parse::<u16>() {
         Ok(p) if p > 0 => Ok(Some(p)),
         _ => Err(format!("{t} is not a port (1 to 65535).")),
+    }
+}
+
+/// "As in Options" first, then the choices; the machine's own one selected.
+fn as_in_options(labels: &[&str], own: Option<Auto>) -> FieldKind {
+    let options = std::iter::once("As in Options".to_string())
+        .chain(labels.iter().map(|l| l.to_string()))
+        .collect();
+    choice(options, own.map_or(0, |a| options::auto_index(a) + 1))
+}
+
+fn own_auto(choice: usize) -> Option<Auto> {
+    options::AUTO.get(choice.checked_sub(1)?).copied()
+}
+
+/// Empty follows Options; else a whole number.
+fn own_count(text: &str) -> Result<Option<u64>, String> {
+    match text.trim() {
+        "" => Ok(None),
+        t => options::count(t).map(Some),
     }
 }
 
@@ -325,6 +372,8 @@ pub fn validate(v: &FormValues) -> Result<(), String> {
     port(v.text(ids::MS_COMMANDS_PORT))?;
     number(v.text(ids::MS_UID), "uid")?;
     number(v.text(ids::MS_GID), "gid")?;
+    own_count(v.text(ids::MS_KEEPALIVE))?;
+    own_count(v.text(ids::MS_IDLE_LOGOFF))?;
     if v.check(ids::MS_OS_STORE) && v.text(ids::MS_PASSWORD).is_empty() {
         return Err(format!(
             "Type the password to keep it in {}.",
@@ -406,6 +455,10 @@ pub fn apply(m: &mut Machine, v: &FormValues, keys: &[KeyInfo]) -> Result<(), St
     }
     let local = v.text(ids::MS_LOCAL_USER).trim();
     m.local_user = (!local.is_empty()).then(|| local.to_string());
+    m.reconnect = own_auto(v.choice(ids::MS_RECONNECT));
+    m.resume_queue = own_auto(v.choice(ids::MS_RESUME_QUEUE));
+    m.keepalive_secs = own_count(v.text(ids::MS_KEEPALIVE))?;
+    m.idle_logoff_mins = own_count(v.text(ids::MS_IDLE_LOGOFF))?;
     Ok(())
 }
 

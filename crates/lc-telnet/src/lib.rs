@@ -94,6 +94,12 @@ impl PtyWriter for Writer {
         Ok(())
     }
 
+    fn keepalive(&mut self) -> Result<()> {
+        // IAC NOP: a Telnet command every server skips.
+        self.stream.write_all(&[255, 241])?;
+        Ok(())
+    }
+
     fn close(&mut self) -> Result<()> {
         match self.stream.shutdown(Shutdown::Both) {
             Err(e) if e.kind() != ErrorKind::NotConnected => Err(e.into()),
@@ -101,6 +107,9 @@ impl PtyWriter for Writer {
         }
     }
 }
+
+/// How long a keystroke may wait to be sent before the link counts as broken.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connect to `host:port` and start negotiating; the session's terminal is ready to use.
 pub fn connect(host: &str, port: u16, opts: &Options) -> Result<Pty> {
@@ -126,6 +135,7 @@ pub fn connect_with_local(
     })?;
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(opts.poll))?;
+    lc_core::net::tune(&stream, WRITE_TIMEOUT)?;
     let local = stream.local_addr()?;
     let mut nvt = Nvt::new(&opts.term, opts.cols, opts.rows);
     let hello = nvt.greeting();

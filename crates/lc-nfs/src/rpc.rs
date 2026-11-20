@@ -143,6 +143,7 @@ impl Client {
             let s: TcpStream = s.into();
             s.set_nodelay(true)?;
             s.set_read_timeout(Some(timeout))?;
+            lc_core::net::tune(&s, timeout)?;
             (Link::Tcp(s), r)
         } else {
             let s = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
@@ -182,6 +183,26 @@ impl Client {
 
     pub fn is_tcp(&self) -> bool {
         matches!(self.link, Link::Tcp(_))
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// The wait for each call's answer from now on (retransmits included, over UDP).
+    pub fn set_timeout(&mut self, t: Duration) -> Result<()> {
+        self.timeout = t;
+        if let Link::Tcp(s) = &self.link {
+            s.set_read_timeout(Some(t))?;
+        }
+        Ok(())
+    }
+
+    /// Add the TCP socket, if any, to `b`.
+    pub fn break_with(&self, b: &lc_core::net::Breaker) {
+        if let Link::Tcp(s) = &self.link {
+            b.add(s);
+        }
     }
 
     /// Call `procedure` with XDR `args`; the reply's result body.

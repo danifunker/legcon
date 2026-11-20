@@ -46,6 +46,7 @@ fn dial(host: &str, port: u16, opts: &Options) -> Result<TcpStream> {
     })?;
     s.set_read_timeout(Some(opts.read_timeout))?;
     s.set_nodelay(true)?;
+    lc_core::net::tune(&s, opts.read_timeout)?;
     Ok(s)
 }
 

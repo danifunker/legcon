@@ -17,6 +17,8 @@ pub enum ConnState {
     Disconnecting,
     /// The link dropped without a log-off.
     Lost,
+    /// Logged off by legcon itself (idle time, sleep); using the machine connects again.
+    Idle,
 }
 
 /// Every protocol, file or shell.
@@ -25,6 +27,18 @@ pub trait Connection: Send {
 
     /// Log off cleanly on the server (SMB `LOGOFF`, FTP `QUIT`, NFS `UMNT`, ...), then close.
     fn disconnect(&mut self, timeout: Duration) -> Result<()>;
+
+    /// Ask the server something cheap (FTP `NOOP`, SMB `ECHO`, NFS `NULL`), to keep the link up
+    /// or learn it is gone; protocols with a connection per request have nothing to ask.
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        let _ = timeout;
+        Ok(())
+    }
+
+    /// What closes the link from another thread, so a call stuck on a dead server returns.
+    fn breaker(&self) -> Option<crate::net::Breaker> {
+        None
+    }
 }
 
 /// What a file protocol (and this server) can do.
@@ -174,6 +188,10 @@ pub trait PtyWriter: Send {
     /// Keystrokes or pasted text, already in the machine's character set.
     fn send(&mut self, bytes: &[u8]) -> Result<()>;
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()>;
+    /// Send something the machine ignores (Telnet `NOP`, SSH `IGNORE`), so an idle link stays up.
+    fn keepalive(&mut self) -> Result<()> {
+        Ok(())
+    }
     /// Close the session (the caller sends any logout command first).
     fn close(&mut self) -> Result<()>;
 }

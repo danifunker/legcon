@@ -43,6 +43,7 @@ pub mod msg {
     pub const USERAUTH_PK_OK: u8 = 60;
     pub const USERAUTH_INFO_RESPONSE: u8 = 61;
     pub const GLOBAL_REQUEST: u8 = 80;
+    pub const REQUEST_SUCCESS: u8 = 81;
     pub const REQUEST_FAILURE: u8 = 82;
     pub const CHANNEL_OPEN: u8 = 90;
     pub const CHANNEL_OPEN_CONFIRMATION: u8 = 91;
@@ -142,6 +143,8 @@ pub struct Link {
     channels: HashMap<u32, Chan>,
     next_id: u32,
     closed: bool,
+    /// Answers to our global requests (success, failure or unimplemented), for keepalive.
+    replies: u64,
     /// Strict key exchange (OpenSSH's Terrapin countermeasure): both sides offered it.
     strict: bool,
     /// Inside the first key exchange, where strict mode allows no stray messages.
@@ -220,6 +223,7 @@ impl Link {
             channels: HashMap::new(),
             next_id: 0,
             closed: false,
+            replies: 0,
             strict: false,
             first_kex: true,
         };
@@ -250,7 +254,7 @@ impl Link {
         rand::thread_rng().fill_bytes(&mut pkt[at..]);
         if let Some(a) = &self.out.aead {
             a.seal(self.out.seq, &mut pkt);
-            self.tcp.write_all(&pkt)?;
+            self.write_packet(&pkt)?;
             self.out.seq = self.out.seq.wrapping_add(1);
             return Ok(());
         }
@@ -259,9 +263,17 @@ impl Link {
         if let Some(m) = mac {
             pkt.extend_from_slice(&m);
         }
-        self.tcp.write_all(&pkt)?;
+        self.write_packet(&pkt)?;
         self.out.seq = self.out.seq.wrapping_add(1);
         Ok(())
+    }
+
+    /// Half a packet written leaves the stream out of step, so a failed write ends the link.
+    fn write_packet(&mut self, pkt: &[u8]) -> Result<()> {
+        self.tcp.write_all(pkt).map_err(|e| {
+            self.closed = true;
+            io_err(e, self.timeout)
+        })
     }
 
     fn fill(&mut self, n: usize) -> Result<()> {
@@ -270,10 +282,13 @@ impl Link {
             match self.tcp.read(&mut buf) {
                 Ok(0) => {
                     self.closed = true;
-                    return Err(bad("the server closed the connection"));
+                    return Err(Error::Lost("the server closed the connection".into()));
                 }
                 Ok(k) => self.rbuf.extend_from_slice(&buf[..k]),
-                Err(e) => return Err(io_err(e, self.timeout)),
+                Err(e) => {
+                    self.closed |= lc_core::error::io_lost(&e);
+                    return Err(io_err(e, self.timeout));
+                }
             }
         }
         Ok(())
@@ -355,13 +370,15 @@ impl Link {
         loop {
             let p = self.recv_raw()?;
             match p.first().copied() {
-                Some(msg::IGNORE | msg::DEBUG | msg::UNIMPLEMENTED) => {}
+                Some(msg::IGNORE | msg::DEBUG) => {}
+                // Old servers answer a keepalive request they do not know this way.
+                Some(msg::UNIMPLEMENTED) => self.replies += 1,
                 Some(msg::DISCONNECT) => {
                     self.closed = true;
                     let mut r = Reader::new(&p[1..]);
                     let _ = r.u32();
                     let why = r.string().map(|s| String::from_utf8_lossy(s).into_owned());
-                    return Err(Error::Protocol(format!(
+                    return Err(Error::Lost(format!(
                         "the server disconnected: {}",
                         why.unwrap_or_default()
                     )));
@@ -853,6 +870,7 @@ impl Link {
                     self.send(&[msg::REQUEST_FAILURE])?;
                 }
             }
+            msg::REQUEST_SUCCESS | msg::REQUEST_FAILURE => self.replies += 1,
             msg::CHANNEL_OPEN => {
                 // X11 or agent forwarding, which legcon never asks for.
                 let _ = r.string()?;
@@ -1095,6 +1113,41 @@ impl Link {
 
     pub fn set_timeout(&mut self, t: Duration) {
         self.timeout = t;
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// The server closed the link, or it broke.
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// Ask the server for an answer (`keepalive@openssh.com`, as OpenSSH's ServerAlive does).
+    pub fn keepalive(&mut self, timeout: Duration) -> Result<()> {
+        let before = self.replies;
+        let mut p = vec![msg::GLOBAL_REQUEST];
+        put_string(&mut p, b"keepalive@openssh.com");
+        p.push(1);
+        self.send(&p)?;
+        let saved = std::mem::replace(&mut self.timeout, timeout);
+        let mut r = Ok(());
+        while self.replies == before {
+            if let Err(e) = self.pump() {
+                r = Err(e);
+                break;
+            }
+        }
+        self.timeout = saved;
+        r
+    }
+
+    /// A message the server throws away, so an idle link carries something.
+    pub fn ignore(&mut self) -> Result<()> {
+        let mut p = vec![msg::IGNORE];
+        put_string(&mut p, b"");
+        self.send(&p)
     }
 }
 

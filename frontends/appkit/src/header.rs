@@ -29,6 +29,7 @@ pub fn state_rgb(s: ConnState) -> u32 {
         ConnState::Connecting | ConnState::Disconnecting => WARN,
         ConnState::Disconnected => OFF,
         ConnState::Lost => BAD,
+        ConnState::Idle => OFF,
     }
 }
 
@@ -37,7 +38,8 @@ fn button_label(s: ConnState) -> &'static str {
         ConnState::Connected | ConnState::Busy => "Disconnect",
         ConnState::Connecting => "Connecting...",
         ConnState::Disconnecting => "Logging off...",
-        ConnState::Disconnected | ConnState::Lost => "Connect",
+        ConnState::Disconnected => "Connect",
+        ConnState::Lost | ConnState::Idle => "Reconnect",
     }
 }
 
@@ -157,7 +159,10 @@ impl Header {
             let usable = !label.starts_with("No ")
                 && matches!(
                     state,
-                    ConnState::Connected | ConnState::Disconnected | ConnState::Lost
+                    ConnState::Connected
+                        | ConnState::Disconnected
+                        | ConnState::Lost
+                        | ConnState::Idle
                 );
             ui::set_enabled(btn, usable);
         }

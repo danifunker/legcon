@@ -64,6 +64,10 @@ pub enum Action {
     EditOptions,
     OptionsAnswered(Option<FormValues>),
     DisconnectAll,
+    /// The computer is about to sleep: log every machine off, to connect again when used.
+    Sleep,
+    /// The computer woke: check connections before use; queues the sleep stopped go on.
+    Wake,
     /// Give a machine's tab another colour (from its tab's context menu).
     SetColor(String, TabColor),
     Quit,
@@ -245,6 +249,7 @@ impl AppController {
         )
         .with_keys_dir(self.dir.join("keys"));
         tab.set_queue_prefs(self.queue_prefs());
+        tab.set_link_prefs(self.link_prefs());
         self.tabs.push(tab);
         self.active = Tab::Connection(self.tabs.len() - 1);
         Vec::new()
@@ -333,6 +338,15 @@ impl AppController {
 }
 
 impl AppController {
+    fn link_prefs(&self) -> connection::LinkPrefs {
+        connection::LinkPrefs {
+            reconnect: self.settings.reconnect,
+            resume_queue: self.settings.resume_queue,
+            keepalive_secs: self.settings.keepalive_secs,
+            idle_logoff_mins: self.settings.idle_logoff_mins,
+        }
+    }
+
     fn queue_prefs(&self) -> connection::QueuePrefs {
         connection::QueuePrefs {
             ask_over: self.settings.queue_ask_over,
@@ -575,13 +589,29 @@ impl Controller for AppController {
                 if let Err(e) = super::options::apply(&mut self.settings, &values) {
                     return vec![Effect::Message(e)];
                 }
-                let prefs = self.queue_prefs();
+                let (prefs, link) = (self.queue_prefs(), self.link_prefs());
                 for t in &mut self.tabs {
                     t.set_queue_prefs(prefs);
+                    t.set_link_prefs(link);
                 }
                 return self.save_settings();
             }
             Action::DisconnectAll => self.disconnect_all(),
+            Action::Sleep => {
+                self.log
+                    .info("This computer is going to sleep: logging every machine off.");
+                for tab in &mut self.tabs {
+                    self.closing.extend(tab.begin_suspend());
+                }
+            }
+            Action::Wake => {
+                self.sessions.woke();
+                let mut out = Vec::new();
+                for t in &mut self.tabs {
+                    out.extend(t.woke());
+                }
+                return out;
+            }
             Action::SetColor(id, color) => {
                 if let Err(e) = self.machines.set_color(&id, color) {
                     return vec![Effect::Message(e)];

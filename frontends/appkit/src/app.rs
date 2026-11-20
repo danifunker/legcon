@@ -31,11 +31,25 @@ define_class!(
 
     unsafe impl NSObjectProtocol for Delegate {}
 
+    impl Delegate {
+        /// The Mac is going to sleep: every machine logs off, to connect again when used.
+        #[unsafe(method(willSleep:))]
+        fn will_sleep(&self, _note: &NSNotification) {
+            crate::window::dispatch(legcon::controller::app::Action::Sleep);
+        }
+
+        #[unsafe(method(didWake:))]
+        fn did_wake(&self, _note: &NSNotification) {
+            crate::window::dispatch(legcon::controller::app::Action::Wake);
+        }
+    }
+
     unsafe impl NSApplicationDelegate for Delegate {
         #[unsafe(method(applicationDidFinishLaunching:))]
         fn did_finish_launching(&self, _note: &NSNotification) {
             // Set once launched: AppKit sets its own (none outside a bundle) while launching.
             set_icon(&NSApplication::sharedApplication(self.mtm()));
+            watch_sleep(self);
             crate::window::start(self.mtm());
         }
 
@@ -51,6 +65,29 @@ define_class!(
         }
     }
 );
+
+/// Hear from NSWorkspace when the Mac sleeps and wakes.
+fn watch_sleep(delegate: &Delegate) {
+    use objc2_app_kit::{
+        NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    };
+    let center = NSWorkspace::sharedWorkspace().notificationCenter();
+    // SAFETY: the delegate lives for the app's life (DELEGATE), so the observer stays valid.
+    unsafe {
+        center.addObserver_selector_name_object(
+            delegate,
+            sel!(willSleep:),
+            Some(NSWorkspaceWillSleepNotification),
+            None,
+        );
+        center.addObserver_selector_name_object(
+            delegate,
+            sel!(didWake:),
+            Some(NSWorkspaceDidWakeNotification),
+            None,
+        );
+    }
+}
 
 /// The controller logged every machine off: end the process.
 pub fn terminate(mtm: MainThreadMarker) {

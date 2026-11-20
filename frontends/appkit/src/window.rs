@@ -818,6 +818,8 @@ fn run(effects: Vec<Effect>) {
                     "conn.queue.exists" => conn_action(conn::Action::QueueExistsAnswered(i)),
                     "conn.queue.item" => conn_action(conn::Action::QueueItemAnswered(i)),
                     "conn.queue.disconnect" => conn_action(conn::Action::DisconnectAnswered(i)),
+                    conn::REJOIN_PURPOSE => conn_action(conn::Action::RejoinAnswered(i)),
+                    conn::RESUME_PURPOSE => conn_action(conn::Action::ResumeQueueAnswered(i)),
                     legcon::controller::setup::FIRST_PURPOSE => {
                         dispatch(app::Action::SetupFirstAnswered(i))
                     }
@@ -887,6 +889,7 @@ fn state_text(s: ConnState) -> &'static str {
         ConnState::Busy => "Busy",
         ConnState::Disconnecting => "Logging off...",
         ConnState::Lost => "Connection lost",
+        ConnState::Idle => "Logged off while idle",
     }
 }
 

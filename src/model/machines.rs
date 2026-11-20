@@ -315,6 +315,15 @@ pub struct Machine {
     /// Folders on the machine files were last copied to or from, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent_folders: Vec<String>,
+    /// This machine's own reconnect, queue, keepalive and idle choices; unset follows Options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconnect: Option<super::settings::Auto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_queue: Option<super::settings::Auto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_logoff_mins: Option<u64>,
 }
 
 fn yes() -> bool {
@@ -436,6 +445,10 @@ impl Machine {
             local_user: None,
             pinned_folders: Vec::new(),
             recent_folders: Vec::new(),
+            reconnect: None,
+            resume_queue: None,
+            keepalive_secs: None,
+            idle_logoff_mins: None,
         }
     }
 

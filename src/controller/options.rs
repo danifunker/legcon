@@ -2,7 +2,7 @@
 
 use super::{ids, Field, FieldKind, FormSpec, FormValues};
 use crate::model::queue::OnExisting;
-use crate::model::settings::Settings;
+use crate::model::settings::{Auto, Settings};
 
 /// The Options choices for files already there, in the order the list shows them.
 const ON_EXISTING: [(OnExisting, &str); 5] = [
@@ -15,6 +15,41 @@ const ON_EXISTING: [(OnExisting, &str); 5] = [
 
 pub const PURPOSE: &str = "app.options";
 
+/// The order the reconnect and queue choices are listed in.
+pub const AUTO: [Auto; 3] = [Auto::Always, Auto::Ask, Auto::Never];
+pub const RECONNECT_LABELS: [&str; 3] = [
+    "Connect again when I use the machine",
+    "Ask before connecting again",
+    "Only show Reconnect",
+];
+pub const RESUME_LABELS: [&str; 3] = [
+    "Go on with them",
+    "Ask whether to go on",
+    "Wait for Start queue",
+];
+pub const RECONNECT_LABEL: &str = "When a connection was dropped or logged off";
+pub const RECONNECT_HINT: &str =
+    "Going to a folder, refreshing or copying on a machine whose server dropped the link, or that \
+     legcon logged off while idle, connects again and carries on.";
+pub const RESUME_LABEL: &str = "After connecting again, unfinished transfers";
+pub const KEEPALIVE_LABEL: &str = "Keep idle connections up, pinging every (seconds)";
+pub const KEEPALIVE_HINT: &str =
+    "0 lets servers drop idle connections; they come back when used. Shells are kept up too.";
+pub const IDLE_LABEL: &str = "Log off machines unused for (minutes)";
+pub const IDLE_HINT: &str = "0 never does. A running transfer queue keeps its machine connected.";
+
+/// The list index of `a` in [`AUTO`].
+pub fn auto_index(a: Auto) -> usize {
+    AUTO.iter().position(|x| *x == a).unwrap_or(0)
+}
+
+/// A whole number of seconds or minutes, 0 or more.
+pub fn count(text: &str) -> Result<u64, String> {
+    text.trim()
+        .parse::<u64>()
+        .map_err(|_| "A whole number, 0 or more.".to_string())
+}
+
 fn ask_over(text: &str) -> Result<usize, String> {
     text.trim()
         .parse::<usize>()
@@ -22,7 +57,13 @@ fn ask_over(text: &str) -> Result<usize, String> {
 }
 
 fn validate(v: &FormValues) -> Result<(), String> {
-    ask_over(v.text(ids::OPT_QUEUE_ASK_OVER)).map(drop)
+    ask_over(v.text(ids::OPT_QUEUE_ASK_OVER))?;
+    count(v.text(ids::OPT_KEEPALIVE))?;
+    count(v.text(ids::OPT_IDLE_LOGOFF)).map(drop)
+}
+
+fn labels(l: &[&str]) -> Vec<String> {
+    l.iter().map(|s| s.to_string()).collect()
 }
 
 pub fn form(s: &Settings) -> FormSpec {
@@ -62,6 +103,42 @@ pub fn form(s: &Settings) -> FormSpec {
                 hint: "Where the machine can compute one (cksum, XCRC); every copy is checked by size."
                     .into(),
             },
+            Field {
+                id: ids::OPT_SECTION_LINK,
+                label: "Connections".into(),
+                kind: FieldKind::Heading,
+                hint: String::new(),
+            },
+            Field {
+                id: ids::OPT_RECONNECT,
+                label: RECONNECT_LABEL.into(),
+                kind: FieldKind::Choice {
+                    options: labels(&RECONNECT_LABELS),
+                    selected: auto_index(s.reconnect),
+                },
+                hint: RECONNECT_HINT.into(),
+            },
+            Field {
+                id: ids::OPT_RESUME_QUEUE,
+                label: RESUME_LABEL.into(),
+                kind: FieldKind::Choice {
+                    options: labels(&RESUME_LABELS),
+                    selected: auto_index(s.resume_queue),
+                },
+                hint: String::new(),
+            },
+            Field {
+                id: ids::OPT_KEEPALIVE,
+                label: KEEPALIVE_LABEL.into(),
+                kind: FieldKind::Text(s.keepalive_secs.to_string()),
+                hint: KEEPALIVE_HINT.into(),
+            },
+            Field {
+                id: ids::OPT_IDLE_LOGOFF,
+                label: IDLE_LABEL.into(),
+                kind: FieldKind::Text(s.idle_logoff_mins.to_string()),
+                hint: IDLE_HINT.into(),
+            },
         ],
         ok_label: "Save".into(),
         validator: validate,
@@ -75,6 +152,16 @@ pub fn apply(s: &mut Settings, v: &FormValues) -> Result<(), String> {
     s.on_existing = ON_EXISTING
         .get(v.choice(ids::OPT_ON_EXISTING))
         .map_or(OnExisting::Ask, |o| o.0);
+    s.reconnect = AUTO
+        .get(v.choice(ids::OPT_RECONNECT))
+        .copied()
+        .unwrap_or_default();
+    s.resume_queue = AUTO
+        .get(v.choice(ids::OPT_RESUME_QUEUE))
+        .copied()
+        .unwrap_or(Auto::Ask);
+    s.keepalive_secs = count(v.text(ids::OPT_KEEPALIVE))?;
+    s.idle_logoff_mins = count(v.text(ids::OPT_IDLE_LOGOFF))?;
     Ok(())
 }
 
@@ -99,5 +186,14 @@ mod tests {
         assert_eq!((s.queue_ask_over, s.verify_checksum), (10, false));
         assert_eq!(s.on_existing, OnExisting::IfDifferent);
         assert_eq!(form(&s).fields[2].kind.value(), FieldValue::Choice(2));
+        assert_eq!(v.choice(ids::OPT_RESUME_QUEUE), 1, "asks by default");
+        v.set(ids::OPT_RECONNECT, FieldValue::Choice(2));
+        v.set(ids::OPT_KEEPALIVE, FieldValue::Text("x".into()));
+        assert!((spec.validator)(&v).is_err());
+        v.set(ids::OPT_KEEPALIVE, FieldValue::Text("60".into()));
+        v.set(ids::OPT_IDLE_LOGOFF, FieldValue::Text("15".into()));
+        apply(&mut s, &v).unwrap();
+        assert_eq!(s.reconnect, Auto::Never);
+        assert_eq!((s.keepalive_secs, s.idle_logoff_mins), (60, 15));
     }
 }

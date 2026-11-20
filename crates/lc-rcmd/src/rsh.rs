@@ -87,6 +87,7 @@ pub fn dial_reserved(host: &str, port: u16, opts: &Options) -> Result<TcpStream>
                 let s: TcpStream = s.into();
                 s.set_nodelay(true)?;
                 s.set_read_timeout(Some(opts.read_timeout))?;
+                lc_core::net::tune(&s, opts.read_timeout)?;
                 return Ok(s);
             }
             // A port still in TIME_WAIT towards this server: try the next one.

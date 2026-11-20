@@ -185,11 +185,11 @@ impl TermSession {
     pub fn open(
         machine: &Machine,
         password: Option<String>,
-        cols: u16,
-        rows: u16,
+        (cols, rows): (u16, u16),
         key_note: super::ssh::KeySlot,
         notify: Arc<dyn Notify>,
         trace: Option<lc_core::TraceLog>,
+        keepalive: Option<std::time::Duration>,
     ) -> Job<TermSession> {
         let machine = machine.clone();
         let label = format!("Shell on {}", machine.name);
@@ -290,17 +290,23 @@ impl TermSession {
                     reader: Mutex::new(None),
                 }),
             };
-            let reader = session.read_forever(pty.reader, notify);
+            let reader = session.read_forever(pty.reader, notify, keepalive);
             *lock_status(&session.inner.reader) = Some(reader);
             Ok(session)
         })
     }
 
-    fn read_forever(&self, mut pty: Box<dyn Read + Send>, notify: Arc<dyn Notify>) -> Job<()> {
+    fn read_forever(
+        &self,
+        mut pty: Box<dyn Read + Send>,
+        notify: Arc<dyn Notify>,
+        keepalive: Option<std::time::Duration>,
+    ) -> Job<()> {
         let inner = Arc::clone(&self.inner);
         let wake = Arc::clone(&notify);
         Job::spawn("Shell reader", notify, move |ctx| {
             let mut buf = [0u8; 8192];
+            let mut quiet = std::time::Instant::now();
             let why = loop {
                 if ctx.is_cancelled() {
                     break "Session closed.".to_string();
@@ -308,6 +314,7 @@ impl TermSession {
                 match pty.read(&mut buf) {
                     Ok(0) => break "The machine closed the session.".to_string(),
                     Ok(n) => {
+                        quiet = std::time::Instant::now();
                         let text = inner.charset.decode(&buf[..n]);
                         let answers = {
                             let mut p = lock_status(&inner.parser);
@@ -323,11 +330,21 @@ impl TermSession {
                         if matches!(
                             e.kind(),
                             ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                        ) => {}
+                        ) =>
+                    {
+                        // Something the machine ignores, so a quiet shell is not dropped.
+                        if keepalive.is_some_and(|k| quiet.elapsed() >= k) {
+                            quiet = std::time::Instant::now();
+                            if let Err(e) = lock_status(&inner.writer).keepalive() {
+                                break format!("The connection broke: {e}");
+                            }
+                        }
+                    }
                     Err(e) => break format!("The connection broke: {e}"),
                 }
             };
-            *lock_status(&inner.ended) = Some(why);
+            let at = chrono::Local::now().format("%H:%M:%S");
+            *lock_status(&inner.ended) = Some(format!("-- {at} {why}"));
             wake.wake();
             Ok(())
         })
@@ -339,6 +356,12 @@ impl TermSession {
         } else {
             ConnState::Connected
         }
+    }
+
+    /// A line of legcon's own on the screen (never sent to the machine), such as a reconnect.
+    pub fn note(&self, text: &str) {
+        let line = format!("-- {text}\r\n");
+        lock_status(&self.inner.parser).process(line.as_bytes());
     }
 
     /// Why the session ended, once it has.

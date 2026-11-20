@@ -28,6 +28,10 @@ pub struct MemoryFs {
     tree: Arc<Mutex<Tree>>,
     state: ConnState,
     pub logged_off: Arc<Mutex<bool>>,
+    /// Set to act as a server that closed the link: every call, ping included, fails.
+    pub dropped: Arc<std::sync::atomic::AtomicBool>,
+    /// How many pings the server has answered.
+    pub pings: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MemoryFs {
@@ -39,6 +43,8 @@ impl MemoryFs {
             tree: Arc::default(),
             state: ConnState::Connected,
             logged_off: Arc::default(),
+            dropped: Arc::default(),
+            pings: Arc::default(),
         };
         fs.add_folder(home);
         fs
@@ -69,6 +75,9 @@ impl MemoryFs {
     }
 
     fn live(&self) -> Result<()> {
+        if self.dropped.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(Error::Lost("the server closed the connection".into()));
+        }
         match self.state {
             ConnState::Connected | ConnState::Busy => Ok(()),
             _ => Err(Error::NotConnected),
@@ -84,6 +93,13 @@ impl Connection for MemoryFs {
     fn disconnect(&mut self, _timeout: Duration) -> Result<()> {
         *self.logged_off.lock().unwrap() = true;
         self.state = ConnState::Disconnected;
+        Ok(())
+    }
+
+    fn ping(&mut self, _timeout: Duration) -> Result<()> {
+        self.live()?;
+        self.pings
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 }

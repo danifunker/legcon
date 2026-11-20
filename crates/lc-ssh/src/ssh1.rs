@@ -279,7 +279,7 @@ impl Receiver {
                 msg::IGNORE | msg::DEBUG => continue,
                 msg::DISCONNECT => {
                     let why = Fields::new(&d).string().unwrap_or(b"").to_vec();
-                    return Err(Error::Protocol(format!(
+                    return Err(Error::Lost(format!(
                         "the server ended the connection: {}",
                         String::from_utf8_lossy(&why)
                     )));
@@ -355,6 +355,7 @@ fn dial(host: &str, port: u16, opts: &Options) -> Result<TcpStream> {
     })?;
     tcp.set_nodelay(true)?;
     tcp.set_read_timeout(Some(opts.timeout))?;
+    lc_core::net::tune(&tcp, opts.timeout)?;
     Ok(tcp)
 }
 
@@ -676,6 +677,11 @@ impl PtyWriter for PtyWriterImpl {
             put_u32(&mut m, v);
         }
         lock(&self.tx).send(msg::WINDOW_SIZE, &m)
+    }
+    fn keepalive(&mut self) -> Result<()> {
+        let mut m = Vec::new();
+        put_string(&mut m, b"");
+        lock(&self.tx).send(msg::IGNORE, &m)
     }
     fn close(&mut self) -> Result<()> {
         if !self.closed {

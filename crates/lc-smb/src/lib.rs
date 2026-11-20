@@ -101,10 +101,15 @@ fn io(e: std::io::Error, timeout: Duration) -> Error {
 }
 
 fn open_tcp(addr: SocketAddr, opts: &Options) -> Result<TcpStream> {
-    let s = TcpStream::connect_timeout(&addr, opts.timeout).map_err(|e| io(e, opts.timeout))?;
-    s.set_read_timeout(Some(opts.timeout))?;
+    let s = lc_core::net::dial(&addr, opts.timeout, opts.timeout)?;
     s.set_nodelay(true)?;
     Ok(s)
+}
+
+/// The server forgot the login (it timed the session out, or restarted): DOS ERRSRV/ERRbaduid,
+/// NT STATUS_NETWORK_SESSION_EXPIRED and STATUS_USER_SESSION_DELETED.
+fn session_gone(status: u32) -> bool {
+    matches!(status, 0x005B_0002 | 0xC000_035C | 0xC000_0203)
 }
 
 /// Connect, negotiate and log in. `user` may be `DOMAIN\user`; empty logs in anonymously.
@@ -305,20 +310,26 @@ impl SmbSession {
     }
 
     fn send(&mut self, m: &Message) -> Result<()> {
-        netbios::send(&mut self.stream, netbios::SESSION_MESSAGE, &m.encode()).map_err(
-            |e| match e {
-                Error::Io(e) => io(e, self.opts.timeout),
-                other => other,
-            },
-        )
+        let r = netbios::send(&mut self.stream, netbios::SESSION_MESSAGE, &m.encode());
+        r.map_err(|e| self.broken(e))
     }
 
     fn recv(&mut self) -> Result<(Message, Vec<u8>)> {
-        let (_, raw) = netbios::recv(&mut self.stream).map_err(|e| match e {
-            Error::Io(e) => io(e, self.opts.timeout),
-            other => other,
-        })?;
+        let (_, raw) = netbios::recv(&mut self.stream).map_err(|e| self.broken(e))?;
         Ok((Message::decode(&raw)?, raw))
+    }
+
+    /// A socket error leaves the stream out of step (part of a frame read), so the link is done.
+    fn broken(&mut self, e: Error) -> Error {
+        match e {
+            Error::Io(e) => {
+                if self.state != ConnState::Disconnecting {
+                    self.state = ConnState::Lost;
+                }
+                io(e, self.opts.timeout)
+            }
+            other => other,
+        }
     }
 
     /// Send one request and read its reply; a failed status comes back as the reply, not an error.
@@ -340,6 +351,10 @@ impl SmbSession {
         loop {
             let (r, raw) = self.recv()?;
             if r.mid == m.mid {
+                if session_gone(r.status) && command != wire::LOGOFF_ANDX {
+                    self.state = ConnState::Lost;
+                    return Err(Error::Lost("the server ended the session".into()));
+                }
                 return Ok((r, raw));
             }
         }
@@ -834,6 +849,24 @@ impl Connection for SmbSession {
         let _ = self.stream.shutdown(Shutdown::Both);
         self.state = ConnState::Disconnected;
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        self.live()?;
+        let _ = self.stream.set_read_timeout(Some(timeout));
+        // ECHO, tid 0xFFFF as no share is needed; any reply, even a refusal, means it is there.
+        let r = self.exchange(
+            wire::ECHO,
+            0xFFFF,
+            1u16.to_le_bytes().to_vec(),
+            b"legcon".to_vec(),
+        );
+        let _ = self.stream.set_read_timeout(Some(self.opts.timeout));
+        r.map(drop)
+    }
+
+    fn breaker(&self) -> Option<lc_core::net::Breaker> {
+        Some(lc_core::net::Breaker::new(&self.stream))
     }
 }
 

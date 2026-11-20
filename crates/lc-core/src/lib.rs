@@ -15,6 +15,7 @@ pub mod entry;
 pub mod error;
 pub mod listing;
 pub mod memory;
+pub mod net;
 pub mod path;
 pub mod rcp;
 pub mod session;
@@ -24,7 +25,7 @@ pub mod trace;
 pub use charset::Charset;
 pub use checksum::Checksum;
 pub use entry::{Entry, EntryKind, TimePrecision, Timestamp};
-pub use error::{Error, Result};
+pub use error::{is_link_lost, is_timeout, Error, Result};
 pub use path::{PathStyle, RemotePath};
 pub use session::{
     ConnState, Connection, ExecResult, FileCaps, FileSession, MacExtras, Pty, PtyWriter, ShellCaps,

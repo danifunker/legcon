@@ -153,6 +153,7 @@ pub struct SshSession {
     opts: Options,
     negotiated: Negotiated,
     closed: bool,
+    breaker: lc_core::net::Breaker,
 }
 
 /// Connect, check the host key with `verify`, and log in with `auth`.
@@ -180,6 +181,8 @@ pub fn connect(
         }
     })?;
     tcp.set_nodelay(true)?;
+    lc_core::net::tune(&tcp, opts.timeout)?;
+    let breaker = lc_core::net::Breaker::new(&tcp);
     let mut link = Link::handshake(tcp, opts.timeout)?;
     let key = link
         .host_key
@@ -285,6 +288,7 @@ pub fn connect(
         opts: opts.clone(),
         negotiated,
         closed: false,
+        breaker,
     })
 }
 
@@ -594,6 +598,10 @@ impl PtyWriter for PtyWriterImpl {
         lock(&self.link).write(self.id, bytes)
     }
 
+    fn keepalive(&mut self) -> Result<()> {
+        lock(&self.link).ignore()
+    }
+
     fn resize(&mut self, cols: u16, rows: u16) -> Result<()> {
         let mut data = Vec::new();
         for v in [u32::from(cols), u32::from(rows), 0, 0] {
@@ -777,6 +785,8 @@ impl Connection for SshSession {
     fn state(&self) -> ConnState {
         if self.closed {
             ConnState::Disconnected
+        } else if lock(&self.link).is_closed() {
+            ConnState::Lost
         } else {
             ConnState::Connected
         }
@@ -785,6 +795,17 @@ impl Connection for SshSession {
     fn disconnect(&mut self, timeout: Duration) -> Result<()> {
         lock(&self.link).set_timeout(timeout);
         self.log_off()
+    }
+
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        if self.closed {
+            return Err(Error::NotConnected);
+        }
+        lock(&self.link).keepalive(timeout)
+    }
+
+    fn breaker(&self) -> Option<lc_core::net::Breaker> {
+        Some(self.breaker.clone())
     }
 }
 

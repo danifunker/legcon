@@ -78,7 +78,9 @@ controller or a view; a controller never imports a view or a toolkit.
   the server (PLAN.md §1.4), never just a closed socket.
 - **No inbound connections** to the user's computer, ever (D26): FTP is passive only, no protocol
   is used in a mode where the server connects back.
-- Nothing connects behind the user's back: connecting is always an action the user took.
+- Nothing connects behind the user's back: connecting is always an action the user took. Working
+  with a machine whose link dropped, or that legcon logged off while idle, counts as that action
+  (D48); a machine the user disconnected stays disconnected, and nothing connects on a timer.
 
 ## Specific rules
 

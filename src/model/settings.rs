@@ -27,6 +27,24 @@ pub struct Settings {
     pub passwords_in_os_store: bool,
     /// The setup has been through once (finished or skipped).
     pub setup_done: bool,
+    /// Working with a machine whose connection was lost or logged off while idle connects again.
+    pub reconnect: Auto,
+    /// After a reconnect, the transfer queue's unfinished files go on.
+    pub resume_queue: Auto,
+    /// Ping idle connections this often so servers keep them; 0 lets them go.
+    pub keepalive_secs: u64,
+    /// Log machines off after this many minutes unused; 0 never does.
+    pub idle_logoff_mins: u64,
+}
+
+/// Whether legcon does something on its own, asks first, or leaves it to the user.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Auto {
+    #[default]
+    Always,
+    Ask,
+    Never,
 }
 
 /// The default for [`Settings::queue_ask_over`].
@@ -44,6 +62,10 @@ impl Default for Settings {
             on_existing: super::queue::OnExisting::Ask,
             passwords_in_os_store: false,
             setup_done: false,
+            reconnect: Auto::Always,
+            resume_queue: Auto::Ask,
+            keepalive_secs: 0,
+            idle_logoff_mins: 0,
         }
     }
 }

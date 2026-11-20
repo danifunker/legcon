@@ -83,11 +83,23 @@ impl Dsi {
     pub fn new(stream: TcpStream, timeout: Duration) -> Result<Dsi> {
         stream.set_read_timeout(Some(timeout))?;
         stream.set_nodelay(true)?;
+        lc_core::net::tune(&stream, timeout)?;
         Ok(Dsi {
             stream,
             next: 0,
             timeout,
         })
+    }
+
+    /// Wait at most `t` for each reply from now on.
+    pub fn set_timeout(&mut self, t: Duration) -> Result<()> {
+        self.timeout = t;
+        self.stream.set_read_timeout(Some(t))?;
+        Ok(())
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
     }
 
     /// Send a request and wait for its reply: the AFP result code and the reply data.
@@ -139,7 +151,7 @@ impl Dsi {
                         write_message(&mut self.stream, ack, &[])?;
                     }
                     CLOSE_SESSION => {
-                        return Err(Error::Protocol("the server closed the session".into()))
+                        return Err(Error::Lost("the server closed the session".into()))
                     }
                     _ => {}
                 }

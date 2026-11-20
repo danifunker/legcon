@@ -67,6 +67,9 @@ struct Control {
     writer: TcpStream,
     charset: Charset,
     trace: Arc<Mutex<Vec<Trace>>>,
+    timeout: Duration,
+    /// A reply did not come, or the socket failed: later replies would be out of step.
+    broken: bool,
 }
 
 impl Control {
@@ -91,8 +94,10 @@ impl Control {
         };
         self.note(Trace::Sent(shown));
         line.extend(b"\r\n");
-        self.writer.write_all(&line)?;
-        Ok(())
+        self.writer.write_all(&line).map_err(|e| {
+            self.broken = true;
+            Error::Io(e)
+        })
     }
 
     fn line(&mut self) -> Result<String> {
@@ -101,12 +106,12 @@ impl Control {
             .reader
             .read_until(b'\n', &mut buf)
             .map_err(|e| match e.kind() {
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                    Error::Timeout(Duration::from_secs(0))
-                }
+                ErrorKind::WouldBlock | ErrorKind::TimedOut => Error::Timeout(self.timeout),
                 _ => Error::Io(e),
-            })?;
+            });
+        let n = n.inspect_err(|_| self.broken = true)?;
         if n == 0 {
+            self.broken = true;
             return Err(Error::Io(std::io::Error::new(
                 ErrorKind::UnexpectedEof,
                 "the server closed the connection",
@@ -127,6 +132,11 @@ impl Control {
             .and_then(|c| c.parse().ok())
             .ok_or_else(|| Error::Protocol(format!("not a reply: {first:?}")))?;
         let mut lines = vec![first.clone()];
+        // 421: the server is closing the control connection (idle time, shutdown).
+        if code == 421 {
+            self.broken = true;
+            return Err(Error::Lost(first));
+        }
         if first.as_bytes().get(3) == Some(&b'-') {
             let end = format!("{code} ");
             loop {
@@ -184,6 +194,7 @@ pub struct FtpSession {
     state: ConnState,
     cwd: Option<String>,
     trace: Arc<Mutex<Vec<Trace>>>,
+    breaker: lc_core::net::Breaker,
 }
 
 /// Connect and log in; an empty `user` logs in as `anonymous`.
@@ -198,17 +209,16 @@ pub fn connect(
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| Error::NotFound(format!("no address for {host}")))?;
-    let stream = TcpStream::connect_timeout(&addr, opts.timeout).map_err(|e| match e.kind() {
-        ErrorKind::TimedOut => Error::Timeout(opts.timeout),
-        _ => Error::Io(e),
-    })?;
-    stream.set_read_timeout(Some(opts.timeout))?;
+    let stream = lc_core::net::dial(&addr, opts.timeout, opts.timeout)?;
+    let breaker = lc_core::net::Breaker::new(&stream);
     let trace = Arc::new(Mutex::new(Vec::new()));
     let mut ctrl = Control {
         reader: BufReader::new(stream.try_clone()?),
         writer: stream,
         charset: opts.charset,
         trace: Arc::clone(&trace),
+        timeout: opts.timeout,
+        broken: false,
     };
     let mut hello = ctrl.reply()?;
     // 120: "ready in a few minutes"; the real greeting follows.
@@ -250,6 +260,7 @@ pub fn connect(
         state: ConnState::Connected,
         cwd: None,
         trace,
+        breaker,
     })
 }
 
@@ -258,6 +269,8 @@ struct Transfer<'a> {
     data: Option<TcpStream>,
     ctrl: &'a mut Control,
     upload: bool,
+    /// The data socket is in the session's breaker under this key while it is open.
+    breaker: (lc_core::net::Breaker, u64),
 }
 
 impl Read for Transfer<'_> {
@@ -292,6 +305,7 @@ impl Drop for Transfer<'_> {
             }
             drop(d);
         }
+        self.breaker.0.remove(self.breaker.1);
         // 226 / 250 when done, 426 when aborted; either way the control channel is in step again.
         let _ = self.ctrl.reply();
     }
@@ -318,6 +332,9 @@ impl FtpSession {
     }
 
     fn live(&self) -> Result<()> {
+        if self.ctrl.broken {
+            return Err(Error::Lost("the control connection is out of step".into()));
+        }
         match self.state {
             ConnState::Connected | ConnState::Busy => Ok(()),
             _ => Err(Error::NotConnected),
@@ -344,9 +361,7 @@ impl FtpSession {
         let addr = SocketAddr::new(self.peer, port);
         self.ctrl
             .note(Trace::Note(format!("data connection to {addr}")));
-        let s = TcpStream::connect_timeout(&addr, self.opts.timeout)?;
-        s.set_read_timeout(Some(self.opts.timeout))?;
-        Ok(s)
+        lc_core::net::dial(&addr, self.opts.timeout, self.opts.timeout)
     }
 
     fn cd(&mut self, dir: &RemotePath) -> Result<()> {
@@ -370,17 +385,23 @@ impl FtpSession {
         if r.code != 125 && r.code != 150 {
             return Err(refuse(&r, &format!("open {}", arg.unwrap_or(""))));
         }
+        // So a Disconnect during a stalled transfer is not left waiting for its read timeout.
+        let key = self.breaker.add(&data);
         Ok(Transfer {
             data: Some(data),
             ctrl: &mut self.ctrl,
             upload,
+            breaker: (self.breaker.clone(), key),
         })
     }
 }
 
 impl Connection for FtpSession {
     fn state(&self) -> ConnState {
-        self.state
+        match self.state {
+            ConnState::Connected | ConnState::Busy if self.ctrl.broken => ConnState::Lost,
+            s => s,
+        }
     }
 
     fn disconnect(&mut self, timeout: Duration) -> Result<()> {
@@ -393,6 +414,19 @@ impl Connection for FtpSession {
         let _ = self.ctrl.writer.shutdown(Shutdown::Both);
         self.state = ConnState::Disconnected;
         result
+    }
+
+    fn ping(&mut self, timeout: Duration) -> Result<()> {
+        self.live()?;
+        let _ = self.ctrl.writer.set_read_timeout(Some(timeout));
+        let r = self.ctrl.command("NOOP", None);
+        let _ = self.ctrl.writer.set_read_timeout(Some(self.opts.timeout));
+        // Any reply at all means the server is there; 500 from one without NOOP is fine.
+        r.map(drop)
+    }
+
+    fn breaker(&self) -> Option<lc_core::net::Breaker> {
+        Some(self.breaker.clone())
     }
 }
 
@@ -559,6 +593,45 @@ impl FileSession for FtpSession {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A server that logs in, then answers the next command with `last` and hangs up.
+    fn dropping_server(last: &'static str) -> u16 {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            s.write_all(b"220 hello\r\n").unwrap();
+            for reply in ["331 pw\r\n", "230 in\r\n", "200 binary\r\n", last] {
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                s.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+        port
+    }
+
+    #[test]
+    fn a_server_that_hung_up_is_a_lost_link() {
+        let opts = Options {
+            timeout: Duration::from_secs(5),
+            ..Options::default()
+        };
+        // vsftpd's idle timeout: 421, then the close.
+        let port = dropping_server("421 Timeout.\r\n");
+        let mut fs = connect("127.0.0.1", port, "u", "p", &opts).unwrap();
+        let e = fs.home().unwrap_err();
+        assert!(lc_core::is_link_lost(&e), "{e}");
+        assert!(fs.ping(Duration::from_secs(2)).is_err());
+        // A plain close, with nothing said.
+        let port = dropping_server("");
+        let mut fs = connect("127.0.0.1", port, "u", "p", &opts).unwrap();
+        let e = fs.ping(Duration::from_secs(2)).unwrap_err();
+        assert!(lc_core::is_link_lost(&e), "{e}");
+    }
+
     use super::pasv_port;
 
     #[test]
