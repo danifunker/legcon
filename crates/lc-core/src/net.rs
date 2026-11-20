@@ -106,7 +106,8 @@ impl std::fmt::Debug for Breaker {
 
 // Windows does not wake a read blocked on another handle of the socket; the session
 // manager leaves such a call to end on its own (model::session::log_off).
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::io::Read;
