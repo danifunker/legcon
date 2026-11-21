@@ -1180,7 +1180,7 @@ impl ConnectionController {
                 } else {
                     size_text(e.size)
                 },
-                modified: e.modified.map(date_text).unwrap_or_default(),
+                modified: e.modified.map(local_time_text).unwrap_or_default(),
                 mode: String::new(),
             })
             .collect()
@@ -1208,7 +1208,7 @@ impl ConnectionController {
                 } else {
                     e.size.map(size_text).unwrap_or_default()
                 },
-                modified: e.modified.map(|t| date_text(t.unix)).unwrap_or_default(),
+                modified: e.modified.map(time_text).unwrap_or_default(),
                 mode: e
                     .mode
                     .map(|m| mode_text(m, e.is_folder()))
@@ -2406,6 +2406,37 @@ fn size_text(n: u64) -> String {
     }
 }
 
+/// The Modified column: an exact time in this computer's zone, a server's own clock as it
+/// gave it (its zone is unknown), and no time at all where the listing had none.
+fn time_text(t: lc_core::Timestamp) -> String {
+    use lc_core::TimePrecision::*;
+    match t.precision {
+        Exact => local_time_text(t.unix),
+        LocalUnknownZone | YearGuessed => wall_text(t.unix),
+        DateOnly => date_text(t.unix),
+    }
+}
+
+/// `YYYY-MM-DD HH:MM` in this computer's time zone, from seconds since 1970 (UTC).
+fn local_time_text(secs: i64) -> String {
+    use chrono::TimeZone;
+    match chrono::Local.timestamp_opt(secs, 0).single() {
+        Some(t) => t.format("%Y-%m-%d %H:%M").to_string(),
+        None => wall_text(secs),
+    }
+}
+
+/// `YYYY-MM-DD HH:MM` with no zone applied (a server's own clock, kept as if UTC).
+fn wall_text(secs: i64) -> String {
+    let day = secs.rem_euclid(86_400);
+    format!(
+        "{} {:02}:{:02}",
+        date_text(secs),
+        day / 3600,
+        day % 3600 / 60
+    )
+}
+
 /// `YYYY-MM-DD` from seconds since 1970 (UTC; zones come with the listing parsers).
 fn date_text(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
@@ -3313,6 +3344,27 @@ mod tests {
     fn dates_and_sizes() {
         assert_eq!(date_text(0), "1970-01-01");
         assert_eq!(date_text(951_782_400), "2000-02-29");
+        // 2000-02-29 13:45:30 as a server's own clock, then as each precision shows it.
+        let t = |precision| lc_core::Timestamp {
+            unix: 951_782_400 + 13 * 3600 + 45 * 60 + 30,
+            precision,
+        };
+        assert_eq!(
+            wall_text(t(lc_core::TimePrecision::LocalUnknownZone).unix),
+            "2000-02-29 13:45"
+        );
+        assert_eq!(
+            time_text(t(lc_core::TimePrecision::YearGuessed)),
+            "2000-02-29 13:45"
+        );
+        assert_eq!(time_text(t(lc_core::TimePrecision::DateOnly)), "2000-02-29");
+        assert_eq!(wall_text(-60), "1969-12-31 23:59");
+        let exact = time_text(t(lc_core::TimePrecision::Exact));
+        assert_eq!(
+            exact.len(),
+            16,
+            "date and time in this computer's zone: {exact}"
+        );
         assert_eq!(size_text(812 * 1024), "812 KB");
     }
 

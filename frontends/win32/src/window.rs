@@ -244,7 +244,7 @@ fn pane(window: HWND, local: bool) -> Pane {
             ids::REMOTE_LIST,
         )
     };
-    let mut cols: Vec<(&str, i32)> = vec![("Name", 220), ("Size", 80), ("Modified", 90)];
+    let mut cols: Vec<(&str, i32)> = vec![("Name", 220), ("Size", 80), ("Modified", 120)];
     if !local {
         cols.push(("Permissions", 90));
     }
