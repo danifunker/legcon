@@ -52,6 +52,33 @@ ui = [
 ]
 
 [[case]]
+id = "flow.conn.sort-by-column"
+description = "Sort a pane by clicking its headers; folders stay first; the order is remembered"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "select_row", id = "remote.list", name = "src" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
+  { op = "sort", id = "remote.list", column = "Size" },
+  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+  { op = "sort", id = "remote.list", column = "Size" },
+  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
+  { op = "sort", id = "remote.list", column = "Name" },
+  { op = "sort", id = "remote.list", column = "Name" },
+  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+  { op = "activate", id = "conn.close_tab" },
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "activate", id = "conn.files" },
+  { op = "select_row", id = "remote.list", name = "src" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+]
+
+[[case]]
 id = "flow.conn.copy-to-home"
 description = "Copy a remote file to the home folder with F6"
 machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]

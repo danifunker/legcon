@@ -162,6 +162,41 @@ def op_expect_row(o):
         time.sleep(0.3)
 
 
+def op_sort(o):
+    """Click a list's column header by its title, as a user sorting by it does."""
+    t = find(o["id"])
+    header = None
+    for col in attr(t, "AXColumns") or []:
+        h = attr(col, "AXHeader")
+        if h is not None and o["column"] in names(h):
+            header = h
+            break
+    if header is None:
+        # The header view sits beside the table in its scroll area, as buttons named by title.
+        area = attr(t, "AXParent")
+        for e in walk(area if area is not None else t):
+            if text(e, "AXRole") == "AXButton" and o["column"] in names(e):
+                header = e
+                break
+    if header is None:
+        raise Fail(f"no column {o['column']} in {o['id']}")
+    press(header, f"{o['id']} column {o['column']}")
+    time.sleep(o.get("pause", 0.5))
+
+
+def op_expect_order(o):
+    """The list's first rows are `names`, in that order."""
+    want = o["names"]
+    end = time.time() + o.get("timeout", 5)
+    while True:
+        got = [n for n, _ in rows_of(o["id"])[0]]
+        if got[: len(want)] == want:
+            return
+        if time.time() > end:
+            raise Fail(f"{o['id']} rows {got}, expected them to start {want}")
+        time.sleep(0.3)
+
+
 def frontmost():
     AX.AXUIElementSetAttributeValue(APP, "AXFrontmost", True)
     time.sleep(0.1)
@@ -385,6 +420,8 @@ OPS = {
     "key": op_key,
     "type": op_type,
     "expect_row": op_expect_row,
+    "sort": op_sort,
+    "expect_order": op_expect_order,
     "press": op_press,
     "activate": op_activate,
     "select_row": op_select_row,

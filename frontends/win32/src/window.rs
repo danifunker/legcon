@@ -20,8 +20,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG, LVN_ITEMACTIVATE, NMHDR, NM_RCLICK,
-    ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
+    DRAWITEMSTRUCT, EM_SCROLLCARET, EM_SETSEL, LVN_BEGINDRAG, LVN_COLUMNCLICK, LVN_ITEMACTIVATE,
+    NMHDR, NMLISTVIEW, NM_RCLICK, ODS_SELECTED, SB_SETTEXTW, TCN_SELCHANGE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_SHIFT,
@@ -880,6 +880,15 @@ fn refresh() {
         }
         ui::set_enabled(s.w.remote.home, t.can_disconnect());
         ui::set_enabled(s.w.remote.other, t.can_disconnect());
+        for (list, side) in [
+            (s.w.local.list, Side::Local),
+            (s.w.remote.list, Side::Remote),
+        ] {
+            let sort = t.sort(side);
+            if let Some(col) = conn::SORT_COLUMNS.iter().position(|b| *b == sort.by) {
+                controls::set_sort(list, col, sort.descending);
+            }
+        }
         let local = t.local_rows();
         if local != s.drawn.local {
             controls::fill(s.w.local.list, &cells(&local, false));
@@ -1885,7 +1894,21 @@ fn notify(hdr: &NMHDR) {
     };
     let (tabs, m_list, l_list, r_list, term_tabs) = w;
     let from = hdr.hwndFrom;
-    if from == tabs && hdr.code == TCN_SELCHANGE {
+    if hdr.code == LVN_COLUMNCLICK && (from == l_list || from == r_list) {
+        // SAFETY: a column click's notification is an NMLISTVIEW, which starts with this NMHDR.
+        let col = unsafe { (*(hdr as *const NMHDR as *const NMLISTVIEW)).iSubItem };
+        let side = if from == l_list {
+            Side::Local
+        } else {
+            Side::Remote
+        };
+        if let Some(by) = usize::try_from(col)
+            .ok()
+            .and_then(|c| conn::SORT_COLUMNS.get(c))
+        {
+            conn_action(conn::Action::SortBy(side, *by));
+        }
+    } else if from == tabs && hdr.code == TCN_SELCHANGE {
         match controls::tab_selected(tabs) {
             Some(0) | None => dispatch(app::Action::ShowMachines),
             Some(1) => dispatch(app::Action::ShowKeys),

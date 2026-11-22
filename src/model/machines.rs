@@ -171,6 +171,9 @@ pub struct Layout {
     pub files_share: f32,
     /// The terminal area is on top.
     pub swapped: bool,
+    /// How each pane's list is ordered (a click on a column header).
+    pub sort_local: Sort,
+    pub sort_remote: Sort,
 }
 
 impl Default for Layout {
@@ -178,8 +181,29 @@ impl Default for Layout {
         Layout {
             files_share: DEFAULT_FILES_SHARE,
             swapped: false,
+            sort_local: Sort::default(),
+            sort_remote: Sort::default(),
         }
     }
+}
+
+/// A file list's column, in the order the panes show them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SortBy {
+    #[default]
+    Name,
+    Size,
+    Modified,
+    Permissions,
+}
+
+/// The column a list is ordered by, and which way; folders always come first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sort {
+    pub by: SortBy,
+    pub descending: bool,
 }
 
 /// Where a machine's password lives.

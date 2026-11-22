@@ -3,8 +3,9 @@
 use windows::core::{w, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Controls::{
-    SetWindowTheme, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_STATE,
-    LVIF_TEXT, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
+    SetWindowTheme, HDF_SORTDOWN, HDF_SORTUP, HDITEMW, HDI_FORMAT, HDM_GETITEMCOUNT, HDM_GETITEMW,
+    HDM_SETITEMW, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_STATE, LVIF_TEXT,
+    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETHEADER, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
     LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMSTATE,
     LVM_SETITEMTEXTW, LVNI_SELECTED, LVSIL_SMALL, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
     LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS, LVS_SINGLESEL, TCIF_TEXT, TCITEMW,
@@ -63,6 +64,31 @@ pub fn list(
         send(h, LVM_INSERTCOLUMNW, i, &col as *const _ as isize);
     }
     h
+}
+
+/// Show the sort arrow on column `col` of a list's header, up or down; the others show none.
+pub fn set_sort(list: HWND, col: usize, descending: bool) {
+    let header = HWND(send(list, LVM_GETHEADER, 0, 0) as *mut core::ffi::c_void);
+    let n = send(header, HDM_GETITEMCOUNT, 0, 0).max(0) as usize;
+    for i in 0..n {
+        let mut item = HDITEMW {
+            mask: HDI_FORMAT,
+            ..Default::default()
+        };
+        send(header, HDM_GETITEMW, i, &mut item as *mut _ as isize);
+        let mut fmt = item.fmt.0 & !(HDF_SORTUP.0 | HDF_SORTDOWN.0);
+        if i == col {
+            fmt |= if descending {
+                HDF_SORTDOWN.0
+            } else {
+                HDF_SORTUP.0
+            };
+        }
+        if fmt != item.fmt.0 {
+            item.fmt.0 = fmt;
+            send(header, HDM_SETITEMW, i, &item as *const _ as isize);
+        }
+    }
 }
 
 /// Replace a list view's rows; each row is its icon and its cells in column order.

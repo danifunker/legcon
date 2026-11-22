@@ -276,6 +276,42 @@ def rows_of(aid):
     return [items.GetElement(i).CurrentName for i in range(items.Length)]
 
 
+def op_sort(o):
+    """Click a list's column header by its title, as a user sorting by it does."""
+    lst = find(o["id"])
+    cond = UIA.CreatePropertyCondition(U.UIA_ControlTypePropertyId, U.UIA_HeaderItemControlTypeId)
+    items = lst.FindAll(U.TreeScope_Descendants, cond)
+    for i in range(items.Length):
+        h = items.GetElement(i)
+        if (h.CurrentName or "") != o["column"]:
+            continue
+        try:
+            pattern(h, U.UIA_InvokePatternId, U.IUIAutomationInvokePattern).Invoke()
+        except Exception:
+            # No Invoke on this header: click its middle, as the mouse would.
+            r = h.CurrentBoundingRectangle
+            user32.SetForegroundWindow(MAIN)
+            user32.SetCursorPos((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+            user32.mouse_event(0x0002, 0, 0, 0, 0)
+            user32.mouse_event(0x0004, 0, 0, 0, 0)
+        time.sleep(o.get("pause", 0.5))
+        return
+    raise Fail(f"no column {o['column']} in {o['id']}")
+
+
+def op_expect_order(o):
+    """The list's first rows are `names`, in that order."""
+    want = o["names"]
+    end = time.time() + o.get("timeout", 5)
+    while True:
+        got = rows_of(o["id"])
+        if got[: len(want)] == want:
+            return
+        if time.time() > end:
+            raise Fail(f"{o['id']} rows {got}, expected them to start {want}")
+        time.sleep(0.3)
+
+
 def op_expect_row(o):
     """A list has (or lacks) a row named `name`, waiting for a listing to arrive."""
     want = o.get("present", True)
@@ -382,6 +418,8 @@ OPS = {
     "key": op_key,
     "type": op_type,
     "expect_row": op_expect_row,
+    "sort": op_sort,
+    "expect_order": op_expect_order,
     "press": op_press,
     "activate": op_activate,
     "select_row": op_select_row,

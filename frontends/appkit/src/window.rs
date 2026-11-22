@@ -396,6 +396,11 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
     }
     p.list.on_activate(Rc::new(move || open_row(side)));
     p.list.on_menu(Rc::new(move || file_menu(side)));
+    p.list.on_sort(Rc::new(move |i| {
+        if let Some(by) = conn::SORT_COLUMNS.get(i) {
+            conn_action(conn::Action::SortBy(side, *by));
+        }
+    }));
     p.list.drag_and_drop(
         if local { "local" } else { "remote" },
         Rc::new(move |d| match d {
@@ -1067,6 +1072,15 @@ pub fn refresh() {
         }
         ui::set_enabled(&s.w.remote.home, t.can_disconnect());
         ui::set_enabled(&s.w.remote.other, t.can_disconnect());
+        for (list, side) in [
+            (&s.w.local.list, Side::Local),
+            (&s.w.remote.list, Side::Remote),
+        ] {
+            let sort = t.sort(side);
+            if let Some(col) = conn::SORT_COLUMNS.iter().position(|b| *b == sort.by) {
+                list.set_sort(col, sort.descending);
+            }
+        }
         s.w.local.list.set_dir(Some(PathBuf::from(t.local_path())));
         let local = t.local_rows();
         if local != s.drawn.local {

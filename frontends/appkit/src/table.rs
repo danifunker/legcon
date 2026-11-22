@@ -63,6 +63,10 @@ pub struct State {
     /// Remote rows drag out as file promises redeemed through this.
     on_promise: Option<Promised>,
     on_select: Handler,
+    /// A click on a column header, with the column's index.
+    on_sort: Option<Rc<dyn Fn(usize)>>,
+    /// The column and direction the header arrow shows.
+    sorted: Option<(usize, bool)>,
     /// The shell is setting the selection itself, so the change is not reported back.
     quiet: bool,
 }
@@ -129,6 +133,15 @@ define_class!(
     }
 
     unsafe impl NSTableViewDelegate for Source {
+        #[unsafe(method(tableView:didClickTableColumn:))]
+        fn header_clicked(&self, _table: &NSTableView, column: &NSTableColumn) {
+            let i = column.identifier().to_string().parse::<usize>().ok();
+            let f = self.ivars().borrow().on_sort.clone();
+            if let (Some(f), Some(i)) = (f, i) {
+                ui::later(Box::new(move || f(i)));
+            }
+        }
+
         #[unsafe(method_id(tableView:viewForTableColumn:row:))]
         fn cell(
             &self,
@@ -497,6 +510,34 @@ impl Table {
     /// The user changed the selection.
     pub fn on_select(&self, f: Rc<dyn Fn()>) {
         self.source.ivars().borrow_mut().on_select = Some(f);
+    }
+
+    /// A click on a column header runs `f` with that column's index.
+    pub fn on_sort(&self, f: Rc<dyn Fn(usize)>) {
+        self.source.ivars().borrow_mut().on_sort = Some(f);
+    }
+
+    /// Show the sort arrow on column `col`, pointing up or down; the others show none.
+    pub fn set_sort(&self, col: usize, descending: bool) {
+        if self.source.ivars().borrow().sorted == Some((col, descending)) {
+            return;
+        }
+        self.source.ivars().borrow_mut().sorted = Some((col, descending));
+        let name = if descending {
+            "NSDescendingSortIndicator"
+        } else {
+            "NSAscendingSortIndicator"
+        };
+        let arrow = NSImage::imageNamed(&ns(name));
+        let columns = self.view.tableColumns();
+        for (i, c) in columns.iter().enumerate() {
+            let image = (i == col).then(|| arrow.clone()).flatten();
+            self.view
+                .setIndicatorImage_inTableColumn(image.as_deref(), &c);
+            if i == col {
+                self.view.setHighlightedTableColumn(Some(&c));
+            }
+        }
     }
 
     /// Rows drag out as `side`; the list takes drops through `f`.

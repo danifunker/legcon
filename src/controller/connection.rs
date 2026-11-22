@@ -21,8 +21,10 @@ use crate::model::transfer::{self, Direction, Pick, Plan};
 
 mod import;
 mod rejoin;
+mod sorting;
 mod transfers;
 pub use rejoin::{LinkPrefs, REJOIN_PURPOSE, RESUME_PURPOSE};
+pub use sorting::SORT_COLUMNS;
 use transfers::{direction_from, ItemAnswer, Transfers};
 pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS, RENAME_PURPOSE};
 
@@ -139,6 +141,8 @@ pub enum Action {
     RemoteGoToAnswered(Option<String>),
     /// A path typed into a pane's address bar, then Enter: go there.
     PathTyped(Side, String),
+    /// A click on a pane's column header: sort by it, or the other way if it already is.
+    SortBy(Side, super::SortBy),
     Connect,
     PasswordAnswered(Option<String>),
     Disconnect,
@@ -1935,6 +1939,7 @@ impl Controller for ConnectionController {
                 self.note_local(path.clone());
                 self.go_local(path);
             }
+            Action::SortBy(side, by) => self.sort_by(side, by),
             Action::PathTyped(Side::Local, text) => match local_target(&self.local_dir, &text) {
                 Ok(Some(dir)) => {
                     self.note_local(dir.clone());
@@ -2221,7 +2226,10 @@ impl Controller for ConnectionController {
         if let Some(r) = self.local_job.as_ref().and_then(job_outcome) {
             self.local_job = None;
             match r {
-                Ok(rows) => self.local_rows = rows,
+                Ok(rows) => {
+                    self.local_rows = rows;
+                    self.resort(Side::Local);
+                }
                 Err(e) => {
                     self.local_rows.clear();
                     self.local_error =
@@ -2281,7 +2289,8 @@ impl Controller for ConnectionController {
                 Ok(rows) => {
                     self.link_worked();
                     self.link.listed = self.remote_dir.clone();
-                    self.remote_rows = rows
+                    self.remote_rows = rows;
+                    self.resort(Side::Remote);
                 }
                 Err(e) => {
                     self.link.failed = true;
