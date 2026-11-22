@@ -25,6 +25,10 @@ mod sorting;
 mod transfers;
 pub use rejoin::{LinkPrefs, REJOIN_PURPOSE, RESUME_PURPOSE};
 pub use sorting::SORT_COLUMNS;
+
+/// How long a drag held over a folder row waits before that folder opens (D51), as the
+/// Finder's spring-loaded folders do; dropping on the row before then copies into it.
+pub const SPRING_OPEN: std::time::Duration = std::time::Duration::from_millis(1200);
 use transfers::{direction_from, ItemAnswer, Transfers};
 pub use transfers::{QueueButton, QueueOp, QueuePrefs, QueueRow, QUEUE_COLUMNS, RENAME_PURPOSE};
 
@@ -198,6 +202,10 @@ pub enum Action {
     ConsoleSend(String),
     /// Files or folders dropped from the OS (or another program) onto a pane.
     Drop(Side, Vec<PathBuf>),
+    /// Rows of pane `.0` dropped on the folder row `.2` of the other pane: copy them into it.
+    CopyTo(Side, Vec<String>, String),
+    /// Files from the OS dropped on the folder row `.2` of pane `.0`: copy them into it.
+    DropInto(Side, Vec<PathBuf>, String),
     /// Download these remote names into a folder other than the local pane's (rows dragged
     /// out to the Finder or Explorer, which names the folder).
     CopyOut(Vec<String>, PathBuf),
@@ -280,6 +288,8 @@ pub(crate) enum PlaceEvent {
 /// Picks that share one local folder (a pane's, or the folder files were dropped from).
 struct Group {
     local_dir: PathBuf,
+    /// The folder on the machine; the remote pane's when `None`.
+    remote_dir: Option<RemotePath>,
     picks: Vec<Pick>,
     sizes: Vec<Option<u64>>,
 }
@@ -1098,6 +1108,21 @@ impl ConnectionController {
         })
     }
 
+    /// A tab just opened: connect what is on top (files, or the shell after Swap), and the
+    /// other only when the machine has nothing for the top.
+    pub(crate) fn open_top(&mut self) -> Vec<Effect> {
+        let files = self.machine.file_service().is_some();
+        let shell = self.has_command_service();
+        if files && (!self.layout.swapped || !shell) {
+            return super::Controller::apply(self, Action::Connect);
+        }
+        if shell {
+            self.term = TermTab::Shell;
+            return self.shell_connect();
+        }
+        Vec::new()
+    }
+
     /// Close the shell (logout command first); also used when the tab closes.
     pub(crate) fn begin_shell_close(&mut self) -> Option<Job<()>> {
         self.link.shell_closed = true;
@@ -1299,6 +1324,65 @@ impl ConnectionController {
         self.copy_into(from, names, dir, start)
     }
 
+    /// Rows dropped on a folder row of the other pane: copy them into that folder.
+    fn copy_to(&mut self, from: Side, names: Vec<String>, folder: String) -> Vec<Effect> {
+        let to = match from {
+            Side::Local => Side::Remote,
+            Side::Remote => Side::Local,
+        };
+        let (local_into, into) = match self.folder_target(to, Some(&folder)) {
+            Ok(t) => t,
+            Err(e) => return vec![Effect::Message(e)],
+        };
+        if !self.can_disconnect() || self.remote_dir.is_none() {
+            return vec![Effect::Message(format!(
+                "Connect to {} first.",
+                self.machine.name
+            ))];
+        }
+        let (picks, sizes) = self.picks(from, &names);
+        if picks.is_empty() {
+            return Vec::new();
+        }
+        let group = Group {
+            local_dir: local_into.unwrap_or_else(|| self.local_dir.clone()),
+            remote_dir: into,
+            picks,
+            sizes,
+        };
+        self.start_plan(direction_from(from), group, true);
+        Vec::new()
+    }
+
+    /// The folder a drop on pane `side` goes into: its own folder, or the folder row named
+    /// `folder` in it, as (this computer's folder, the machine's folder); `None` is the pane's.
+    fn folder_target(
+        &self,
+        side: Side,
+        folder: Option<&str>,
+    ) -> Result<(Option<PathBuf>, Option<RemotePath>), String> {
+        let Some(name) = folder else {
+            return Ok((None, None));
+        };
+        let gone = || format!("{name} is not a folder here any more.");
+        match side {
+            Side::Local => self
+                .local_rows
+                .iter()
+                .any(|e| e.is_dir && e.name == name)
+                .then(|| (Some(self.local_dir.join(name)), None))
+                .ok_or_else(gone),
+            Side::Remote => {
+                let dir = self.remote_dir.as_ref().ok_or_else(gone)?;
+                self.remote_rows
+                    .iter()
+                    .any(|e| e.is_folder() && e.name == name)
+                    .then(|| (None, Some(dir.join(name))))
+                    .ok_or_else(gone)
+            }
+        }
+    }
+
     /// As [`Self::copy`], with `local_dir` as the folder on this computer.
     fn copy_into(
         &mut self,
@@ -1319,6 +1403,7 @@ impl ConnectionController {
         }
         let group = Group {
             local_dir,
+            remote_dir: None,
             picks,
             sizes,
         };
@@ -1343,6 +1428,20 @@ impl ConnectionController {
 
     /// Files dropped onto a pane: uploaded to the machine, or copied into the local folder.
     fn drop_files(&mut self, side: Side, paths: Vec<PathBuf>) -> Vec<Effect> {
+        self.drop_into(side, paths, None)
+    }
+
+    /// Files from the OS dropped on a pane: into its folder, or into `folder` (a folder row) in it.
+    fn drop_into(
+        &mut self,
+        side: Side,
+        paths: Vec<PathBuf>,
+        folder: Option<String>,
+    ) -> Vec<Effect> {
+        let (local_into, into) = match self.folder_target(side, folder.as_deref()) {
+            Ok(t) => t,
+            Err(e) => return vec![Effect::Message(e)],
+        };
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
         if paths.is_empty() {
             return Vec::new();
@@ -1355,11 +1454,12 @@ impl ConnectionController {
         match side {
             Side::Local => {
                 // Dropping files onto the folder they are already in does nothing.
+                let dest = local_into.unwrap_or_else(|| self.local_dir.clone());
                 let paths: Vec<PathBuf> = paths
                     .into_iter()
-                    .filter(|p| p.parent() != Some(self.local_dir.as_path()))
+                    .filter(|p| p.parent() != Some(dest.as_path()) && *p != dest)
                     .collect();
-                self.import(paths)
+                self.import(paths, dest)
             }
             Side::Remote => {
                 if !self.can_disconnect() || self.remote_dir.is_none() {
@@ -1386,6 +1486,7 @@ impl ConnectionController {
                         }
                         None => groups.push(Group {
                             local_dir: parent,
+                            remote_dir: into.clone(),
                             picks: vec![pick],
                             sizes: vec![size],
                         }),
@@ -2081,6 +2182,10 @@ impl Controller for ConnectionController {
                 };
             }
             Action::Drop(side, paths) => return self.drop_files(side, paths),
+            Action::CopyTo(from, names, folder) => return self.copy_to(from, names, folder),
+            Action::DropInto(side, paths, folder) => {
+                return self.drop_into(side, paths, Some(folder))
+            }
             Action::AddToQueue(side, names) => return self.copy(side, names, false),
             Action::CopyOut(names, dir) => return self.copy_into(Side::Remote, names, dir, true),
             Action::Queue(op, ids) => {
@@ -3680,5 +3785,102 @@ mod tests {
         settle(&mut c);
         assert_eq!(c.state(), ConnState::Connected);
         assert_eq!(c.remote_path(), "/etc");
+    }
+
+    #[test]
+    fn a_new_tab_connects_what_is_on_top() {
+        let home = tempfile::tempdir().unwrap();
+        let mut c = tab(home.path());
+        c.open_top();
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Connected, "files on top connect");
+        assert!(c.shell_open.is_none());
+
+        // Swapped, with a shell: the shell opens and the files wait for Connect.
+        let mut m = Machine::new("sparc", "127.0.0.1");
+        m.services.push(Service {
+            kind: ServiceKind::Demo,
+            port: 0,
+        });
+        m.services.push(Service {
+            kind: ServiceKind::Telnet,
+            port: 9,
+        });
+        m.layout.swapped = true;
+        let mut c = ConnectionController::new(
+            m.clone(),
+            home.path(),
+            Vec::new(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        );
+        c.open_top();
+        assert!(c.shell_open.is_some(), "the shell on top opens");
+        assert_eq!(c.state(), ConnState::Disconnected);
+
+        // Nothing for the top (no shell): the files connect after all.
+        m.services.retain(|s| s.kind == ServiceKind::Demo);
+        let mut c = ConnectionController::new(
+            m,
+            home.path(),
+            Vec::new(),
+            Vec::new(),
+            Sessions::new(),
+            Arc::new(NoNotify),
+        );
+        c.open_top();
+        settle(&mut c);
+        assert_eq!(c.state(), ConnState::Connected);
+    }
+
+    #[test]
+    fn rows_dropped_on_a_folder_row_go_into_that_folder() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("incoming")).unwrap();
+        std::fs::write(home.path().join("notes.txt"), b"hello").unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        // A remote file onto the local folder row: it lands inside, not beside it.
+        c.apply(Action::CopyTo(
+            Side::Remote,
+            vec![".profile".into()],
+            "incoming".into(),
+        ));
+        settle(&mut c);
+        assert!(home.path().join("incoming/.profile").exists());
+        assert!(!home.path().join(".profile").exists());
+        // A local file onto the remote folder row "bin".
+        c.apply(Action::CopyTo(
+            Side::Local,
+            vec!["notes.txt".into()],
+            "bin".into(),
+        ));
+        settle(&mut c);
+        c.apply(Action::RemoteOpen("bin".into()));
+        settle(&mut c);
+        assert!(
+            c.remote_rows.iter().any(|e| e.name == "notes.txt"),
+            "{:?}",
+            c.remote_path()
+        );
+        // A row that is not a folder is refused, rather than copying beside it.
+        let out = c.apply(Action::CopyTo(
+            Side::Local,
+            vec!["notes.txt".into()],
+            "nope".into(),
+        ));
+        assert!(matches!(&out[..], [Effect::Message(m)] if m.contains("not a folder")));
+        // Files from the OS onto a local folder row.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("dropped.txt"), b"x").unwrap();
+        c.apply(Action::DropInto(
+            Side::Local,
+            vec![outside.path().join("dropped.txt")],
+            "incoming".into(),
+        ));
+        settle(&mut c);
+        assert!(home.path().join("incoming/dropped.txt").exists());
     }
 }

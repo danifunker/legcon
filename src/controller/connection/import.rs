@@ -21,6 +21,8 @@ pub(super) enum Stage {
 
 pub(super) struct ImportAsk {
     paths: Vec<PathBuf>,
+    /// The folder on this computer they go into.
+    dest: PathBuf,
     /// Target files already there, in the order they are asked about.
     clashes: Vec<PathBuf>,
     at: usize,
@@ -65,14 +67,14 @@ impl ImportAsk {
 
 impl ConnectionController {
     /// Files dropped onto the local pane, not already in its folder.
-    pub(super) fn import(&mut self, paths: Vec<PathBuf>) -> Vec<Effect> {
-        let clashes: Vec<PathBuf> = local::clashes(&paths, &self.local_dir)
+    pub(super) fn import(&mut self, paths: Vec<PathBuf>, dest: PathBuf) -> Vec<Effect> {
+        let clashes: Vec<PathBuf> = local::clashes(&paths, &dest)
             .into_iter()
             .map(|(_, dst)| dst)
             .collect();
         let preset = self.xfer.prefs.on_existing;
         if clashes.is_empty() || !matches!(preset, OnExisting::Ask | OnExisting::Rename) {
-            self.start_import(paths, Choices::all(existing(preset)));
+            self.start_import(paths, dest, Choices::all(existing(preset)));
             return Vec::new();
         }
         let many = clashes.len() > 1;
@@ -81,10 +83,10 @@ impl ConnectionController {
             format!(
                 "{} of these are already in {}, such as {first}.",
                 clashes.len(),
-                self.local_dir.display()
+                dest.display()
             )
         } else {
-            format!("{first} is already in {}.", self.local_dir.display())
+            format!("{first} is already in {}.", dest.display())
         };
         message.push(' ');
         message += IF_SAME;
@@ -104,6 +106,7 @@ impl ConnectionController {
         let dismiss = choices.len() - 1;
         self.pending = Some(Pending::Import(Box::new(ImportAsk {
             paths,
+            dest,
             clashes,
             at: 0,
             each: OnExisting::Ask,
@@ -122,8 +125,13 @@ impl ConnectionController {
     /// The next question, or the copy once every clash has its answer.
     fn import_next(&mut self, mut ask: Box<ImportAsk>) -> Vec<Effect> {
         let Some(dst) = ask.clashes.get(ask.at).cloned() else {
-            let ImportAsk { paths, choices, .. } = *ask;
-            self.start_import(paths, choices);
+            let ImportAsk {
+                paths,
+                dest,
+                choices,
+                ..
+            } = *ask;
+            self.start_import(paths, dest, choices);
             return Vec::new();
         };
         let name = file_name(&dst);
@@ -200,8 +208,8 @@ impl ConnectionController {
                     self.import_next(ask)
                 }
                 Some(on) => {
-                    let ImportAsk { paths, .. } = *ask;
-                    self.start_import(paths, Choices::all(existing(on)));
+                    let ImportAsk { paths, dest, .. } = *ask;
+                    self.start_import(paths, dest, Choices::all(existing(on)));
                     Vec::new()
                 }
             },

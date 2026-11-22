@@ -1,16 +1,18 @@
 //! Thin wrappers over the common controls the window uses: report list views, tree views, tabs.
 
 use windows::core::{w, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Controls::{
     SetWindowTheme, HDF_SORTDOWN, HDF_SORTUP, HDITEMW, HDI_FORMAT, HDM_GETITEMCOUNT, HDM_GETITEMW,
-    HDM_SETITEMW, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_STATE, LVIF_TEXT,
-    LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_GETHEADER, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW,
-    LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMSTATE,
-    LVM_SETITEMTEXTW, LVNI_SELECTED, LVSIL_SMALL, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT,
-    LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS, LVS_SINGLESEL, TCIF_TEXT, TCITEMW,
-    TCM_DELETEALLITEMS, TCM_GETCURSEL, TCM_GETITEMCOUNT, TCM_GETITEMRECT, TCM_INSERTITEMW,
-    TCM_SETCURSEL, TCM_SETITEMSIZE, TCS_FIXEDWIDTH, TCS_OWNERDRAWFIXED,
+    HDM_SETITEMW, HIMAGELIST, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVHITTESTINFO, LVIF_IMAGE,
+    LVIF_STATE, LVIF_TEXT, LVIS_DROPHILITED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS,
+    LVM_GETHEADER, LVM_GETNEXTITEM, LVM_HITTEST, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETIMAGELIST, LVM_SETITEMSTATE, LVM_SETITEMTEXTW,
+    LVNI_SELECTED, LVSIL_SMALL, LVS_EX_DOUBLEBUFFER, LVS_EX_FULLROWSELECT, LVS_REPORT,
+    LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS, LVS_SINGLESEL, TCIF_TEXT, TCITEMW, TCM_DELETEALLITEMS,
+    TCM_GETCURSEL, TCM_GETITEMCOUNT, TCM_GETITEMRECT, TCM_INSERTITEMW, TCM_SETCURSEL,
+    TCM_SETITEMSIZE, TCS_FIXEDWIDTH, TCS_OWNERDRAWFIXED,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SendMessageW, WINDOW_EX_STYLE, WINDOW_STYLE, WS_TABSTOP,
@@ -154,6 +156,44 @@ pub fn update(list: HWND, old: &[(i32, Vec<String>)], new: &[(i32, Vec<String>)]
                 );
             }
         }
+    }
+}
+
+/// The row under screen point `pt` in `list`, if any.
+pub fn row_at(list: HWND, pt: POINT) -> Option<usize> {
+    let mut p = pt;
+    // SAFETY: converting a screen point into our own list's client area.
+    let _ = unsafe { ScreenToClient(list, &mut p) };
+    let mut hit = LVHITTESTINFO {
+        pt: p,
+        ..Default::default()
+    };
+    let i = send(list, LVM_HITTEST, 0, &mut hit as *mut _ as isize);
+    usize::try_from(i).ok()
+}
+
+/// Mark `row` as where a drag would drop (Explorer's drop highlight), or no row.
+pub fn drop_highlight(list: HWND, row: Option<usize>) {
+    let state = |on: bool| LVITEMW {
+        mask: LVIF_STATE,
+        state: if on {
+            LVIS_DROPHILITED
+        } else {
+            Default::default()
+        },
+        stateMask: LVIS_DROPHILITED,
+        ..Default::default()
+    };
+    let off = state(false);
+    send(
+        list,
+        LVM_SETITEMSTATE,
+        usize::MAX,
+        &off as *const _ as isize,
+    );
+    if let Some(r) = row {
+        let on = state(true);
+        send(list, LVM_SETITEMSTATE, r, &on as *const _ as isize);
     }
 }
 

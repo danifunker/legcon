@@ -26,11 +26,14 @@ use legcon::controller::connection::Side;
 pub const WM_APP_DROPPED: u32 = WM_APP + 5;
 
 thread_local! {
-    static DROPPED: RefCell<Option<(Side, Vec<PathBuf>)>> = const { RefCell::new(None) };
+    static DROPPED: RefCell<Option<Drop>> = const { RefCell::new(None) };
 }
 
+/// Where files were dropped: the pane, the files, and the folder row they landed on.
+type Drop = (Side, Vec<PathBuf>, Option<String>);
+
 /// The last drop, once.
-pub fn take() -> Option<(Side, Vec<PathBuf>)> {
+pub fn take() -> Option<Drop> {
     DROPPED.with(|d| d.borrow_mut().take())
 }
 
@@ -106,6 +109,9 @@ impl IDropTarget_Impl for Target_Impl {
             .as_ref()
             .is_some_and(|d| unsafe { d.QueryGetData(&format()) }.is_ok());
         *self.files.borrow_mut() = has;
+        if has {
+            crate::window::set_ole_drag(true);
+        }
         // SAFETY: OLE passes a valid out pointer.
         unsafe { *effect = self.effect(pt) };
         Ok(())
@@ -117,6 +123,9 @@ impl IDropTarget_Impl for Target_Impl {
         pt: &POINTL,
         effect: *mut DROPEFFECT,
     ) -> Result<()> {
+        if *self.files.borrow() {
+            crate::window::drag_over(POINT { x: pt.x, y: pt.y }, None);
+        }
         // SAFETY: OLE passes a valid out pointer.
         unsafe { *effect = self.effect(pt) };
         Ok(())
@@ -124,6 +133,7 @@ impl IDropTarget_Impl for Target_Impl {
 
     fn DragLeave(&self) -> Result<()> {
         *self.files.borrow_mut() = false;
+        crate::window::set_ole_drag(false);
         Ok(())
     }
 
@@ -135,6 +145,10 @@ impl IDropTarget_Impl for Target_Impl {
         effect: *mut DROPEFFECT,
     ) -> Result<()> {
         let side = self.side_at(pt);
+        let folder = crate::window::folder_at(POINT { x: pt.x, y: pt.y })
+            .and_then(|(_, row)| row)
+            .map(|(_, name)| name);
+        crate::window::set_ole_drag(false);
         let list = data.as_ref().map(paths).unwrap_or_default();
         // SAFETY: OLE passes a valid out pointer.
         unsafe {
@@ -145,7 +159,7 @@ impl IDropTarget_Impl for Target_Impl {
             }
         };
         if let (Some(side), false) = (side, list.is_empty()) {
-            DROPPED.with(|d| *d.borrow_mut() = Some((side, list)));
+            DROPPED.with(|d| *d.borrow_mut() = Some((side, list, folder)));
             // SAFETY: posting to our own window; handled after the drag loop.
             let _ =
                 unsafe { PostMessageW(Some(self.window), WM_APP_DROPPED, WPARAM(0), LPARAM(0)) };

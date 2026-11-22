@@ -43,14 +43,17 @@ pub struct Line {
     pub cells: Vec<String>,
 }
 
-/// What landed on a list.
+/// What landed on a list, and the folder row it landed on (`None`: the list's own folder).
 pub enum Dropped {
     /// Rows from the list whose drag side is this.
-    Rows(&'static str),
-    Files(Vec<PathBuf>),
+    Rows(&'static str, Option<String>),
+    Files(Vec<PathBuf>, Option<String>),
 }
 
 type Handler = Option<Rc<dyn Fn()>>;
+
+/// Opens the folder row a drag was held over, by name.
+type Spring = Rc<dyn Fn(String)>;
 
 #[derive(Default)]
 pub struct State {
@@ -67,6 +70,10 @@ pub struct State {
     on_sort: Option<Rc<dyn Fn(usize)>>,
     /// The column and direction the header arrow shows.
     sorted: Option<(usize, bool)>,
+    /// A drag held over a folder row opens it after this long, through `on_spring`.
+    spring: Option<(std::time::Duration, Spring)>,
+    /// The folder row a drag is over, since when, and whether it has opened already.
+    hover: Option<(isize, std::time::Instant, bool)>,
     /// The shell is setting the selection itself, so the change is not reported back.
     quiet: bool,
 }
@@ -101,10 +108,10 @@ define_class!(
             &self,
             table: &NSTableView,
             info: &ProtocolObject<dyn NSDraggingInfo>,
-            _row: isize,
-            _op: NSTableViewDropOperation,
+            row: isize,
+            op: NSTableViewDropOperation,
         ) -> NSDragOperation {
-            let state = self.ivars().borrow();
+            let mut state = self.ivars().borrow_mut();
             if state.on_drop.is_none() {
                 return NSDragOperation::None;
             }
@@ -115,8 +122,31 @@ define_class!(
             if !ok {
                 return NSDragOperation::None;
             }
-            // The whole list is the target, not a row.
-            table.setDropRow_dropOperation(-1, NSTableViewDropOperation::On);
+            // Over a folder row: that folder is the target, and held there it opens.
+            let folder = (op == NSTableViewDropOperation::On)
+                .then(|| folder_at(&state, row))
+                .flatten();
+            let Some(name) = folder else {
+                state.hover = None;
+                // The whole list is the target, not a row.
+                table.setDropRow_dropOperation(-1, NSTableViewDropOperation::On);
+                return NSDragOperation::Copy;
+            };
+            table.setDropRow_dropOperation(row, NSTableViewDropOperation::On);
+            let now = std::time::Instant::now();
+            let since = match state.hover {
+                Some((r, t, opened)) if r == row => (t, opened),
+                _ => (now, false),
+            };
+            let due = state
+                .spring
+                .as_ref()
+                .filter(|(wait, _)| !since.1 && now.duration_since(since.0) >= *wait)
+                .map(|(_, f)| Rc::clone(f));
+            state.hover = Some((row, since.0, since.1 || due.is_some()));
+            if let Some(f) = due {
+                ui::later(Box::new(move || f(name)));
+            }
             NSDragOperation::Copy
         }
 
@@ -125,10 +155,15 @@ define_class!(
             &self,
             _table: &NSTableView,
             info: &ProtocolObject<dyn NSDraggingInfo>,
-            _row: isize,
-            _op: NSTableViewDropOperation,
+            row: isize,
+            op: NSTableViewDropOperation,
         ) -> bool {
-            accept(&self.ivars().borrow(), info)
+            let mut state = self.ivars().borrow_mut();
+            state.hover = None;
+            let folder = (op == NSTableViewDropOperation::On)
+                .then(|| folder_at(&state, row))
+                .flatten();
+            accept(&state, info, folder)
         }
     }
 
@@ -274,13 +309,26 @@ fn from_side(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<&'static str> 
     })
 }
 
-fn accept(state: &State, info: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+/// The name of row `row` when it is a folder.
+fn folder_at(state: &State, row: isize) -> Option<String> {
+    let line = state.rows.get(usize::try_from(row).ok()?)?;
+    match &line.icon {
+        Icon::File { name, dir: true } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn accept(
+    state: &State,
+    info: &ProtocolObject<dyn NSDraggingInfo>,
+    folder: Option<String>,
+) -> bool {
     let Some(f) = state.on_drop.clone() else {
         return false;
     };
     let what = match from_side(info) {
-        Some(side) => Dropped::Rows(side),
-        None => Dropped::Files(dropped_paths(info)),
+        Some(side) => Dropped::Rows(side, folder),
+        None => Dropped::Files(dropped_paths(info), folder),
     };
     // The drop may ask a question: let the drag finish first.
     ui::later(Box::new(move || f(what)));
@@ -510,6 +558,11 @@ impl Table {
     /// The user changed the selection.
     pub fn on_select(&self, f: Rc<dyn Fn()>) {
         self.source.ivars().borrow_mut().on_select = Some(f);
+    }
+
+    /// A drag held over a folder row for `wait` runs `f` with the folder's name (to open it).
+    pub fn spring_open(&self, wait: std::time::Duration, f: Rc<dyn Fn(String)>) {
+        self.source.ivars().borrow_mut().spring = Some((wait, f));
     }
 
     /// A click on a column header runs `f` with that column's index.

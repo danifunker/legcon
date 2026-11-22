@@ -299,6 +299,49 @@ def op_sort(o):
     raise Fail(f"no column {o['column']} in {o['id']}")
 
 
+def row_element(aid, name):
+    lst = find(aid)
+    cond = UIA.CreatePropertyCondition(U.UIA_ControlTypePropertyId, U.UIA_ListItemControlTypeId)
+    items = lst.FindAll(U.TreeScope_Descendants, cond)
+    for i in range(items.Length):
+        it = items.GetElement(i)
+        if it.CurrentName == name:
+            return it
+    raise Fail(f"no row {name} in {aid}")
+
+
+def middle(e, left_part=False):
+    r = e.CurrentBoundingRectangle
+    x = r.left + 40 if left_part else (r.left + r.right) // 2
+    return x, (r.top + r.bottom) // 2
+
+
+def op_drag(o):
+    """Drag row `from_row` of list `from_id` onto row `to_row` of `to_id` (or its empty space)
+    with the real mouse, held there `hold` seconds first (a held drag opens a folder row)."""
+    user32.SetForegroundWindow(MAIN)
+    sx, sy = middle(row_element(o["from_id"], o["from_row"]), True)
+    if "to_row" in o:
+        ex, ey = middle(row_element(o["to_id"], o["to_row"]), True)
+    else:
+        r = find(o["to_id"]).CurrentBoundingRectangle
+        ex, ey = (r.left + r.right) // 2, r.bottom - 12
+    user32.SetCursorPos(sx, sy)
+    time.sleep(0.2)
+    user32.mouse_event(0x0002, 0, 0, 0, 0)
+    time.sleep(0.3)
+    steps = 40
+    for i in range(1, steps + 1):
+        user32.SetCursorPos(sx + (ex - sx) * i // steps, sy + (ey - sy) * i // steps)
+        user32.mouse_event(0x0001, 0, 0, 0, 0)
+        time.sleep(0.015)
+    end = time.time() + o.get("hold", 0.3)
+    while time.time() < end:
+        time.sleep(0.1)
+    user32.mouse_event(0x0004, 0, 0, 0, 0)
+    time.sleep(o.get("pause", 0.8))
+
+
 def op_expect_order(o):
     """The list's first rows are `names`, in that order."""
     want = o["names"]
@@ -420,6 +463,7 @@ OPS = {
     "expect_row": op_expect_row,
     "sort": op_sort,
     "expect_order": op_expect_order,
+    "drag": op_drag,
     "press": op_press,
     "activate": op_activate,
     "select_row": op_select_row,

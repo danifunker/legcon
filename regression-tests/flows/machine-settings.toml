@@ -80,11 +80,12 @@ id = "flow.settings.from-the-tab"
 description = "Open a machine's tab, change its name from the header's Settings: the tab title follows"
 shells = ["win32", "appkit"]
 machines = [
-  { id = "indy", name = "indy", address = "192.168.99.60", services = [{ kind = "ftp", port = 21 }] },
+  { id = "indy", name = "indy", address = "demo", services = [{ kind = "demo", port = 0 }] },
 ]
 ui = [
   { op = "select_row", id = "machines.list", name = "indy" },
   { op = "activate", id = "machines.open" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
   { op = "activate", id = "conn.settings" },
   { op = "wait_dialog" },
   { op = "fill", id = "machine.name", text = "Indy R4400" },

@@ -7,7 +7,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "expect_row", id = "remote.list", name = ".profile" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
@@ -25,7 +24,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "expect_row", id = "remote.list", name = ".profile" },
   { op = "fill", id = "remote.path", text = "/etc" },
   { op = "key", id = "remote.path", key = "enter" },
@@ -58,7 +56,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
   { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
@@ -72,11 +69,34 @@ ui = [
   { op = "activate", id = "conn.close_tab" },
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
   { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
 ]
+
+[[case]]
+id = "flow.conn.drag-into-folders"
+description = "Opening the tab connects; rows dropped on a folder row go into it; held, a folder opens"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+local_files = { "notes.txt" = "dragged into a held folder" }
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "incoming" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "expect_row", id = "local.list", name = "incoming" },
+  { op = "select_row", id = "remote.list", name = ".profile" },
+  { op = "drag", from_id = "remote.list", from_row = ".profile", to_id = "local.list", to_row = "incoming" },
+  { op = "expect_row", id = "local.list", name = ".profile", present = false },
+  { op = "select_row", id = "local.list", name = "notes.txt" },
+  { op = "drag", from_id = "local.list", from_row = "notes.txt", to_id = "remote.list", to_row = "src", hold = 2.5 },
+  { op = "expect_row", id = "remote.list", name = "notes.txt" },
+  { op = "expect_row", id = "remote.list", name = "Makefile.local" },
+]
+expect_files = ["incoming/.profile"]
 
 [[case]]
 id = "flow.conn.copy-to-home"
@@ -85,7 +105,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "select_row", id = "remote.list", name = ".profile" },
   { op = "key", id = "remote.list", key = "f6" },
   { op = "expect_row", id = "local.list", name = ".profile" },
@@ -99,7 +118,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "expect_row", id = "remote.list", name = ".profile" },
   { op = "key", id = "remote.list", key = "ctrl+n" },
   { op = "wait_dialog" },
@@ -183,7 +201,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "expect_row", id = "remote.list", name = "src" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
@@ -208,7 +225,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "select_row", id = "remote.list", name = ".profile" },
   { op = "key", id = "remote.list", key = "f6" },
   { op = "expect_row", id = "local.list", name = ".profile" },
@@ -230,7 +246,6 @@ machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind
 ui = [
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "select_row", id = "remote.list", name = ".profile" },
   { op = "key", id = "remote.list", key = "f6" },
   { op = "expect_row", id = "local.list", name = ".profile" },

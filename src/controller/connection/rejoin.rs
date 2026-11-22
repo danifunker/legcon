@@ -173,6 +173,8 @@ impl ConnectionController {
             | Action::AddToQueue(..)
             | Action::CopyOut(..)
             | Action::Drop(Side::Remote, _)
+            | Action::CopyTo(..)
+            | Action::DropInto(Side::Remote, ..)
             | Action::ConsoleSend(_)
             | Action::NewFolder(Side::Remote)
             | Action::Rename(Side::Remote, _)

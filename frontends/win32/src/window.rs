@@ -29,14 +29,15 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-    GetCursorPos, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW,
-    SetCursor, ShowWindow, TrackPopupMenu, BN_CLICKED, CW_USEDEFAULT, ES_AUTOHSCROLL, ES_MULTILINE,
-    ES_READONLY, HMENU, IDC_ARROW, IDC_HAND, IDC_SIZENS, MF_CHECKED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CTLCOLOREDIT,
-    WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_POWERBROADCAST, WM_RBUTTONUP, WM_SETCURSOR,
-    WM_SIZE, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VSCROLL,
+    GetCursorPos, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SendMessageW, SetCursor, SetTimer, ShowWindow, TrackPopupMenu, BN_CLICKED, CW_USEDEFAULT,
+    ES_AUTOHSCROLL, ES_MULTILINE, ES_READONLY, HMENU, IDC_ARROW, IDC_HAND, IDC_SIZENS, MF_CHECKED,
+    MF_GRAYED, MF_SEPARATOR, MF_STRING, PBT_APMRESUMEAUTOMATIC, PBT_APMSUSPEND, SW_SHOWNORMAL,
+    TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND,
+    WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_NOTIFY, WM_PAINT, WM_POWERBROADCAST, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SIZE, WM_TIMER, WNDCLASSW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VSCROLL,
 };
 
 use crate::controls;
@@ -135,7 +136,14 @@ pub struct Shell {
     laid: Option<LayoutKey>,
     /// Rows being dragged from one pane, until the button comes up.
     file_drag: Option<(Side, Vec<String>)>,
+    /// Files from Explorer are being dragged over the window.
+    ole_drag: bool,
+    /// The folder row a drag is over: its pane, row, since when, and whether it opened.
+    hover: Option<(Side, usize, std::time::Instant, bool)>,
 }
+
+/// The timer that keeps a still drag checking whether it was held over a folder long enough.
+const DRAG_TIMER: usize = 7;
 
 thread_local! {
     static SHELL: RefCell<Option<Shell>> = const { RefCell::new(None) };
@@ -217,6 +225,8 @@ pub fn start() {
             panes: [RECT::default(); 2],
             laid: None,
             file_drag: None,
+            ole_drag: false,
+            hover: None,
         })
     });
     // SAFETY: showing the window we created, and taking files dropped from Explorer.
@@ -1930,6 +1940,7 @@ fn notify(hdr: &NMHDR) {
                 s.file_drag = Some((side, names));
                 s.window
             });
+            drag_active(true);
             if let Some(main) = main {
                 // SAFETY: capture the mouse for the drag; the button-up ends it.
                 unsafe { SetCapture(main) };
@@ -1963,6 +1974,97 @@ fn notify(hdr: &NMHDR) {
 }
 
 /// Which pane a point in the main window's client area is over.
+/// The pane under screen point `pt`, and the folder row there if the point is on one.
+pub fn folder_at(pt: POINT) -> Option<(Side, Option<(usize, String)>)> {
+    let main = with(|s| s.window)?;
+    let mut p = pt;
+    // SAFETY: converting a screen point into our own window's client area.
+    let _ = unsafe { ScreenToClient(main, &mut p) };
+    let side = pane_at(p.x, p.y)?;
+    let (list, rows) = with(|s| match side {
+        Side::Local => (s.w.local.list, s.drawn.local.clone()),
+        Side::Remote => (s.w.remote.list, s.drawn.remote.clone()),
+    })?;
+    let row = controls::row_at(list, pt).and_then(|i| {
+        rows.get(i)
+            .filter(|r| r.is_dir)
+            .map(|r| (i, r.name.clone()))
+    });
+    Some((side, row))
+}
+
+/// A drag moved (or stood still) at screen point `pt`, over pane rows other than `from`'s:
+/// highlight the folder row under it, and open that folder once it was held there long enough.
+pub fn drag_over(pt: POINT, from: Option<Side>) {
+    let at = folder_at(pt).filter(|(side, _)| Some(*side) != from);
+    let target = at.and_then(|(side, row)| row.map(|(i, name)| (side, i, name)));
+    let lists = with(|s| (s.w.local.list, s.w.remote.list));
+    let Some((local, remote)) = lists else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    let open = with(|s| {
+        let (side, i, name) = match &target {
+            Some(t) => t.clone(),
+            None => {
+                s.hover = None;
+                return None;
+            }
+        };
+        let (since, opened) = match s.hover {
+            Some((hs, hi, t, o)) if hs == side && hi == i => (t, o),
+            _ => (now, false),
+        };
+        let due = !opened && now.duration_since(since) >= conn::SPRING_OPEN;
+        s.hover = Some((side, i, since, opened || due));
+        due.then_some((side, name))
+    })
+    .flatten();
+    for (list, side) in [(local, Side::Local), (remote, Side::Remote)] {
+        let row = target.as_ref().filter(|t| t.0 == side).map(|t| t.1);
+        controls::drop_highlight(list, row);
+    }
+    if let Some((side, name)) = open {
+        conn_action(match side {
+            Side::Local => conn::Action::LocalOpen(name),
+            Side::Remote => conn::Action::RemoteOpen(name),
+        });
+    }
+}
+
+/// A drag began or ended: run the hold timer while it lasts, and clear the highlight after.
+pub fn drag_active(on: bool) {
+    let Some((main, local, remote)) = with(|s| (s.window, s.w.local.list, s.w.remote.list)) else {
+        return;
+    };
+    // SAFETY: a timer on our own window, killed when the drag ends.
+    unsafe {
+        if on {
+            SetTimer(Some(main), DRAG_TIMER, 200, None);
+        } else {
+            let _ = KillTimer(Some(main), DRAG_TIMER);
+        }
+    }
+    if !on {
+        with(|s| s.hover = None);
+        controls::drop_highlight(local, None);
+        controls::drop_highlight(remote, None);
+    }
+}
+
+fn cursor() -> POINT {
+    let mut p = POINT::default();
+    // SAFETY: reading the cursor position.
+    let _ = unsafe { GetCursorPos(&mut p) };
+    p
+}
+
+/// Set from the OLE drop target while files from Explorer are over the window.
+pub fn set_ole_drag(on: bool) {
+    with(|s| s.ole_drag = on);
+    drag_active(on);
+}
+
 pub fn pane_at(x: i32, y: i32) -> Option<Side> {
     with(|s| {
         if !matches!(s.app.active(), Tab::Connection(_)) {
@@ -2088,6 +2190,19 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
         WM_MOUSEMOVE if with(|s| s.file_drag.is_some()).unwrap_or(false) => {
             // SAFETY: a system cursor; captured mouse moves do not send WM_SETCURSOR.
             unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()) };
+            let from = with(|s| s.file_drag.as_ref().map(|d| d.0)).flatten();
+            drag_over(cursor(), from);
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == DRAG_TIMER => {
+            // A drag standing still over a folder row: it may have been held long enough.
+            let (from, ole) =
+                with(|s| (s.file_drag.as_ref().map(|d| d.0), s.ole_drag)).unwrap_or((None, false));
+            if from.is_some() || ole {
+                drag_over(cursor(), from);
+            } else {
+                drag_active(false);
+            }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -2111,8 +2226,12 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             LRESULT(0)
         }
         crate::ole_drop::WM_APP_DROPPED => {
-            if let Some((side, paths)) = crate::ole_drop::take() {
-                conn_action(conn::Action::Drop(side, paths));
+            match crate::ole_drop::take() {
+                Some((side, paths, Some(folder))) => {
+                    conn_action(conn::Action::DropInto(side, paths, folder))
+                }
+                Some((side, paths, None)) => conn_action(conn::Action::Drop(side, paths)),
+                None => {}
             }
             LRESULT(0)
         }
@@ -2121,9 +2240,15 @@ unsafe extern "system" fn main_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
             let drag = with(|s| s.file_drag.take()).flatten();
             // SAFETY: release the capture taken when the drag began.
             let _ = unsafe { ReleaseCapture() };
+            let target = folder_at(cursor());
+            drag_active(false);
             if let Some((from, names)) = drag {
-                match pane_at(x, y) {
-                    Some(to) if to != from => conn_action(conn::Action::Copy(from, names)),
+                match (pane_at(x, y), target) {
+                    // On a folder row of the other pane: into that folder.
+                    (Some(to), Some((_, Some((_, folder))))) if to != from => {
+                        conn_action(conn::Action::CopyTo(from, names, folder))
+                    }
+                    (Some(to), _) if to != from => conn_action(conn::Action::Copy(from, names)),
                     _ => {}
                 }
             }

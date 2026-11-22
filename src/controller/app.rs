@@ -250,9 +250,11 @@ impl AppController {
         .with_keys_dir(self.dir.join("keys"));
         tab.set_queue_prefs(self.queue_prefs());
         tab.set_link_prefs(self.link_prefs());
+        // Opening a machine is wanting it: its top area connects (D51).
+        let out = tab.open_top();
         self.tabs.push(tab);
         self.active = Tab::Connection(self.tabs.len() - 1);
-        Vec::new()
+        out
     }
 
     fn close_tab(&mut self, i: usize) {

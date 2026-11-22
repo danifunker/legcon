@@ -8,7 +8,6 @@ machines = [{ id = "sun", name = "sun", address = "127.0.0.1", services = [{ kin
 ui = [
   { op = "select_row", id = "machines.list", name = "sun" },
   { op = "activate", id = "machines.open" },
-  { op = "activate", id = "conn.files" },
   { op = "expect_row", id = "remote.list", name = "hello.txt", timeout = 15 },
   { op = "select_row", id = "remote.list", name = "hello.txt" },
   { op = "key", id = "remote.list", key = "f6" },

@@ -404,17 +404,32 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
     p.list.drag_and_drop(
         if local { "local" } else { "remote" },
         Rc::new(move |d| match d {
-            Dropped::Rows(from) => {
+            Dropped::Rows(from, folder) => {
                 let from = if from == "local" {
                     Side::Local
                 } else {
                     Side::Remote
                 };
                 if from != side {
-                    conn_action(conn::Action::Copy(from, selected_names(from)));
+                    let names = selected_names(from);
+                    conn_action(match folder {
+                        Some(f) => conn::Action::CopyTo(from, names, f),
+                        None => conn::Action::Copy(from, names),
+                    });
                 }
             }
-            Dropped::Files(paths) => conn_action(conn::Action::Drop(side, paths)),
+            Dropped::Files(paths, Some(f)) => conn_action(conn::Action::DropInto(side, paths, f)),
+            Dropped::Files(paths, None) => conn_action(conn::Action::Drop(side, paths)),
+        }),
+    );
+    // A drag held over a folder row opens it, to go deeper before dropping.
+    p.list.spring_open(
+        conn::SPRING_OPEN,
+        Rc::new(move |name| {
+            conn_action(match side {
+                Side::Local => conn::Action::LocalOpen(name),
+                Side::Remote => conn::Action::RemoteOpen(name),
+            })
         }),
     );
     p

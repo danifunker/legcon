@@ -426,10 +426,11 @@ impl ConnectionController {
     pub(super) fn start_plan(&mut self, dir: Direction, g: Group, start: bool) {
         let Group {
             local_dir,
+            remote_dir,
             picks,
             sizes,
         } = g;
-        let Some(remote_dir) = self.remote_dir.clone() else {
+        let Some(remote_dir) = remote_dir.or_else(|| self.remote_dir.clone()) else {
             return;
         };
         self.note_local(local_dir.clone());
@@ -477,8 +478,12 @@ impl ConnectionController {
         }
     }
 
-    pub(super) fn start_import(&mut self, paths: Vec<PathBuf>, choices: local::Choices) {
-        let dest = self.local_dir.clone();
+    pub(super) fn start_import(
+        &mut self,
+        paths: Vec<PathBuf>,
+        dest: PathBuf,
+        choices: local::Choices,
+    ) {
         let what = if paths.len() == 1 {
             paths[0]
                 .file_name()

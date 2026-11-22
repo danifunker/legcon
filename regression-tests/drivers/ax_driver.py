@@ -197,6 +197,59 @@ def op_expect_order(o):
         time.sleep(0.3)
 
 
+def frame(e):
+    """An element's screen rectangle as (x, y, width, height), top-left origin."""
+    _, p = AX.AXValueGetValue(attr(e, "AXPosition"), AX.kAXValueCGPointType, None)
+    _, z = AX.AXValueGetValue(attr(e, "AXSize"), AX.kAXValueCGSizeType, None)
+    return p.x, p.y, z.width, z.height
+
+
+def mouse(kind, x, y):
+    ev = Quartz.CGEventCreateMouseEvent(None, kind, (x, y), Quartz.kCGMouseButtonLeft)
+    Quartz.CGEventSetIntegerValueField(ev, Quartz.kCGMouseEventClickState, 1)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+
+
+def op_drag(o):
+    """Drag row `from_row` of list `from_id` onto row `to_row` of `to_id` (or its empty space),
+    held there `hold` seconds first (a held drag opens a folder row)."""
+    frontmost()
+    rows, _ = rows_of(o["from_id"])
+    src = next((r for n, r in rows if n == o["from_row"]), None)
+    if src is None:
+        raise Fail(f"no row {o['from_row']} in {o['from_id']}")
+    x, y, w, h = frame(src)
+    start = (x + min(60, w / 2), y + h / 2)
+    if "to_row" in o:
+        rows, _ = rows_of(o["to_id"])
+        dst = next((r for n, r in rows if n == o["to_row"]), None)
+        if dst is None:
+            raise Fail(f"no row {o['to_row']} in {o['to_id']}")
+        x, y, w, h = frame(dst)
+        end = (x + min(60, w / 2), y + h / 2)
+    else:
+        x, y, w, h = frame(find(o["to_id"]))
+        end = (x + w / 2, y + h - 12)
+    mouse(Quartz.kCGEventMouseMoved, *start)
+    time.sleep(0.2)
+    mouse(Quartz.kCGEventLeftMouseDown, *start)
+    time.sleep(0.4)
+    steps = 40
+    for i in range(1, steps + 1):
+        t = i / steps
+        mouse(Quartz.kCGEventLeftMouseDragged, start[0] + (end[0] - start[0]) * t,
+              start[1] + (end[1] - start[1]) * t)
+        time.sleep(0.015)
+    held = time.time() + o.get("hold", 0.3)
+    wiggle = 0
+    while time.time() < held:
+        wiggle = 1 - wiggle
+        mouse(Quartz.kCGEventLeftMouseDragged, end[0] + wiggle, end[1])
+        time.sleep(0.1)
+    mouse(Quartz.kCGEventLeftMouseUp, *end)
+    time.sleep(o.get("pause", 0.8))
+
+
 def frontmost():
     AX.AXUIElementSetAttributeValue(APP, "AXFrontmost", True)
     time.sleep(0.1)
@@ -421,6 +474,7 @@ OPS = {
     "type": op_type,
     "expect_row": op_expect_row,
     "sort": op_sort,
+    "drag": op_drag,
     "expect_order": op_expect_order,
     "press": op_press,
     "activate": op_activate,
