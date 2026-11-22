@@ -44,6 +44,7 @@ pub struct Pane {
     bg: Retained<ui::Canvas>,
     places: Retained<NSButton>,
     title: Retained<NSTextField>,
+    back: Retained<NSButton>,
     home: Retained<NSButton>,
     other: Retained<NSButton>,
     path: Retained<NSTextField>,
@@ -370,6 +371,15 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
         bg,
         places: ui::button(mtm, "Places", places_id),
         title: ui::label(mtm, if local { "This computer" } else { "" }),
+        back: ui::button(
+            mtm,
+            "Back",
+            if local {
+                ids::LOCAL_BACK
+            } else {
+                ids::REMOTE_BACK
+            },
+        ),
         home: ui::button(mtm, "Home", home_id),
         other: if local {
             ui::button(mtm, "Go to...", ids::LOCAL_GO_TO)
@@ -383,6 +393,7 @@ fn pane(mtm: MainThreadMarker, content: &NSView, local: bool) -> Pane {
     for v in [
         &*p.places as &NSView,
         &p.title,
+        &p.back,
         &p.home,
         &p.other,
         &p.path,
@@ -704,6 +715,8 @@ pub fn command(id: &str) {
         }
         ids::LOCAL_PLACES => conn_action(conn::Action::Places(Side::Local)),
         ids::LOCAL_HOME => conn_action(conn::Action::LocalHome),
+        ids::LOCAL_BACK => conn_action(conn::Action::Back(Side::Local)),
+        ids::REMOTE_BACK => conn_action(conn::Action::Back(Side::Remote)),
         ids::LOCAL_GO_TO => conn_action(conn::Action::GoTo(Side::Local)),
         ids::REMOTE_PLACES => conn_action(conn::Action::Places(Side::Remote)),
         ids::REMOTE_HOME => conn_action(conn::Action::RemoteHome),
@@ -994,6 +1007,7 @@ pub fn refresh() {
             for v in [
                 &*p.places as &NSView,
                 &p.title,
+                &p.back,
                 &p.home,
                 &p.other,
                 &p.path,
@@ -1086,6 +1100,8 @@ pub fn refresh() {
             }
         }
         ui::set_enabled(&s.w.remote.home, t.can_disconnect());
+        ui::set_enabled(&s.w.local.back, t.can_go_back(Side::Local));
+        ui::set_enabled(&s.w.remote.back, t.can_go_back(Side::Remote));
         ui::set_enabled(&s.w.remote.other, t.can_disconnect());
         for (list, side) in [
             (&s.w.local.list, Side::Local),
@@ -1334,11 +1350,10 @@ fn layout() {
             let right = px + pane_w - 4.0;
             ui::place(&p.other, (right - other_w, by, other_w, 26.0));
             ui::place(&p.home, (right - other_w - 4.0 - 66.0, by, 66.0, 26.0));
+            let back_x = right - other_w - 4.0 - 66.0 - 4.0 - 62.0;
+            ui::place(&p.back, (back_x, by, 62.0, 26.0));
             let tx = px + 4.0 + 70.0 + 8.0;
-            ui::place(
-                &p.title,
-                (tx, files_y + 8.0, right - other_w - 74.0 - tx, 18.0),
-            );
+            ui::place(&p.title, (tx, files_y + 8.0, back_x - 4.0 - tx, 18.0));
             ui::place(
                 &p.path,
                 (px + 6.0, files_y + band + 3.0, pane_w - 12.0, 17.0),

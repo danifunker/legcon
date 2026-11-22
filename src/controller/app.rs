@@ -834,7 +834,12 @@ mod tests {
         // A copy that finished leaves nothing that holds up the quit.
         for _ in 0..400 {
             a.tick();
-            if !a.tab(0).unwrap().remote_rows().is_empty() {
+            if a.tab(0)
+                .unwrap()
+                .remote_rows()
+                .iter()
+                .any(|r| r.name == ".profile")
+            {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));

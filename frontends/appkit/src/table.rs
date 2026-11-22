@@ -217,6 +217,10 @@ fn writer(
     let side = state.side?;
     let line = state.rows.get(row as usize)?;
     let name = line.cells.first()?.clone();
+    // The way up is not a file: dragged out it would carry the whole parent folder.
+    if name == ".." {
+        return None;
+    }
     if let Some(dir) = &state.dir {
         let url = NSURL::fileURLWithPath(&ns(&dir.join(&name).to_string_lossy()));
         return Some(ProtocolObject::from_retained(url));

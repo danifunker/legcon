@@ -60,6 +60,7 @@ const WM_APP_TAB_MENU: u32 = WM_APP + 4;
 pub struct Pane {
     places: HWND,
     title: HWND,
+    back: HWND,
     home: HWND,
     other: HWND,
     path: HWND,
@@ -271,6 +272,15 @@ fn pane(window: HWND, local: bool) -> Pane {
     Pane {
         places: ui::button(window, "Places", places_id),
         title: ui::label(window, if local { "This computer" } else { "" }),
+        back: ui::button(
+            window,
+            "Back",
+            if local {
+                ids::LOCAL_BACK
+            } else {
+                ids::REMOTE_BACK
+            },
+        ),
         home: ui::button(window, "Home", home_id),
         other: if local {
             ui::button(window, "Go to...", ids::LOCAL_GO_TO)
@@ -793,7 +803,7 @@ fn refresh() {
             ui::set_visible(h, on_machines);
         }
         for p in [&s.w.local, &s.w.remote] {
-            for h in [p.places, p.title, p.home, p.other, p.path, p.list] {
+            for h in [p.places, p.title, p.back, p.home, p.other, p.path, p.list] {
                 ui::set_visible(h, on_conn);
             }
         }
@@ -889,6 +899,8 @@ fn refresh() {
             }
         }
         ui::set_enabled(s.w.remote.home, t.can_disconnect());
+        ui::set_enabled(s.w.local.back, t.can_go_back(Side::Local));
+        ui::set_enabled(s.w.remote.back, t.can_go_back(Side::Remote));
         ui::set_enabled(s.w.remote.other, t.can_disconnect());
         for (list, side) in [
             (s.w.local.list, Side::Local),
@@ -1143,11 +1155,10 @@ fn layout() {
             let right = px + pane_w - sc(5);
             ui::place(p.other, (right - other_w, by, other_w, btn));
             ui::place(p.home, (right - other_w - sc(4) - sc(56), by, sc(56), btn));
+            let back_x = right - other_w - sc(4) - sc(56) - sc(4) - sc(52);
+            ui::place(p.back, (back_x, by, sc(52), btn));
             let tx = px + sc(5) + sc(64) + sc(8);
-            ui::place(
-                p.title,
-                (tx, files_y + 1, right - other_w - sc(64) - tx, band - 2),
-            );
+            ui::place(p.title, (tx, files_y + 1, back_x - sc(4) - tx, band - 2));
             ui::place(
                 p.path,
                 (px + 2, files_y + band + sc(4), pane_w - 4, path_h - sc(6)),
@@ -1850,11 +1861,13 @@ fn command(from: HWND, code: u32) {
             s.w.remote.places,
             s.w.remote.home,
             s.w.remote.other,
+            s.w.local.back,
+            s.w.remote.back,
         ]
     }) else {
         return;
     };
-    let [add, open, remove, settings, options, all, setup, l_places, l_home, l_go_to, r_places, r_home, r_up] =
+    let [add, open, remove, settings, options, all, setup, l_places, l_home, l_go_to, r_places, r_home, r_up, l_back, r_back] =
         b;
     match from {
         h if h == add => dispatch(app::Action::AddMachine),
@@ -1882,6 +1895,8 @@ fn command(from: HWND, code: u32) {
         h if h == r_places => conn_action(conn::Action::Places(Side::Remote)),
         h if h == r_home => conn_action(conn::Action::RemoteHome),
         h if h == r_up => conn_action(conn::Action::RemoteUp),
+        h if h == l_back => conn_action(conn::Action::Back(Side::Local)),
+        h if h == r_back => conn_action(conn::Action::Back(Side::Remote)),
         _ => {}
     }
 }

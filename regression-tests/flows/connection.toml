@@ -58,20 +58,20 @@ ui = [
   { op = "activate", id = "machines.open" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
-  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
   { op = "sort", id = "remote.list", column = "Size" },
-  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
   { op = "sort", id = "remote.list", column = "Size" },
-  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"] },
   { op = "sort", id = "remote.list", column = "Name" },
   { op = "sort", id = "remote.list", column = "Name" },
-  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
   { op = "activate", id = "conn.close_tab" },
   { op = "select_row", id = "machines.list", name = "sparc" },
   { op = "activate", id = "machines.open" },
   { op = "select_row", id = "remote.list", name = "src" },
   { op = "key", id = "remote.list", key = "enter" },
-  { op = "expect_order", id = "remote.list", names = ["gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3", "Makefile.local", "bash-2.05b.tar.gz"] },
 ]
 
 [[case]]
@@ -102,6 +102,34 @@ ui = [
   { op = "expect_row", id = "remote.list", name = "Makefile.local" },
 ]
 expect_files = ["incoming/.profile"]
+
+[[case]]
+id = "flow.conn.back-and-up"
+description = "The .. row goes up a folder; Back returns to the folder shown before, in both panes"
+machines = [{ id = "sparc", name = "sparc", address = "demo", services = [{ kind = "demo", port = 0 }] }]
+ui = [
+  { op = "select_row", id = "machines.list", name = "sparc" },
+  { op = "activate", id = "machines.open" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "expect_enabled", id = "remote.back", enabled = false },
+  { op = "select_row", id = "remote.list", name = "src" },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_order", id = "remote.list", names = ["..", "gcc-2.95.3"] },
+  { op = "select_row", id = "remote.list", name = ".." },
+  { op = "key", id = "remote.list", key = "enter" },
+  { op = "expect_row", id = "remote.list", name = ".profile" },
+  { op = "activate", id = "remote.back" },
+  { op = "expect_row", id = "remote.list", name = "Makefile.local" },
+  { op = "key", id = "local.list", key = "ctrl+n" },
+  { op = "wait_dialog" },
+  { op = "fill", id = "prompt.text", text = "deeper" },
+  { op = "activate", id = "prompt.ok" },
+  { op = "select_row", id = "local.list", name = "deeper" },
+  { op = "key", id = "local.list", key = "enter" },
+  { op = "expect_row", id = "local.list", name = "deeper", present = false },
+  { op = "activate", id = "local.back" },
+  { op = "expect_row", id = "local.list", name = "deeper" },
+]
 
 [[case]]
 id = "flow.conn.copy-to-home"

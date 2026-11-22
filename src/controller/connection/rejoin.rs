@@ -163,6 +163,7 @@ impl ConnectionController {
         match a {
             Action::RemoteHome
             | Action::RemoteUp
+            | Action::Back(Side::Remote)
             | Action::RemoteOpen(_)
             | Action::Refresh(Side::Remote)
             | Action::GoTo(Side::Remote)
@@ -283,6 +284,7 @@ impl ConnectionController {
                 action:
                     Action::RemoteHome
                     | Action::RemoteUp
+                    | Action::Back(Side::Remote)
                     | Action::RemoteOpen(_)
                     | Action::Refresh(Side::Remote)
                     | Action::RemoteGoToAnswered(_)

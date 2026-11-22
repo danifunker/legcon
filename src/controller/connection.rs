@@ -145,6 +145,8 @@ pub enum Action {
     RemoteGoToAnswered(Option<String>),
     /// A path typed into a pane's address bar, then Enter: go there.
     PathTyped(Side, String),
+    /// The pane's Back button: the folder it showed before.
+    Back(Side),
     /// A click on a pane's column header: sort by it, or the other way if it already is.
     SortBy(Side, super::SortBy),
     Connect,
@@ -443,6 +445,9 @@ pub struct ConnectionController {
     console_job: Option<Job<String>>,
     /// Lost connections and connecting again (rejoin.rs).
     link: rejoin::Link,
+    /// Each pane's folders before this one, newest last (Back).
+    back_local: Vec<PathBuf>,
+    back_remote: Vec<RemotePath>,
 }
 
 /// What an rsh check or setup on `name` found, in words (the tab and `lc rsh-trust`).
@@ -568,6 +573,8 @@ impl ConnectionController {
             console: Vec::new(),
             console_job: None,
             link: rejoin::Link::default(),
+            back_local: Vec::new(),
+            back_remote: Vec::new(),
         };
         c.push_upkeep();
         c.list_local();
@@ -1198,10 +1205,11 @@ impl ConnectionController {
         self.home.display().to_string()
     }
 
+    /// The local pane's rows: `..` first (below the top of a drive), then the folder's own.
     pub fn local_rows(&self) -> Vec<Row> {
-        self.local_rows
-            .iter()
-            .map(|e| Row {
+        let up = self.local_dir.parent().map(|_| parent_row());
+        up.into_iter()
+            .chain(self.local_rows.iter().map(|e| Row {
                 name: e.name.clone(),
                 is_dir: e.is_dir,
                 size: if e.is_dir {
@@ -1211,7 +1219,7 @@ impl ConnectionController {
                 },
                 modified: e.modified.map(local_time_text).unwrap_or_default(),
                 mode: String::new(),
-            })
+            }))
             .collect()
     }
 
@@ -1226,23 +1234,30 @@ impl ConnectionController {
             .unwrap_or_default()
     }
 
+    /// The remote pane's rows: `..` first (below the machine's top level), then the folder's own.
     pub fn remote_rows(&self) -> Vec<Row> {
-        self.remote_rows
-            .iter()
-            .map(|e| Row {
-                name: e.name.clone(),
-                is_dir: e.is_folder(),
-                size: if e.is_folder() {
-                    String::new()
-                } else {
-                    e.size.map(size_text).unwrap_or_default()
-                },
-                modified: e.modified.map(time_text).unwrap_or_default(),
-                mode: e
-                    .mode
-                    .map(|m| mode_text(m, e.is_folder()))
-                    .unwrap_or_default(),
-            })
+        let up = self
+            .remote_dir
+            .as_ref()
+            .filter(|d| !d.is_root() && self.can_disconnect())
+            .map(|_| parent_row());
+        up.into_iter()
+            .chain(self.remote_rows.iter().map(|e| {
+                Row {
+                    name: e.name.clone(),
+                    is_dir: e.is_folder(),
+                    size: if e.is_folder() {
+                        String::new()
+                    } else {
+                        e.size.map(size_text).unwrap_or_default()
+                    },
+                    modified: e.modified.map(time_text).unwrap_or_default(),
+                    mode: e
+                        .mode
+                        .map(|m| mode_text(m, e.is_folder()))
+                        .unwrap_or_default(),
+                }
+            }))
             .collect()
     }
 
@@ -1365,6 +1380,20 @@ impl ConnectionController {
             return Ok((None, None));
         };
         let gone = || format!("{name} is not a folder here any more.");
+        if name == PARENT_ROW {
+            return match side {
+                Side::Local => self
+                    .local_dir
+                    .parent()
+                    .map(|p| (Some(p.to_path_buf()), None)),
+                Side::Remote => self
+                    .remote_dir
+                    .as_ref()
+                    .and_then(|d| d.parent())
+                    .map(|p| (None, Some(p))),
+            }
+            .ok_or_else(gone);
+        }
         match side {
             Side::Local => self
                 .local_rows
@@ -1781,7 +1810,10 @@ impl ConnectionController {
     }
 
     fn go_local(&mut self, dir: PathBuf) {
-        self.local_dir = dir;
+        if dir != self.local_dir {
+            let was = std::mem::replace(&mut self.local_dir, dir);
+            remember(&mut self.back_local, was);
+        }
         self.list_local();
     }
 
@@ -1797,8 +1829,36 @@ impl ConnectionController {
     }
 
     fn go_remote(&mut self, dir: RemotePath) {
-        self.remote_dir = Some(dir);
+        if let Some(was) = self.remote_dir.replace(dir.clone()).filter(|w| *w != dir) {
+            remember(&mut self.back_remote, was);
+        }
         self.list_remote();
+    }
+
+    /// Whether a pane has a folder to go back to (its Back button).
+    pub fn can_go_back(&self, side: Side) -> bool {
+        match side {
+            Side::Local => !self.back_local.is_empty(),
+            Side::Remote => !self.back_remote.is_empty() && self.can_disconnect(),
+        }
+    }
+
+    /// Back: the folder the pane showed before this one, without adding to its history.
+    fn go_back(&mut self, side: Side) {
+        match side {
+            Side::Local => {
+                if let Some(dir) = self.back_local.pop() {
+                    self.local_dir = dir;
+                    self.list_local();
+                }
+            }
+            Side::Remote => {
+                if let Some(dir) = self.back_remote.pop() {
+                    self.remote_dir = Some(dir);
+                    self.list_remote();
+                }
+            }
+        }
     }
 
     /// Connect the file service, asking for the password first where it is needed.
@@ -1843,6 +1903,33 @@ impl ConnectionController {
             self.layout.files_share = share;
             self.layout_changed = true;
         }
+    }
+}
+
+/// How many folders Back can go back through, per pane.
+const BACK_MAX: usize = 50;
+
+/// Add `dir` to a pane's Back history, newest last.
+fn remember<T: PartialEq>(history: &mut Vec<T>, dir: T) {
+    if history.last() != Some(&dir) {
+        history.push(dir);
+    }
+    if history.len() > BACK_MAX {
+        history.remove(0);
+    }
+}
+
+/// The name of the first row of a listing that is not its top: it goes up one folder.
+pub const PARENT_ROW: &str = "..";
+
+/// The `..` row as the panes show it.
+fn parent_row() -> Row {
+    Row {
+        name: PARENT_ROW.into(),
+        is_dir: true,
+        size: String::new(),
+        modified: String::new(),
+        mode: String::new(),
     }
 }
 
@@ -1992,6 +2079,14 @@ impl Controller for ConnectionController {
                     self.go_local(p);
                 }
             }
+            Action::Back(side) => self.go_back(side),
+            Action::LocalOpen(name) if name == PARENT_ROW => {
+                return super::Controller::apply(self, Action::LocalUp)
+            }
+            Action::RemoteOpen(name) if name == PARENT_ROW => {
+                return super::Controller::apply(self, Action::RemoteUp)
+            }
+            Action::Rename(_, name) if name == PARENT_ROW => {}
             Action::LocalOpen(name) => {
                 let target = self.local_dir.join(&name);
                 if target.is_dir() {
@@ -2494,6 +2589,7 @@ impl Controller for ConnectionController {
         if let Some(r) = self.disconnect_job.as_ref().and_then(job_outcome) {
             self.disconnect_job = None;
             self.link.listed = None;
+            self.back_remote.clear();
             self.remote_rows.clear();
             self.remote_dir = None;
             self.remote_home = None;
@@ -3024,9 +3120,12 @@ mod tests {
         c.apply(Action::RemoteOpen("src".into()));
         settle(&mut c);
         let names: Vec<_> = c.remote_rows().into_iter().map(|r| r.name).collect();
-        assert_eq!(names, ["gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"]);
+        assert_eq!(
+            names,
+            ["..", "gcc-2.95.3", "bash-2.05b.tar.gz", "Makefile.local"]
+        );
         assert_eq!(c.remote_path(), "/export/home/dani/src");
-        assert_eq!(c.remote_rows()[2].mode, "-rw-r--r--");
+        assert_eq!(c.remote_rows()[3].mode, "-rw-r--r--");
         c.apply(Action::Disconnect);
         settle(&mut c);
         assert_eq!(c.state(), ConnState::Disconnected);
@@ -3882,5 +3981,81 @@ mod tests {
         ));
         settle(&mut c);
         assert!(home.path().join("incoming/dropped.txt").exists());
+    }
+
+    #[test]
+    fn back_goes_where_the_pane_was_and_dot_dot_goes_up() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("a/b")).unwrap();
+        let mut c = tab(home.path());
+        assert!(!c.can_go_back(Side::Local));
+        c.apply(Action::LocalOpen("a".into()));
+        c.apply(Action::LocalOpen("b".into()));
+        settle(&mut c);
+        assert_eq!(c.local_rows()[0].name, "..", "the way up comes first");
+        assert!(c.local_rows()[0].is_dir);
+        // .. goes up; Back then returns to where the pane was (b), not up again.
+        c.apply(Action::LocalOpen("..".into()));
+        settle(&mut c);
+        assert!(c.local_path().ends_with('a'));
+        c.apply(Action::Back(Side::Local));
+        settle(&mut c);
+        assert!(c.local_path().ends_with('b'), "{}", c.local_path());
+        c.apply(Action::Back(Side::Local));
+        c.apply(Action::Back(Side::Local));
+        settle(&mut c);
+        assert_eq!(c.local_path(), home.path().display().to_string());
+        assert!(!c.can_go_back(Side::Local));
+        // .. cannot be renamed, deleted or copied.
+        assert!(c.apply(Action::Rename(Side::Local, "..".into())).is_empty());
+        assert!(c
+            .apply(Action::Delete(Side::Local, vec!["..".into()]))
+            .is_empty());
+
+        // The remote pane: no .. at the top, Back through the folders, history gone on disconnect.
+        c.apply(Action::Connect);
+        settle(&mut c);
+        c.apply(Action::RemoteGoToAnswered(Some("/".into())));
+        settle(&mut c);
+        assert!(
+            c.remote_rows().iter().all(|r| r.name != ".."),
+            "nothing above the top"
+        );
+        c.apply(Action::RemoteOpen("etc".into()));
+        settle(&mut c);
+        assert_eq!(c.remote_rows()[0].name, "..");
+        c.apply(Action::Back(Side::Remote));
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/");
+        c.apply(Action::Back(Side::Remote));
+        settle(&mut c);
+        assert_eq!(c.remote_path(), "/export/home/dani", "the login folder");
+        c.apply(Action::RemoteOpen("src".into()));
+        settle(&mut c);
+        assert!(c.can_go_back(Side::Remote));
+        c.apply(Action::Disconnect);
+        settle(&mut c);
+        assert!(!c.can_go_back(Side::Remote));
+    }
+
+    #[test]
+    fn rows_dropped_on_dot_dot_go_up_a_folder() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join("inside")).unwrap();
+        let mut c = tab(home.path());
+        c.apply(Action::Connect);
+        settle(&mut c);
+        c.apply(Action::LocalOpen("inside".into()));
+        settle(&mut c);
+        c.apply(Action::CopyTo(
+            Side::Remote,
+            vec![".profile".into()],
+            "..".into(),
+        ));
+        settle(&mut c);
+        assert!(
+            home.path().join(".profile").exists(),
+            "into the folder above"
+        );
     }
 }

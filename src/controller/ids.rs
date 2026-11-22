@@ -21,12 +21,14 @@ pub const CONN_SPLITTER: &str = "conn.splitter";
 
 pub const LOCAL_PLACES: &str = "local.places";
 pub const LOCAL_HOME: &str = "local.home";
+pub const LOCAL_BACK: &str = "local.back";
 pub const LOCAL_GO_TO: &str = "local.go_to";
 pub const LOCAL_PATH: &str = "local.path";
 pub const LOCAL_LIST: &str = "local.list";
 
 pub const REMOTE_PLACES: &str = "remote.places";
 pub const REMOTE_HOME: &str = "remote.home";
+pub const REMOTE_BACK: &str = "remote.back";
 pub const REMOTE_PATH: &str = "remote.path";
 pub const REMOTE_LIST: &str = "remote.list";
 
