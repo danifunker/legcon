@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBorderType, NSControlTextEditingDelegate, NSDragOperation,
     NSDraggingInfo, NSEvent, NSFilePromiseProvider, NSFilePromiseProviderDelegate,
@@ -17,7 +17,9 @@ use objc2_app_kit::{
     NSPasteboardWriting, NSScrollView, NSTableColumn, NSTableView, NSTableViewDataSource,
     NSTableViewDelegate, NSTableViewDropOperation, NSView, NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSIndexSet, NSNotification, NSString, NSURL};
+use objc2_foundation::{
+    NSArray, NSIndexSet, NSNotification, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer, NSURL,
+};
 
 use crate::ui::{self, ns};
 
@@ -133,19 +135,12 @@ define_class!(
                 return NSDragOperation::Copy;
             };
             table.setDropRow_dropOperation(row, NSTableViewDropOperation::On);
-            let now = std::time::Instant::now();
-            let since = match state.hover {
-                Some((r, t, opened)) if r == row => (t, opened),
-                _ => (now, false),
-            };
-            let due = state
-                .spring
-                .as_ref()
-                .filter(|(wait, _)| !since.1 && now.duration_since(since.0) >= *wait)
-                .map(|(_, f)| Rc::clone(f));
-            state.hover = Some((row, since.0, since.1 || due.is_some()));
-            if let Some(f) = due {
-                ui::later(Box::new(move || f(name)));
+            if !matches!(state.hover, Some((r, _, _)) if r == row) {
+                let start = std::time::Instant::now();
+                state.hover = Some((row, start, false));
+                if let Some((wait, _)) = &state.spring {
+                    spring_timer(self.retain(), row, start, name, *wait);
+                }
             }
             NSDragOperation::Copy
         }
@@ -307,6 +302,38 @@ fn from_side(info: &ProtocolObject<dyn NSDraggingInfo>) -> Option<&'static str> 
         "remote" => Some("remote"),
         _ => None,
     })
+}
+
+/// Open folder row `row` after `wait`, if the drag that reached it at `start` is still there.
+/// A timer in the run loop's common modes fires inside the drag's own event loop, where
+/// neither a still mouse nor the main dispatch queue would.
+fn spring_timer(
+    source: Retained<Source>,
+    row: isize,
+    start: std::time::Instant,
+    name: String,
+    wait: std::time::Duration,
+) {
+    let fire = block2::RcBlock::new(move |_timer: std::ptr::NonNull<NSTimer>| {
+        let f = {
+            let mut st = source.ivars().borrow_mut();
+            match st.hover {
+                Some((r, t, false)) if r == row && t == start => {
+                    st.hover = Some((r, t, true));
+                    st.spring.as_ref().map(|(_, f)| Rc::clone(f))
+                }
+                _ => None,
+            }
+        };
+        if let Some(f) = f {
+            f(name.clone());
+        }
+    });
+    // SAFETY: a one-shot timer on the main run loop; the block keeps what it needs alive.
+    unsafe {
+        let timer = NSTimer::timerWithTimeInterval_repeats_block(wait.as_secs_f64(), false, &fire);
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
 }
 
 /// The name of row `row` when it is a folder.
