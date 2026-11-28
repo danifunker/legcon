@@ -163,9 +163,10 @@ impl Message {
                 0xc000_0101 => "the folder is not empty",
                 _ => "",
             };
-            return format!("NT status {:#010x} {name}", self.status)
-                .trim_end()
-                .to_string();
+            return match name {
+                "" => format!("NT status {:#010x}", self.status),
+                _ => format!("{name} (NT status {:#010x})", self.status),
+            };
         }
         let (class, code) = (self.status & 0xff, self.status >> 16);
         let name = match (class, code) {
@@ -180,9 +181,10 @@ impl Message {
             (2, 6) => "no such share",
             _ => "",
         };
-        format!("DOS error class {class} code {code} {name}")
-            .trim_end()
-            .to_string()
+        match name {
+            "" => format!("DOS error {class}/{code}"),
+            _ => format!("{name} (DOS error {class}/{code})"),
+        }
     }
 }
 

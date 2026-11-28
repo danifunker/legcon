@@ -160,8 +160,12 @@ impl Control {
 
 fn refuse(r: &Reply, what: &str) -> Error {
     let msg = format!("{what}: {}", r.text());
+    // 550 covers both "no such file" and "permission denied"; only the text tells them apart.
+    let text = r.text().to_ascii_lowercase();
+    let denied = text.contains("denied") || text.contains("permission");
     match r.code {
         530 | 532 => Error::Auth(msg),
+        550 if denied => Error::Denied(msg),
         550 if what.starts_with("open") || what.starts_with("list") => Error::NotFound(msg),
         550 | 553 => Error::Denied(msg),
         500 | 502 | 504 => Error::Unsupported(msg),
@@ -611,6 +615,22 @@ mod tests {
             }
         });
         port
+    }
+
+    #[test]
+    fn a_refused_folder_is_denied_and_a_missing_one_not_found() {
+        let reply = |text: &str| Reply {
+            code: 550,
+            lines: vec![format!("550 {text}")],
+        };
+        assert!(matches!(
+            refuse(&reply("/root: Permission denied."), "list /root"),
+            Error::Denied(_)
+        ));
+        assert!(matches!(
+            refuse(&reply("/nope: No such file or directory."), "list /nope"),
+            Error::NotFound(_)
+        ));
     }
 
     #[test]

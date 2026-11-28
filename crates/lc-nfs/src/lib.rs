@@ -344,8 +344,10 @@ impl NfsSession {
         let r = self.nfs.call(procedure, &args.0)?;
         let status = Dec::new(&r).u32()?;
         if status != 0 {
+            // Stale: the server restarted or re-exported; look everything up again, roots too.
             if status == 70 {
                 self.handles.clear();
+                self.mounted.clear();
             }
             return Err(status_error(status, what));
         }

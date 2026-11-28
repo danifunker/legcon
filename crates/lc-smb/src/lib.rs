@@ -561,7 +561,13 @@ impl SmbSession {
         let bytes = Buf::default().raw(&password).sz(&path).sz(b"?????").0;
         let (r, _) = self.exchange(wire::TREE_CONNECT_ANDX, 0, words, bytes)?;
         if r.is_error() {
-            return Err(r.error(&format!("open share {share}")));
+            return Err(match r.error(&format!("share {share}")) {
+                // C$, ADMIN$ and the like: Windows opens them to administrators only.
+                Error::Denied(_) if share.ends_with('$') => Error::Denied(format!(
+                    "{share} is an administrative share; only an administrator login opens it"
+                )),
+                e => e,
+            });
         }
         self.trees.insert(key, r.tid);
         Ok(r.tid)

@@ -287,6 +287,14 @@ impl Rsh {
     /// Run a Bourne shell command whatever the login shell is (csh is common); its output, or
     /// an error made from it when it failed.
     fn sh(&self, what: &str, cmd: &[u8]) -> Result<Vec<u8>> {
+        match self.sh_status(what, cmd)? {
+            (body, true) => Ok(body),
+            (body, false) => Err(shell_error(what, &body)),
+        }
+    }
+
+    /// [`Self::sh`]'s output and whether the command exited 0, for commands that fail only in part.
+    fn sh_status(&self, what: &str, cmd: &[u8]) -> Result<(Vec<u8>, bool)> {
         let mut inner = b"LC_ALL=C; export LC_ALL; ".to_vec();
         inner.extend_from_slice(cmd);
         inner.extend_from_slice(b" 2>&1; echo \"");
@@ -299,11 +307,7 @@ impl Rsh {
             .ok_or_else(|| shell_error(what, &out))?;
         let status = String::from_utf8_lossy(&out[at + MARK.len()..]);
         let body = out[..at].to_vec();
-        if status.trim() == "0" {
-            Ok(body)
-        } else {
-            Err(shell_error(what, &body))
-        }
+        Ok((body, status.trim() == "0"))
     }
 
     /// Run a command with its errors kept apart: they go to a file on the server and come back
@@ -423,12 +427,17 @@ impl FileSession for Rsh {
     fn list(&mut self, dir: &RemotePath) -> Result<Vec<Entry>> {
         let mut cmd = b"ls -laL ".to_vec();
         cmd.extend_from_slice(&sq(&self.path(dir)));
-        let out = self.sh(&dir.to_string(), &cmd)?;
-        // Links that point nowhere make ls complain on the same stream; those lines parse as nothing.
-        Ok(lc_core::listing::parse(&out, self.charset, Self::now())
+        let (out, ok) = self.sh_status(&dir.to_string(), &cmd)?;
+        // Links that point nowhere make ls complain on the same stream, and exit 1 on GNU
+        // systems: those lines parse as nothing, and the folder still lists.
+        let entries: Vec<Entry> = lc_core::listing::parse(&out, self.charset, Self::now())
             .into_iter()
             .filter(|e| e.kind != lc_core::EntryKind::Other || e.size.is_some())
-            .collect())
+            .collect();
+        if !ok && entries.is_empty() {
+            return Err(shell_error(&dir.to_string(), &out));
+        }
+        Ok(entries)
     }
 
     fn stat(&mut self, path: &RemotePath) -> Result<Entry> {
